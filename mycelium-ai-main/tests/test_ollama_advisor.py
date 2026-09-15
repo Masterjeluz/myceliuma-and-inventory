@@ -10,12 +10,15 @@ import httpx
 import pytest
 
 from coordinator.app.ollama_advisor import (
+    DEFAULT_TIMEOUT_SECONDS,
     MAX_CONTEXT_LENGTH,
     MAX_QUESTION_LENGTH,
     MAX_RECORDS,
+    MAX_TIMEOUT_SECONDS,
     OllamaAdvisor,
     OllamaRefusedError,
     OllamaUnavailable,
+    TIMEOUT_ENV_VAR,
     build_prompt,
     redact_paths,
 )
@@ -64,6 +67,20 @@ def test_normal_advice():
     assert len(seen) == 1
     assert seen[0].method == "POST"
     assert seen[0].url.path == "/api/generate"
+
+
+def test_think_disabled_in_generate_payload():
+    import json as _json
+
+    seen = []
+    res = run(advisor(ok_handler(seen)).advise("Wat kan ik maken?", [record()]))
+    assert res.advice == "Gebruik de Moer M8."
+    assert len(seen) == 1
+    payload = _json.loads(seen[0].content.decode("utf-8"))
+    assert payload["think"] is False
+    assert payload["stream"] is False
+    assert payload["model"] == "test-model"
+    assert "prompt" in payload and "Wat kan ik maken?" in payload["prompt"]
 
 
 def test_prompt_construction():
@@ -202,6 +219,36 @@ def test_advise_writes_nothing(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     run(advisor(ok_handler()).advise("Wat?", [record()]))
     assert list(tmp_path.iterdir()) == []
+
+
+def test_timeout_default_suits_local_models(monkeypatch):
+    monkeypatch.delenv(TIMEOUT_ENV_VAR, raising=False)
+    assert OllamaAdvisor(transport=httpx.MockTransport(ok_handler())).timeout == DEFAULT_TIMEOUT_SECONDS
+    assert DEFAULT_TIMEOUT_SECONDS == 120.0
+    assert MAX_TIMEOUT_SECONDS == 120.0
+
+
+def test_timeout_env_configured(monkeypatch):
+    monkeypatch.setenv(TIMEOUT_ENV_VAR, "60")
+    assert OllamaAdvisor(transport=httpx.MockTransport(ok_handler())).timeout == 60.0
+
+
+def test_timeout_never_above_maximum(monkeypatch):
+    monkeypatch.delenv(TIMEOUT_ENV_VAR, raising=False)
+    assert OllamaAdvisor(timeout=1000, transport=httpx.MockTransport(ok_handler())).timeout == MAX_TIMEOUT_SECONDS
+    monkeypatch.setenv(TIMEOUT_ENV_VAR, "1000")
+    assert OllamaAdvisor(transport=httpx.MockTransport(ok_handler())).timeout == MAX_TIMEOUT_SECONDS
+
+
+@pytest.mark.parametrize("raw", ["", "geen-getal", "0", "-5", "None"])
+def test_timeout_invalid_falls_back_to_default(monkeypatch, raw):
+    monkeypatch.setenv(TIMEOUT_ENV_VAR, raw)
+    assert OllamaAdvisor(transport=httpx.MockTransport(ok_handler())).timeout == DEFAULT_TIMEOUT_SECONDS
+
+
+def test_timeout_explicit_wins_over_env(monkeypatch):
+    monkeypatch.setenv(TIMEOUT_ENV_VAR, "60")
+    assert OllamaAdvisor(timeout=30, transport=httpx.MockTransport(ok_handler())).timeout == 30.0
 
 
 def test_no_io_tokens_in_implementation():

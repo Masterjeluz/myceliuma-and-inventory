@@ -41,6 +41,13 @@ def execute_safe_task(task: dict[str, object]) -> tuple[bool, dict[str, object],
 
     This function is intentionally small: task payloads never become commands,
     paths or Python code. New executors need their own explicit review.
+
+    The claim loop auto-executes, so it may only serve read-only kinds:
+    system_inventory and desktop_screenshot. Desktop INPUT (click, type,
+    key presses, ...) is never auto-executed here: those actions run
+    exclusively in the local desktop runtime after explicit human
+    approval (see coordinator/app/agent_loop.py). A node that claims
+    input tasks receives a refusal, never silent execution.
     """
     if task["kind"] == "system_inventory":
         return True, {
@@ -49,6 +56,20 @@ def execute_safe_task(task: dict[str, object]) -> tuple[bool, dict[str, object],
             "cpu_cores": os.cpu_count() or 1,
             "memory_mb": detected_memory_mb(),
         }, None
+    if task["kind"] == "desktop_screenshot":
+        try:
+            from coordinator.app.desktop_runtime import get_backend
+        except ImportError as error:
+            return False, {}, f"Screenshot backend unavailable: {error}"
+        try:
+            observation = get_backend().screenshot()
+        except Exception as error:
+            return False, {}, f"Screenshot refused: {error}"
+        return True, observation.model_dump(mode="json"), None
+    if str(task["kind"]).startswith("desktop_"):
+        return False, {}, (
+            f"Desktop input '{task['kind']}' needs explicit human approval "
+            "and never auto-executes in the claim loop; refusing")
     return False, {}, f"No safe executor installed for task kind: {task['kind']}"
 
 

@@ -7,7 +7,9 @@ Hard limits, all tested:
 
 - network: exactly one endpoint, POST {base_url}/api/generate, where the
   base URL must be loopback (127.0.0.1, localhost, ::1); redirects refused;
-  timeout at most 5 seconds; every failure mode closes to OllamaUnavailable.
+  bounded timeout (default 120 seconds, configureerbaar via
+  OLLAMA_TIMEOUT_SECONDS, never above the maximum); every failure mode
+  closes to OllamaUnavailable.
 - prompt: question capped, record count capped, total context capped;
   paths redacted; file contents never accepted (records carry
   metadata text only); provenance of every record preserved in context.
@@ -16,6 +18,7 @@ Hard limits, all tested:
   out of scope for this first version and therefore absent here.
 """
 
+import os
 import re
 from typing import Any
 
@@ -23,9 +26,13 @@ import httpx
 from pydantic import BaseModel, ConfigDict, Field
 
 DEFAULT_BASE_URL = "http://127.0.0.1:11434"
-DEFAULT_MODEL = "llama3.1"
+DEFAULT_MODEL = "qwen3.5:4b"
+BASE_URL_ENV_VAR = "OLLAMA_BASE_URL"
+MODEL_ENV_VAR = "OLLAMA_MODEL"
+TIMEOUT_ENV_VAR = "OLLAMA_TIMEOUT_SECONDS"
+DEFAULT_TIMEOUT_SECONDS = 120.0
+MAX_TIMEOUT_SECONDS = 120.0
 GENERATE_PATH = "/api/generate"
-MAX_TIMEOUT_SECONDS = 5.0
 MAX_QUESTION_LENGTH = 500
 MAX_RECORDS = 10
 MAX_CONTEXT_LENGTH = 4000
@@ -136,22 +143,40 @@ def build_prompt(question, records) -> tuple[str, list[AdviceSource]]:
     return prompt, sources
 
 
+def _resolve_timeout(raw) -> float:
+    """Bounded timeout for local model calls.
+
+    Explicit argument wins, otherwise OLLAMA_TIMEOUT_SECONDS, otherwise
+    the safe default. Anything unusable falls back to the default and
+    anything above the maximum is clamped. Fail-closed: never zero,
+    negative, or unbounded.
+    """
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return DEFAULT_TIMEOUT_SECONDS
+    if not (value > 0):
+        return DEFAULT_TIMEOUT_SECONDS
+    return min(value, MAX_TIMEOUT_SECONDS)
+
+
 class OllamaAdvisor:
     """Read-only advisor against a user-managed local Ollama instance."""
 
-    def __init__(self, base_url=None, model=None, timeout=MAX_TIMEOUT_SECONDS,
+    def __init__(self, base_url=None, model=None, timeout=None,
                  transport=None):
-        raw = base_url if base_url is not None else DEFAULT_BASE_URL
+        raw = (base_url if base_url is not None
+               else os.environ.get(BASE_URL_ENV_VAR, DEFAULT_BASE_URL))
         self.base_url = _validate_base_url(raw)
-        if not isinstance(model, str) or not model.strip():
+        name = (model if model is not None
+                else os.environ.get(MODEL_ENV_VAR, DEFAULT_MODEL))
+        if not isinstance(name, str) or not name.strip():
             raise OllamaRefusedError("Model name must be non-empty text")
-        self.model = model.strip() if model else DEFAULT_MODEL
-        try:
-            self.timeout = min(float(timeout), MAX_TIMEOUT_SECONDS)
-        except (TypeError, ValueError):
-            self.timeout = MAX_TIMEOUT_SECONDS
-        if self.timeout <= 0:
-            self.timeout = MAX_TIMEOUT_SECONDS
+        self.model = name.strip()
+        raw_timeout = (timeout if timeout is not None
+                       else os.environ.get(TIMEOUT_ENV_VAR,
+                                           DEFAULT_TIMEOUT_SECONDS))
+        self.timeout = _resolve_timeout(raw_timeout)
         self._transport = transport
 
     async def advise(self, question, records) -> AdviceResponse:
@@ -166,7 +191,7 @@ class OllamaAdvisor:
                 response = await client.post(
                     GENERATE_PATH,
                     json={"model": self.model, "prompt": prompt,
-                          "stream": False})
+                          "stream": False, "think": False})
         except httpx.TimeoutException as error:
             raise OllamaUnavailable(f"Ollama timed out: {error}") from error
         except httpx.HTTPError as error:

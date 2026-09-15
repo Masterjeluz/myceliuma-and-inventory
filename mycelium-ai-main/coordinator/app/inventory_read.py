@@ -1,8 +1,14 @@
 """Read-only INVENTory client for the Mycelium coordinator (M5.1).
 
 The coordinator never sees files or sensor data; this bridge exposes only the
-curated world-model records INVENTory already serves over HTTP (search results,
+curated world-model records INVENTory already serves over HTTP (list results,
 single entities, graph context), including their provenance.
+
+Search fans out over the plain per-collection GET list routes
+(``/api/v1/objects``, ``/api/v1/projects``, ...), which exist on every known
+INVENTory build, and matches the query locally. It deliberately does not use
+``/api/v1/search``: that route is absent on some running deployments (which
+answer 404), while the list routes are always present.
 
 Safety properties (enforced by construction, all covered by tests):
 
@@ -10,10 +16,10 @@ Safety properties (enforced by construction, all covered by tests):
 - Loopback-only base URL (127.0.0.1, localhost, ::1). Anything else is refused
   before any socket is opened. Redirects are never followed.
 - Bounded inputs: q <= 200 chars, entity IDs limited to known ``xxx_``
-  prefixes, graph depth strictly 1 or 2.
-- Bounded time: timeout clamped to at most 5 seconds; connection problems and
-  timeouts surface as :class:`InventoryUnavailable`, never as raw tracebacks
-  and never as a coordinator crash.
+  prefixes, graph depth strictly 1 or 2, result count capped.
+- Bounded time: timeout clamped to at most 5 seconds per request; connection
+  problems and timeouts surface as :class:`InventoryUnavailable`, never as raw
+  tracebacks and never as a coordinator crash.
 - No INVENTory code is imported. Local pydantic models mirror only the fields
   Mycelium needs and tolerate extra fields, so INVENTory can evolve (M3
   entities included) without breaking this bridge.
@@ -40,6 +46,27 @@ GET_TYPES = {"object": "objects", "project": "projects", "idea": "ideas",
 SEARCH_TYPES = frozenset({"objects", "projects", "ideas", "relationships",
                           "hardware", "sensors", "cameras", "locations",
                           "models", "tasks", "actuators"})
+# Collections with a plain GET list contract returning items shaped
+# {id, name, description, provenance, ...}. Every known INVENTory build
+# serves at least objects/projects/ideas; newer builds add the rest.
+# "relationships" has no plain list contract in this bridge and is refused
+# as an explicit search filter (see search()).
+LIST_TYPES = {"objects": "object",
+              "projects": "project",
+              "ideas": "idea",
+              "hardware": "hardware",
+              "sensors": "sensor",
+              "cameras": "camera",
+              "locations": "location",
+              "models": "model",
+              "tasks": "task",
+              "actuators": "actuator",
+              "files": "file"}
+MAX_SEARCH_RESULTS = 50
+# Browse budget for q-less context: first items per collection, stable
+# collection order, hard total cap. Never a full database dump.
+BROWSE_PER_COLLECTION = 3
+BROWSE_MAX_TOTAL = 10
 GRAPH_DEPTHS = (1, 2)
 
 
@@ -172,6 +199,38 @@ def _check_depth(depth) -> int:
     return depth
 
 
+def _list_result_for(singular: str, item: Any) -> SearchResult | None:
+    """Map one list item to a SearchResult. None when unusable.
+
+    Provenance falls back to unknown/unverified rather than failing the
+    whole search; human_verified therefore defaults to False (fail-closed).
+    """
+    if not isinstance(item, dict):
+        return None
+    entity_id = item.get("id")
+    if not isinstance(entity_id, str) or not entity_id.strip():
+        return None
+    entity_id = entity_id.strip()
+    title = item.get("name", entity_id)
+    title = title if isinstance(title, str) else str(title)
+    snippet = item.get("description", "")
+    snippet = snippet if isinstance(snippet, str) else str(snippet)
+    raw_provenance = item.get("provenance")
+    try:
+        provenance = Provenance.model_validate(
+            raw_provenance if isinstance(raw_provenance, dict) else {}
+        )
+    except ValueError:
+        provenance = Provenance()
+    details = {key: value for key, value in item.items()
+               if key not in ("id", "name", "description", "provenance")}
+    if not isinstance(details, dict):  # pragma: no cover - defensive
+        details = {}
+    return SearchResult(entity_type=singular, entity_id=entity_id,
+                        title=title, snippet=snippet,
+                        provenance=provenance, details=details)
+
+
 class InventoryReader:
     """Minimal read-only bridge to INVENTory. GET only, loopback only."""
 
@@ -218,19 +277,96 @@ class InventoryReader:
             raise InventoryUnavailable("INVENTory answered with invalid JSON") from error
 
     async def search(self, q, type=None) -> SearchResponse:
-        """Full-text search over objects, projects, ideas and relationships."""
+        """Substring search over the per-collection GET list routes.
+
+        An explicit type narrows to that one collection; without a type all
+        known collections are queried in stable order. Collections the server
+        does not offer (HTTP 404) are skipped for a broad search, but an
+        explicitly requested collection that is missing fails closed. The
+        "relationships" filter has no plain list contract and is refused.
+        """
         query = _check_query(q)
         if type is not None and type not in SEARCH_TYPES:
             raise InventoryRefusedError(
                 f"Unknown search type '{type}'; expected one of {sorted(SEARCH_TYPES)}"
             )
-        params = {"q": query}
-        if type is not None:
-            params["type"] = type
-        data = await self._get("/api/v1/search", params)
-        if data is None:  # pragma: no cover - search never 404s by contract
-            raise InventoryUnavailable("INVENTory search returned 404")
-        return SearchResponse.model_validate(data)
+        if type is not None and type not in LIST_TYPES:
+            raise InventoryRefusedError(
+                f"Search type '{type}' has no list contract; refusing"
+            )
+        needle = query.lower()
+        collections = [type] if type is not None else list(LIST_TYPES)
+        results: list[SearchResult] = []
+        for collection in collections:
+            data = await self._get(f"/api/v1/{collection}")
+            if data is None:
+                if type is not None:
+                    raise InventoryUnavailable(
+                        f"INVENTory has no collection '{collection}'"
+                    )
+                continue
+            if not isinstance(data, list):
+                raise InventoryUnavailable(
+                    "INVENTory answered with invalid JSON"
+                )
+            for item in data:
+                hit = _list_result_for(LIST_TYPES[collection], item)
+                if hit is None:
+                    continue
+                haystack = f"{hit.title} {hit.snippet} {hit.entity_id}".lower()
+                if needle in haystack:
+                    results.append(hit)
+                    if len(results) >= MAX_SEARCH_RESULTS:
+                        break
+            if len(results) >= MAX_SEARCH_RESULTS:
+                break
+        return SearchResponse(query=query, results=results, total=len(results))
+
+    async def browse(self, type=None) -> SearchResponse:
+        """Bounded, deterministic context without a query term.
+
+        First BROWSE_PER_COLLECTION items per collection in stable
+        LIST_TYPES order, capped at BROWSE_MAX_TOTAL overall. Missing
+        collections (HTTP 404) are skipped for a broad browse; an
+        explicitly requested collection that is missing fails closed.
+        Same validation and fail-closed semantics as search().
+        """
+        if type is not None and type not in SEARCH_TYPES:
+            raise InventoryRefusedError(
+                f"Unknown search type '{type}'; expected one of {sorted(SEARCH_TYPES)}"
+            )
+        if type is not None and type not in LIST_TYPES:
+            raise InventoryRefusedError(
+                f"Search type '{type}' has no list contract; refusing"
+            )
+        collections = [type] if type is not None else list(LIST_TYPES)
+        results: list[SearchResult] = []
+        for collection in collections:
+            data = await self._get(f"/api/v1/{collection}")
+            if data is None:
+                if type is not None:
+                    raise InventoryUnavailable(
+                        f"INVENTory has no collection '{collection}'"
+                    )
+                continue
+            if not isinstance(data, list):
+                raise InventoryUnavailable(
+                    "INVENTory answered with invalid JSON"
+                )
+            taken = 0
+            for item in data:
+                if taken >= BROWSE_PER_COLLECTION:
+                    break
+                hit = _list_result_for(LIST_TYPES[collection], item)
+                if hit is None:
+                    continue
+                results.append(hit)
+                taken += 1
+                if len(results) >= BROWSE_MAX_TOTAL:
+                    break
+            if len(results) >= BROWSE_MAX_TOTAL:
+                break
+        return SearchResponse(query="", results=results, total=len(results))
 
     async def get(self, entity_type, entity_id) -> EntityRecord | None:
         """Fetch one entity by ID. None when it does not exist.

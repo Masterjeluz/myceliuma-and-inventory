@@ -1,0 +1,85 @@
+# Architecture Status (september 2026, na BIG #3)
+
+Momentopname van wat het systeem IS. Voor flows, zie
+`chat-agent-architecture.md`; voor richting, zie `ROADMAP.md`.
+
+## Current system
+
+- **Mycelium = brain/orchestrator.** Begrijpt, plant, vraagt
+  toestemming, orkestreert. Redeneert nooit direct met hardware.
+- **Coordinator = authority.** Enige partij die approvals, taken,
+  leases en missies mag uitgeven of sluiten. Fail-closed bij twijfel.
+- **INVENTory = world memory.** Persistent wereldmodel (SQLite WAL,
+  13 tabellen). Alleen-lezen voor Mycelium via een GET-only
+  loopback-bridge; geen gedeelde database, geen cross-imports.
+- **Ollama / external models = advisors.** Geven tekstadvies op
+  aangeleverde records. Advies is geen waarheid en start niets.
+- **Desktop Agent = hands.** Enige partij die scherm/muis/toetsenbord
+  aanraakt. Pull-based, outbound-only, voert uitsluitend goedgekeurde
+  acties uit binnen een goedgekeurd plan.
+
+## Begrippen (in volgorde van vertrouwen)
+
+1. **FACT** — rij in INVENTory of lokale status (git, project).
+   Bron van waarheid binnen zijn domein.
+2. **OBSERVATION** — wat de agent zag (screenshot-metadata, status-
+   output). Gebeurd, maar interpretatie is nog open.
+3. **ADVICE** — AI-tekst op basis van context. Altijd
+   `ai-generated`, nooit `human_verified`, start niets.
+4. **PROPOSAL** — concreet voorstel (AdapterProposal, missie-stap,
+   3D-artefact). Wacht op een mens.
+5. **APPROVAL** — exact `YES` van een mens op een specifiek voorstel.
+   Niet overdraagbaar, niet herbruikbaar, geen bypass.
+6. **TASK** — goedgekeurde werkeenheid (CoordinatorTask, desktop-
+   actie, missie-stap). Mag uitgevoerd worden zoals beschreven —
+   en alleen zoals beschreven (binding-bewijs vereist).
+7. **RESULT** — completed/failed/cancelled/blocked met timing, error
+   en observatie-referentie. Nooit automatisch verified.
+8. **VERIFICATION** — aparte menselijke handeling die een resultaat
+   of feit als gecontroleerd markeert. Bestaat als provenance-veld,
+   nog niet als aparte flow (ROADMAP fase C).
+
+## Componentkaart (code als bron)
+
+| Onderdeel | Locatie | Status |
+|---|---|---|
+| Coordinator API + workspace-UI | `coordinator/app/main.py` | DONE |
+| Nodes / queue / leases | `main.py`, `database.py` | DONE |
+| Capability-matching | `capability_matching.py` | DONE |
+| INVENTory read-bridge | `inventory_read.py` | DONE |
+| Ollama-adviseur | `ollama_advisor.py` | DONE |
+| Provider-abstractie | `providers.py` | DONE (extern = stub) |
+| Adaptervoorstellen | `adapters.py`, `advisor_proposals.py` | DONE |
+| Approval-poort | `approval.py` | DONE |
+| Proposal→task | `proposal_tasks.py` | DONE |
+| Staging/promotion | `task_queue_bridge.py`, `promotion.py` | DONE |
+| Executor-register | `executor_registry.py` | DONE |
+| Conversaties/berichten | `conversations.py` | DONE |
+| Chat + plannen (stateless) | `main.py`, `plans.py` | DONE |
+| Computer-acties | `computer_actions.py` | DONE (9 typen) |
+| Observaties/resultaten | `observations.py`, `agent_results.py` | DONE |
+| Agent-lus (state machine) | `agent_loop.py` | DONE |
+| Desktop-runtime (ctypes) | `desktop_runtime.py` | DONE |
+| Missies + executor | `missions.py`, `mission_executor.py` | DONE |
+| Project-/git-context (read-only) | `project_context.py`, `git_context.py` | DONE |
+| 3D-pijplijn | `pipeline3d.py` | PARTIAL (contracten) |
+| Standalone agent | `desktop_agent/` | DONE |
+| Node-client (read-only loop) | `node_client/` | DONE |
+| INVENTory wereldmodel | `inventory/app/` | DONE (onaangeroerd) |
+| Lokale desktop-scanner | `Mycelium/agent/` | Bestaand, read-only |
+
+## Teststatus (gemeten, niet geschat)
+
+- Mycelium: **515 passed** (`pytest -v` in `mycelium-ai-main/`)
+- INVENTory: **178 passed, 1 failed** — de faal is pre-existing:
+  `test_real_inventory_db_untouched` pint de exacte byte-grootte van
+  de gitignored lokale `data/inventory.db`; inhoud groeit bij normaal
+  gebruik, dus de assertie is broos per ontwerp van die test.
+
+## Harde grenzen (blijven gelden)
+
+Geen shell/RCE via acties · geen credentials-opslag · geen
+auto-approval/bypass · geen permanente autonomie · geen fysieke
+acties · geen cloud-verplichting · screenshots lokaal ·
+coordinator raakt nooit input aan · agent handelt nooit buiten
+goedgekeurd plan · INVENTory-mutaties nooit automatisch.

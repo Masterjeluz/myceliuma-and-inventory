@@ -10,6 +10,24 @@ Deze eerste versie is bewust eenvoudig: één FastAPI-service, SQLite en een pol
 
 ## Wat werkt al
 
+Naast de node-basis hieronder is Mycelium inmiddels een werkende
+persoonlijke computer-agent (verticale slice, live bewezen):
+
+- **Chat** (`/chat`): gesprekken met INVENTory-context, bronnen en
+  lokaal Ollama/Qwen-advies; eerlijke fallback zonder model
+- **Missies** (`/missions`): plan met stappen, exact-YES-approval,
+  stap-voor-stap-uitvoering, voortgang en gebeurtenissen terug in chat
+- **Desktop-agent** (`/agents`): standalone proces (outbound-only)
+  dat goedgekeurde acties claimt, hervalideert en uitvoert via
+  scherm/muis/toetsenbord — observe → act → observe, begrensd,
+  altijd stopbaar
+- **Wereldmodel**: INVENTory alleen-lezen via GET-only loopback-bridge
+- **Veiligheid**: geen shell/RCE, geen credentials-opslag, geen
+  auto-approval/bypass, geen permanente autonomie, screenshots lokaal
+
+Werkende keten: Chat → context → advies → missie → approval → stap →
+taak → desktop-agent → observatie → volgende stap → gesprekupdate.
+
 - Node-registratie en heartbeats
 - Capaciteitsprofielen (`seed`, `worker`, `core`)
 - Een kleine taakqueue met capability-matching
@@ -196,10 +214,16 @@ Zie [docs/architecture.md](docs/architecture.md) voor grenzen en vervolgkeuzes, 
 
 ```
 coordinator/     lokale API, taakqueue en dashboard
-node_client/     lichte client voor seed/worker/core nodes
-docs/            architectuur en community-documentatie
-tests/           contracttests voor de eerste API
+coordinator/app/ missies, chat, providers, desktop-contracten, runtime
+desktop_agent/   standalone lokale agent (poll, claim, voer uit, rapporteer)
+node_client/     lichte client voor seed/worker/core nodes (alleen read-only loop)
+docs/            architectuurstatus, roadmap, principes, oorsprong
+tests/           515 tests (pytest -v)
 ```
+
+Zie `docs/ARCHITECTURE_STATUS.md` (wat het systeem is),
+`docs/chat-agent-architecture.md` (hoe de keten loopt) en
+`docs/ROADMAP.md` (wat volgt). Teststatus: **515 passed**.
 
 ## Bijdragen
 
