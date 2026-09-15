@@ -1,0 +1,408 @@
+{
+  "timestamp": "2026-09-15T11:45:49.082952",
+  "computer": "PC-JELUZ",
+  "projects": [
+    {
+      "path": "C:\\Users\\Jelles\\Desktop\\Projects\\myceliuma-and-inventory\\inventory",
+      "types": [
+        "git",
+        "python",
+        "documented"
+      ],
+      "git": true,
+      "name": "inventory",
+      "git_remote": "https://github.com/Masterjeluz/inventory2.git",
+      "last_modified": "2026-09-09T14:11:36.615471",
+      "file_count": 30,
+      "recognized_files": [
+        ".git",
+        "pyproject.toml",
+        "README.md",
+        ".gitignore"
+      ],
+      "is_backup_copy": false,
+      "is_nested": false,
+      "parent_project": null,
+      "duplicate_group": "name:inventory",
+      "duplicate_candidates": [
+        "C:\\Users\\Jelles\\Desktop\\Projects\\myceliuma-and-inventory\\inventory\\INVENTory",
+        "C:\\Users\\Jelles\\Documents\\Downloads\\INVENTory-Milestone-1E-BACKUP\\INVENTory",
+        "C:\\Users\\Jelles\\Documents\\Downloads\\mycelium-ai-main\\mycelium-ai-main\\inventory",
+        "C:\\Users\\Jelles\\Documents\\Downloads\\mycelium-ai-main\\mycelium-ai-main\\inventory\\INVENTory"
+      ],
+      "same_remote_candidates": [
+        "C:\\Users\\Jelles\\Documents\\Downloads\\mycelium-ai-main\\mycelium-ai-main\\inventory"
+      ],
+      "inventory": {
+        "entity_type": "local_project",
+        "stable_id": "03b9d799e59709ca",
+        "sync_ready": true
+      },
+      "provenance": {
+        "source": "local-filesystem-scan",
+        "found_at": "2026-09-15T11:45:49.082952",
+        "scanner": "mycelium-desktop-agent",
+        "scanner_version": "0.2.0"
+      }
+    },
+    {
+      "path": "C:\\Users\\Jelles\\Desktop\\Projects\\myceliuma-and-inventory\\inventory\\INVENTory",
+      "types": [
+        "git",
+        "documented"
+      ],
+      "git": true,
+      "name": "INVENTory",
+      "git_remote": "https://github.com/Masterjeluz/INVENTory.git",
+      "last_modified": "2026-09-03T12:41:44.790447",
+      "file_count": 2,
+      "recognized_files": [
+        ".git",
+        "README.md"
+      ],
+      "is_backup_copy": false,
+      "is_nested": true,
+      "parent_project": "C:\\Users\\Jelles\\Desktop\\Projects\\myceliuma-and-inventory\\inventory",
+      "duplicate_group": "name:inventory",
+      "duplicate_candidates": [
+        "C:\\Users\\Jelles\\Desktop\\Projects\\myceliuma-and-inventory\\inventory",
+        "C:\\Users\\Jelles\\Documents\\Downloads\\INVENTory-Milestone-1E-BACKUP\\INVENTory",
+        "C:\\Users\\Jelles\\Documents\\Downloads\\mycelium-ai-main\\mycelium-ai-main\\inventory",
+        "C:\\Users\\Jelles\\Documents\\Downloads\\mycelium-ai-main\\mycelium-ai-main\\inventory\\INVENTory"
+      ],
+      "same_remote_candidates": [
+        "C:\\Users\\Jelles\\Documents\\Downloads\\INVENTory-Milestone-1E-BACKUP\\INVENTory",
+        "C:\\Users\\Jelles\\Documents\\Downloads\\mycelium-ai-main\\mycelium-ai-main\\inventory\\INVENTory"
+      ],
+      "inventory": {
+        "entity_type": "local_project",
+        "stable_id": "276515dd2aa12ab2",
+        "sync_ready": true
+      },
+      "provenance": {
+        "source": "local-filesystem-scan",
+        "found_at": "2026-09-15T11:45:49.082952",
+        "scanner": "mycelium-desktop-agent",
+        "scanner_version": "0.2.0"
+      }
+    },
+    {
+      "path": "C:\\Users\\Jelles\\Desktop\\Projects\\myceliuma-and-inventory\\mycelium-ai-main",
+      "types": [
+        "python",
+        "documented"
+      ],
+      "git": false,
+      "name": "mycelium-ai-main",
+      "git_remote": null,
+      "last_modified": "2026-09-11T13:29:31.836264",
+      "file_count": 44,
+      "recognized_files": [
+        "pyproject.toml",
+        "README.md",
+        ".gitignore",
+        "Dockerfile",
+        "docker-compose.yml"
+      ],
+      "is_backup_copy": false,
+      "is_nested": false,
+      "parent_project": null,
+      "duplicate_group": "name:mycelium-ai-main",
+      "duplicate_candidates": [
+        "C:\\Users\\Jelles\\Documents\\Downloads\\mycelium-ai-main\\mycelium-ai-main"
+      ],
+      "same_remote_candidates": [],
+      "inventory": {
+        "entity_type": "local_project",
+        "stable_id": "8ee10a747398ed7a",
+        "sync_ready": true
+      },
+      "provenance": {
+        "source": "local-filesystem-scan",
+        "found_at": "2026-09-15T11:45:49.082952",
+        "scanner": "mycelium-desktop-agent",
+        "scanner_version": "0.2.0"
+      }
+    },
+    {
+      "path": "C:\\Users\\Jelles\\Desktop\\Projects\\myceliuma-and-inventory\\Mycelium\\agent",
+      "types": [
+        "documented"
+      ],
+      "git": false,
+      "name": "agent",
+      "git_remote": null,
+      "last_modified": "2026-09-15T11:10:19.783392",
+      "file_count": 25,
+      "recognized_files": [
+        "README.md"
+      ],
+      "is_backup_copy": false,
+      "is_nested": false,
+      "parent_project": null,
+      "duplicate_group": null,
+      "duplicate_candidates": [],
+      "same_remote_candidates": [],
+      "inventory": {
+        "entity_type": "local_project",
+        "stable_id": "7518494667c68693",
+        "sync_ready": true
+      },
+      "provenance": {
+        "source": "local-filesystem-scan",
+        "found_at": "2026-09-15T11:45:49.082952",
+        "scanner": "mycelium-desktop-agent",
+        "scanner_version": "0.2.0"
+      }
+    },
+    {
+      "path": "C:\\Users\\Jelles\\Documents\\antigravity\\wonderful-noether",
+      "types": [
+        "git"
+      ],
+      "git": true,
+      "name": "wonderful-noether",
+      "git_remote": null,
+      "last_modified": "2026-09-03T00:14:33.941474",
+      "file_count": 0,
+      "recognized_files": [
+        ".git"
+      ],
+      "is_backup_copy": false,
+      "is_nested": false,
+      "parent_project": null,
+      "duplicate_group": null,
+      "duplicate_candidates": [],
+      "same_remote_candidates": [],
+      "inventory": {
+        "entity_type": "local_project",
+        "stable_id": "5b9c32c0163edb07",
+        "sync_ready": true
+      },
+      "provenance": {
+        "source": "local-filesystem-scan",
+        "found_at": "2026-09-15T11:45:49.082952",
+        "scanner": "mycelium-desktop-agent",
+        "scanner_version": "0.2.0"
+      }
+    },
+    {
+      "path": "C:\\Users\\Jelles\\Documents\\Downloads\\INVENTory-Milestone-1E-BACKUP",
+      "types": [
+        "python",
+        "documented"
+      ],
+      "git": false,
+      "name": "INVENTory-Milestone-1E-BACKUP",
+      "git_remote": null,
+      "last_modified": "2026-09-10T14:42:41.411369",
+      "file_count": 28,
+      "recognized_files": [
+        "pyproject.toml",
+        "README.md",
+        ".gitignore"
+      ],
+      "is_backup_copy": true,
+      "is_nested": false,
+      "parent_project": null,
+      "duplicate_group": null,
+      "duplicate_candidates": [],
+      "same_remote_candidates": [],
+      "inventory": {
+        "entity_type": "local_project",
+        "stable_id": "328f09fd7e1cdf1c",
+        "sync_ready": true
+      },
+      "provenance": {
+        "source": "local-filesystem-scan",
+        "found_at": "2026-09-15T11:45:49.082952",
+        "scanner": "mycelium-desktop-agent",
+        "scanner_version": "0.2.0"
+      }
+    },
+    {
+      "path": "C:\\Users\\Jelles\\Documents\\Downloads\\INVENTory-Milestone-1E-BACKUP\\INVENTory",
+      "types": [
+        "git",
+        "documented"
+      ],
+      "git": true,
+      "name": "INVENTory",
+      "git_remote": "https://github.com/Masterjeluz/INVENTory.git",
+      "last_modified": "2026-09-10T14:42:41.347285",
+      "file_count": 2,
+      "recognized_files": [
+        ".git",
+        "README.md"
+      ],
+      "is_backup_copy": false,
+      "is_nested": true,
+      "parent_project": "C:\\Users\\Jelles\\Documents\\Downloads\\INVENTory-Milestone-1E-BACKUP",
+      "duplicate_group": "name:inventory",
+      "duplicate_candidates": [
+        "C:\\Users\\Jelles\\Desktop\\Projects\\myceliuma-and-inventory\\inventory",
+        "C:\\Users\\Jelles\\Desktop\\Projects\\myceliuma-and-inventory\\inventory\\INVENTory",
+        "C:\\Users\\Jelles\\Documents\\Downloads\\mycelium-ai-main\\mycelium-ai-main\\inventory",
+        "C:\\Users\\Jelles\\Documents\\Downloads\\mycelium-ai-main\\mycelium-ai-main\\inventory\\INVENTory"
+      ],
+      "same_remote_candidates": [
+        "C:\\Users\\Jelles\\Desktop\\Projects\\myceliuma-and-inventory\\inventory\\INVENTory",
+        "C:\\Users\\Jelles\\Documents\\Downloads\\mycelium-ai-main\\mycelium-ai-main\\inventory\\INVENTory"
+      ],
+      "inventory": {
+        "entity_type": "local_project",
+        "stable_id": "8c0318445b5d4ae7",
+        "sync_ready": true
+      },
+      "provenance": {
+        "source": "local-filesystem-scan",
+        "found_at": "2026-09-15T11:45:49.082952",
+        "scanner": "mycelium-desktop-agent",
+        "scanner_version": "0.2.0"
+      }
+    },
+    {
+      "path": "C:\\Users\\Jelles\\Documents\\Downloads\\mycelium-ai-main\\mycelium-ai-main",
+      "types": [
+        "python",
+        "documented"
+      ],
+      "git": false,
+      "name": "mycelium-ai-main",
+      "git_remote": null,
+      "last_modified": "2026-09-11T20:18:56.758309",
+      "file_count": 54,
+      "recognized_files": [
+        "pyproject.toml",
+        "README.md",
+        ".gitignore",
+        "Dockerfile",
+        "docker-compose.yml"
+      ],
+      "is_backup_copy": false,
+      "is_nested": false,
+      "parent_project": null,
+      "duplicate_group": "name:mycelium-ai-main",
+      "duplicate_candidates": [
+        "C:\\Users\\Jelles\\Desktop\\Projects\\myceliuma-and-inventory\\mycelium-ai-main"
+      ],
+      "same_remote_candidates": [],
+      "inventory": {
+        "entity_type": "local_project",
+        "stable_id": "d0532bf47c9f40cd",
+        "sync_ready": true
+      },
+      "provenance": {
+        "source": "local-filesystem-scan",
+        "found_at": "2026-09-15T11:45:49.082952",
+        "scanner": "mycelium-desktop-agent",
+        "scanner_version": "0.2.0"
+      }
+    },
+    {
+      "path": "C:\\Users\\Jelles\\Documents\\Downloads\\mycelium-ai-main\\mycelium-ai-main\\inventory",
+      "types": [
+        "git",
+        "python",
+        "documented"
+      ],
+      "git": true,
+      "name": "inventory",
+      "git_remote": "https://github.com/Masterjeluz/inventory2.git",
+      "last_modified": "2026-09-10T14:43:28.249473",
+      "file_count": 28,
+      "recognized_files": [
+        ".git",
+        "pyproject.toml",
+        "README.md",
+        ".gitignore"
+      ],
+      "is_backup_copy": false,
+      "is_nested": true,
+      "parent_project": "C:\\Users\\Jelles\\Documents\\Downloads\\mycelium-ai-main\\mycelium-ai-main",
+      "duplicate_group": "name:inventory",
+      "duplicate_candidates": [
+        "C:\\Users\\Jelles\\Desktop\\Projects\\myceliuma-and-inventory\\inventory",
+        "C:\\Users\\Jelles\\Desktop\\Projects\\myceliuma-and-inventory\\inventory\\INVENTory",
+        "C:\\Users\\Jelles\\Documents\\Downloads\\INVENTory-Milestone-1E-BACKUP\\INVENTory",
+        "C:\\Users\\Jelles\\Documents\\Downloads\\mycelium-ai-main\\mycelium-ai-main\\inventory\\INVENTory"
+      ],
+      "same_remote_candidates": [
+        "C:\\Users\\Jelles\\Desktop\\Projects\\myceliuma-and-inventory\\inventory"
+      ],
+      "inventory": {
+        "entity_type": "local_project",
+        "stable_id": "178f2599b076cad1",
+        "sync_ready": true
+      },
+      "provenance": {
+        "source": "local-filesystem-scan",
+        "found_at": "2026-09-15T11:45:49.082952",
+        "scanner": "mycelium-desktop-agent",
+        "scanner_version": "0.2.0"
+      }
+    },
+    {
+      "path": "C:\\Users\\Jelles\\Documents\\Downloads\\mycelium-ai-main\\mycelium-ai-main\\inventory\\INVENTory",
+      "types": [
+        "git",
+        "documented"
+      ],
+      "git": true,
+      "name": "INVENTory",
+      "git_remote": "https://github.com/Masterjeluz/INVENTory.git",
+      "last_modified": "2026-09-03T01:45:00.283733",
+      "file_count": 2,
+      "recognized_files": [
+        ".git",
+        "README.md"
+      ],
+      "is_backup_copy": false,
+      "is_nested": true,
+      "parent_project": "C:\\Users\\Jelles\\Documents\\Downloads\\mycelium-ai-main\\mycelium-ai-main\\inventory",
+      "duplicate_group": "name:inventory",
+      "duplicate_candidates": [
+        "C:\\Users\\Jelles\\Desktop\\Projects\\myceliuma-and-inventory\\inventory",
+        "C:\\Users\\Jelles\\Desktop\\Projects\\myceliuma-and-inventory\\inventory\\INVENTory",
+        "C:\\Users\\Jelles\\Documents\\Downloads\\INVENTory-Milestone-1E-BACKUP\\INVENTory",
+        "C:\\Users\\Jelles\\Documents\\Downloads\\mycelium-ai-main\\mycelium-ai-main\\inventory"
+      ],
+      "same_remote_candidates": [
+        "C:\\Users\\Jelles\\Desktop\\Projects\\myceliuma-and-inventory\\inventory\\INVENTory",
+        "C:\\Users\\Jelles\\Documents\\Downloads\\INVENTory-Milestone-1E-BACKUP\\INVENTory"
+      ],
+      "inventory": {
+        "entity_type": "local_project",
+        "stable_id": "1dacd5fdb2e12b93",
+        "sync_ready": true
+      },
+      "provenance": {
+        "source": "local-filesystem-scan",
+        "found_at": "2026-09-15T11:45:49.082952",
+        "scanner": "mycelium-desktop-agent",
+        "scanner_version": "0.2.0"
+      }
+    }
+  ],
+  "scanner": {
+    "name": "mycelium-desktop-agent",
+    "version": "0.2.0",
+    "mode": "local-readonly",
+    "source": "local-filesystem-scan"
+  },
+  "scan_roots": [
+    "C:\\Users\\Jelles\\Desktop",
+    "C:\\Users\\Jelles\\Documents",
+    "C:\\Users\\Jelles\\Downloads"
+  ],
+  "summary": {
+    "total_projects": 10,
+    "git_count": 6,
+    "python_count": 5,
+    "node_count": 0,
+    "documented_count": 9,
+    "backup_copy_count": 1,
+    "nested_count": 4,
+    "duplicate_groups": 2
+  }
+}

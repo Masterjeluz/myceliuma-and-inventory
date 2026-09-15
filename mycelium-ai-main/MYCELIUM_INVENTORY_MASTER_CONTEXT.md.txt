@@ -1,0 +1,211 @@
+We gaan nu INVENTory daadwerkelijk bouwen.
+
+Dit is MILESTONE 1A.
+
+BELANGRIJK:
+Bouw alleen MILESTONE 1A.
+Niet vooruitlopen op latere milestones.
+
+Lees eerst:
+
+MYCELIUM_INVENTORY_MASTER_CONTEXT.md
+
+Gebruik dit document als architectuurcontract.
+
+## DOEL VAN MILESTONE 1A
+
+Maak een minimale, werkende INVENTory-app met:
+
+1. een zelfstandig Python-project
+2. eigen virtual environment-configuratie
+3. pyproject.toml
+4. SQLite database
+5. SQLite WAL
+6. database foundation
+7. provenance foundation
+8. één eerste entiteit: Object
+9. Object CRUD via API
+10. minimale webinterface
+11. tests
+12. README met eenvoudige startinstructies
+
+## ARCHITECTUUR
+
+INVENTory blijft een zelfstandig project.
+
+NIET:
+- Mycelium importeren als Python-module
+- Mycelium database gebruiken
+- Mycelium bestanden rechtstreeks benaderen
+- cross-database queries
+- shared database
+- shared filesystem assumptions
+
+De toekomstige communicatie met Mycelium gaat via API's.
+
+## OBJECT
+
+Maak een eerste Object-entiteit voor fysieke dingen.
+
+Een Object moet minimaal een stabiele ID hebben.
+
+Gebruik het afgesproken ID-concept:
+
+obj_...
+
+Denk minimaal aan eigenschappen zoals:
+
+- id
+- name
+- description
+- quantity
+- created_at
+- updated_at
+- provenance
+
+Maak het schema niet onnodig groot.
+
+Laat ruimte voor toekomstige relaties.
+
+## PROVENANCE
+
+Provenance moet vanaf het begin onderdeel zijn van het datamodel.
+
+Maak onderscheid tussen bijvoorbeeld:
+
+- user-created
+- imported
+- ai-generated
+- sensor-observed
+- external-source
+
+Een AI-observatie mag nooit stilzwijgend dezelfde status krijgen als door de gebruiker bevestigde informatie.
+
+De exacte implementatie mag je kiezen zolang deze:
+- eenvoudig
+- uitbreidbaar
+- begrijpelijk
+- goed testbaar
+
+is.
+
+## DATABASE
+
+Gebruik SQLite.
+
+Gebruik WAL.
+
+Gebruik geen PostgreSQL, Redis, graph database, vector database of andere zware infrastructuur.
+
+Maak database-initialisatie expliciet en reproduceerbaar.
+
+## API
+
+Maak alleen de endpoints die voor Objects noodzakelijk zijn.
+
+Bijvoorbeeld:
+
+GET objects
+GET object by id
+POST object
+PUT/PATCH object
+DELETE object
+
+Gebruik normale HTTP-statuscodes.
+
+Maak foutmeldingen begrijpelijk.
+
+## WEBINTERFACE
+
+Gebruik voorlopig de eenvoudigste geschikte aanpak.
+
+Voorkeur:
+
+server-rendered HTML / eenvoudige HTML + CSS.
+
+Geen React/Vue/Vite tenzij daar een duidelijke technische reden voor bestaat.
+
+De webinterface hoeft alleen:
+- objecten te tonen
+- een object aan te maken
+- een object te bekijken
+
+te ondersteunen.
+
+Geen fancy UI.
+
+## TESTS
+
+Schrijf tests voor minimaal:
+
+- database initialisatie
+- WAL-configuratie
+- Object aanmaken
+- Object ophalen
+- Object wijzigen
+- Object verwijderen
+- stabiele Object-ID
+- provenance wordt opgeslagen
+- ongeldige input wordt geweigerd
+
+## BEPERKINGEN
+
+Nog NIET implementeren:
+
+- Projects
+- Ideas
+- Conversations
+- Files
+- Relationships
+- Events UI
+- FTS5
+- AI-integratie
+- vision
+- embeddings
+- vector database
+- Mycelium-integratie
+- MCP
+- agents
+- autonomous actions
+- physical automation
+- CAD
+- 3D
+- printer integration
+
+De architectuur moet deze uitbreidingen later mogelijk maken, maar ze mogen nu niet worden gebouwd.
+
+## WERKWIJZE
+
+Voordat je code schrijft:
+
+1. inspecteer de huidige INVENTory-map
+2. controleer of er al bestanden aanwezig zijn
+3. controleer MYCELIUM_INVENTORY_MASTER_CONTEXT.md
+4. geef eerst een kort implementatieplan
+5. voer daarna MILESTONE 1A uit
+6. run alle tests
+7. controleer of de applicatie lokaal start
+8. controleer de belangrijkste API-endpoints
+9. rapporteer exact welke bestanden zijn aangemaakt of gewijzigd
+
+Maak geen grote ongevraagde architectuurwijzigingen.
+
+Als je een belangrijke keuze moet maken die niet door het masterdocument wordt bepaald:
+STOP en leg de keuze uit voordat je die architectuur vastlegt.
+
+## RESULTAAT
+
+Aan het einde wil ik een korte rapportage met:
+
+1. Wat is gebouwd?
+2. Welke bestanden zijn aangemaakt?
+3. Hoe start ik INVENTory?
+4. Hoe voer ik de tests uit?
+5. Welke Object API endpoints bestaan?
+6. Wat werkt momenteel?
+7. Wat is bewust nog NIET gebouwd?
+8. Zijn alle tests geslaagd?
+9. Wat stel je voor als volgende kleine milestone?
+
+BELANGRIJK:
+Wijzig Mycelium AI NIET.

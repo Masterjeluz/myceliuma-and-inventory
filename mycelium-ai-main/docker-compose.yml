@@ -1,0 +1,10 @@
+services:
+  coordinator:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      MYCELIUM_DATABASE_PATH: /data/mycelium.db
+    volumes:
+      - ./data:/data
+    restart: unless-stopped

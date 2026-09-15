@@ -1,0 +1,481 @@
+{
+  "index_version": "1.0.0",
+  "indexer": {
+    "name": "mycelium-project-index",
+    "version": "1.0.0"
+  },
+  "computer": "PC-JELUZ",
+  "generated_at": "2026-09-15T11:46:04.645976",
+  "discovery_timestamp": "2026-09-15T11:45:49.082952",
+  "scanner": {
+    "name": "mycelium-desktop-agent",
+    "version": "0.2.0",
+    "mode": "local-readonly",
+    "source": "local-filesystem-scan"
+  },
+  "provenance": {
+    "source": "mycelium-desktop-agent:discovery.json",
+    "discovery_timestamp": "2026-09-15T11:45:49.082952",
+    "indexed_at": "2026-09-15T11:46:04.645976",
+    "indexer": "mycelium-project-index",
+    "indexer_version": "1.0.0"
+  },
+  "summary": {
+    "total_projects": 10,
+    "git_count": 6,
+    "backup_copy_count": 1,
+    "nested_count": 4,
+    "with_remote_count": 5,
+    "related_count": 7
+  },
+  "projects": [
+    {
+      "id": "03b9d799e59709ca",
+      "path": "C:\\Users\\Jelles\\Desktop\\Projects\\myceliuma-and-inventory\\inventory",
+      "name": "inventory",
+      "types": [
+        "documented",
+        "git",
+        "python"
+      ],
+      "git": true,
+      "git_remote": "https://github.com/Masterjeluz/inventory2.git",
+      "last_modified": "2026-09-09T14:11:36.615471",
+      "file_count": 30,
+      "recognized_files": [
+        ".git",
+        ".gitignore",
+        "README.md",
+        "pyproject.toml"
+      ],
+      "is_backup_copy": false,
+      "is_nested": false,
+      "parent_id": null,
+      "relations": {
+        "parent_id": null,
+        "nested_children_ids": [
+          "276515dd2aa12ab2"
+        ],
+        "same_remote_ids": [
+          "178f2599b076cad1"
+        ],
+        "shared_name_ids": [
+          "178f2599b076cad1",
+          "1dacd5fdb2e12b93",
+          "276515dd2aa12ab2",
+          "8c0318445b5d4ae7"
+        ],
+        "possible_copy_ids": [
+          "178f2599b076cad1",
+          "1dacd5fdb2e12b93",
+          "276515dd2aa12ab2",
+          "8c0318445b5d4ae7"
+        ]
+      },
+      "provenance": {
+        "source": "mycelium-desktop-agent:discovery.json",
+        "discovery_timestamp": "2026-09-15T11:45:49.082952",
+        "scanner": "mycelium-desktop-agent",
+        "scanner_version": "0.2.0",
+        "indexed_at": "2026-09-15T11:46:04.645976",
+        "indexer": "mycelium-project-index",
+        "indexer_version": "1.0.0"
+      }
+    },
+    {
+      "id": "178f2599b076cad1",
+      "path": "C:\\Users\\Jelles\\Documents\\Downloads\\mycelium-ai-main\\mycelium-ai-main\\inventory",
+      "name": "inventory",
+      "types": [
+        "documented",
+        "git",
+        "python"
+      ],
+      "git": true,
+      "git_remote": "https://github.com/Masterjeluz/inventory2.git",
+      "last_modified": "2026-09-10T14:43:28.249473",
+      "file_count": 28,
+      "recognized_files": [
+        ".git",
+        ".gitignore",
+        "README.md",
+        "pyproject.toml"
+      ],
+      "is_backup_copy": false,
+      "is_nested": true,
+      "parent_id": "d0532bf47c9f40cd",
+      "relations": {
+        "parent_id": "d0532bf47c9f40cd",
+        "nested_children_ids": [
+          "1dacd5fdb2e12b93"
+        ],
+        "same_remote_ids": [
+          "03b9d799e59709ca"
+        ],
+        "shared_name_ids": [
+          "03b9d799e59709ca",
+          "1dacd5fdb2e12b93",
+          "276515dd2aa12ab2",
+          "8c0318445b5d4ae7"
+        ],
+        "possible_copy_ids": [
+          "03b9d799e59709ca",
+          "1dacd5fdb2e12b93",
+          "276515dd2aa12ab2",
+          "8c0318445b5d4ae7"
+        ]
+      },
+      "provenance": {
+        "source": "mycelium-desktop-agent:discovery.json",
+        "discovery_timestamp": "2026-09-15T11:45:49.082952",
+        "scanner": "mycelium-desktop-agent",
+        "scanner_version": "0.2.0",
+        "indexed_at": "2026-09-15T11:46:04.645976",
+        "indexer": "mycelium-project-index",
+        "indexer_version": "1.0.0"
+      }
+    },
+    {
+      "id": "1dacd5fdb2e12b93",
+      "path": "C:\\Users\\Jelles\\Documents\\Downloads\\mycelium-ai-main\\mycelium-ai-main\\inventory\\INVENTory",
+      "name": "INVENTory",
+      "types": [
+        "documented",
+        "git"
+      ],
+      "git": true,
+      "git_remote": "https://github.com/Masterjeluz/INVENTory.git",
+      "last_modified": "2026-09-03T01:45:00.283733",
+      "file_count": 2,
+      "recognized_files": [
+        ".git",
+        "README.md"
+      ],
+      "is_backup_copy": false,
+      "is_nested": true,
+      "parent_id": "178f2599b076cad1",
+      "relations": {
+        "parent_id": "178f2599b076cad1",
+        "nested_children_ids": [],
+        "same_remote_ids": [
+          "276515dd2aa12ab2",
+          "8c0318445b5d4ae7"
+        ],
+        "shared_name_ids": [
+          "03b9d799e59709ca",
+          "178f2599b076cad1",
+          "276515dd2aa12ab2",
+          "8c0318445b5d4ae7"
+        ],
+        "possible_copy_ids": [
+          "03b9d799e59709ca",
+          "178f2599b076cad1",
+          "276515dd2aa12ab2",
+          "8c0318445b5d4ae7"
+        ]
+      },
+      "provenance": {
+        "source": "mycelium-desktop-agent:discovery.json",
+        "discovery_timestamp": "2026-09-15T11:45:49.082952",
+        "scanner": "mycelium-desktop-agent",
+        "scanner_version": "0.2.0",
+        "indexed_at": "2026-09-15T11:46:04.645976",
+        "indexer": "mycelium-project-index",
+        "indexer_version": "1.0.0"
+      }
+    },
+    {
+      "id": "276515dd2aa12ab2",
+      "path": "C:\\Users\\Jelles\\Desktop\\Projects\\myceliuma-and-inventory\\inventory\\INVENTory",
+      "name": "INVENTory",
+      "types": [
+        "documented",
+        "git"
+      ],
+      "git": true,
+      "git_remote": "https://github.com/Masterjeluz/INVENTory.git",
+      "last_modified": "2026-09-03T12:41:44.790447",
+      "file_count": 2,
+      "recognized_files": [
+        ".git",
+        "README.md"
+      ],
+      "is_backup_copy": false,
+      "is_nested": true,
+      "parent_id": "03b9d799e59709ca",
+      "relations": {
+        "parent_id": "03b9d799e59709ca",
+        "nested_children_ids": [],
+        "same_remote_ids": [
+          "1dacd5fdb2e12b93",
+          "8c0318445b5d4ae7"
+        ],
+        "shared_name_ids": [
+          "03b9d799e59709ca",
+          "178f2599b076cad1",
+          "1dacd5fdb2e12b93",
+          "8c0318445b5d4ae7"
+        ],
+        "possible_copy_ids": [
+          "03b9d799e59709ca",
+          "178f2599b076cad1",
+          "1dacd5fdb2e12b93",
+          "8c0318445b5d4ae7"
+        ]
+      },
+      "provenance": {
+        "source": "mycelium-desktop-agent:discovery.json",
+        "discovery_timestamp": "2026-09-15T11:45:49.082952",
+        "scanner": "mycelium-desktop-agent",
+        "scanner_version": "0.2.0",
+        "indexed_at": "2026-09-15T11:46:04.645976",
+        "indexer": "mycelium-project-index",
+        "indexer_version": "1.0.0"
+      }
+    },
+    {
+      "id": "328f09fd7e1cdf1c",
+      "path": "C:\\Users\\Jelles\\Documents\\Downloads\\INVENTory-Milestone-1E-BACKUP",
+      "name": "INVENTory-Milestone-1E-BACKUP",
+      "types": [
+        "documented",
+        "python"
+      ],
+      "git": false,
+      "git_remote": null,
+      "last_modified": "2026-09-10T14:42:41.411369",
+      "file_count": 28,
+      "recognized_files": [
+        ".gitignore",
+        "README.md",
+        "pyproject.toml"
+      ],
+      "is_backup_copy": true,
+      "is_nested": false,
+      "parent_id": null,
+      "relations": {
+        "parent_id": null,
+        "nested_children_ids": [
+          "8c0318445b5d4ae7"
+        ],
+        "same_remote_ids": [],
+        "shared_name_ids": [],
+        "possible_copy_ids": []
+      },
+      "provenance": {
+        "source": "mycelium-desktop-agent:discovery.json",
+        "discovery_timestamp": "2026-09-15T11:45:49.082952",
+        "scanner": "mycelium-desktop-agent",
+        "scanner_version": "0.2.0",
+        "indexed_at": "2026-09-15T11:46:04.645976",
+        "indexer": "mycelium-project-index",
+        "indexer_version": "1.0.0"
+      }
+    },
+    {
+      "id": "5b9c32c0163edb07",
+      "path": "C:\\Users\\Jelles\\Documents\\antigravity\\wonderful-noether",
+      "name": "wonderful-noether",
+      "types": [
+        "git"
+      ],
+      "git": true,
+      "git_remote": null,
+      "last_modified": "2026-09-03T00:14:33.941474",
+      "file_count": 0,
+      "recognized_files": [
+        ".git"
+      ],
+      "is_backup_copy": false,
+      "is_nested": false,
+      "parent_id": null,
+      "relations": {
+        "parent_id": null,
+        "nested_children_ids": [],
+        "same_remote_ids": [],
+        "shared_name_ids": [],
+        "possible_copy_ids": []
+      },
+      "provenance": {
+        "source": "mycelium-desktop-agent:discovery.json",
+        "discovery_timestamp": "2026-09-15T11:45:49.082952",
+        "scanner": "mycelium-desktop-agent",
+        "scanner_version": "0.2.0",
+        "indexed_at": "2026-09-15T11:46:04.645976",
+        "indexer": "mycelium-project-index",
+        "indexer_version": "1.0.0"
+      }
+    },
+    {
+      "id": "7518494667c68693",
+      "path": "C:\\Users\\Jelles\\Desktop\\Projects\\myceliuma-and-inventory\\Mycelium\\agent",
+      "name": "agent",
+      "types": [
+        "documented"
+      ],
+      "git": false,
+      "git_remote": null,
+      "last_modified": "2026-09-15T11:10:19.783392",
+      "file_count": 25,
+      "recognized_files": [
+        "README.md"
+      ],
+      "is_backup_copy": false,
+      "is_nested": false,
+      "parent_id": null,
+      "relations": {
+        "parent_id": null,
+        "nested_children_ids": [],
+        "same_remote_ids": [],
+        "shared_name_ids": [],
+        "possible_copy_ids": []
+      },
+      "provenance": {
+        "source": "mycelium-desktop-agent:discovery.json",
+        "discovery_timestamp": "2026-09-15T11:45:49.082952",
+        "scanner": "mycelium-desktop-agent",
+        "scanner_version": "0.2.0",
+        "indexed_at": "2026-09-15T11:46:04.645976",
+        "indexer": "mycelium-project-index",
+        "indexer_version": "1.0.0"
+      }
+    },
+    {
+      "id": "8c0318445b5d4ae7",
+      "path": "C:\\Users\\Jelles\\Documents\\Downloads\\INVENTory-Milestone-1E-BACKUP\\INVENTory",
+      "name": "INVENTory",
+      "types": [
+        "documented",
+        "git"
+      ],
+      "git": true,
+      "git_remote": "https://github.com/Masterjeluz/INVENTory.git",
+      "last_modified": "2026-09-10T14:42:41.347285",
+      "file_count": 2,
+      "recognized_files": [
+        ".git",
+        "README.md"
+      ],
+      "is_backup_copy": false,
+      "is_nested": true,
+      "parent_id": "328f09fd7e1cdf1c",
+      "relations": {
+        "parent_id": "328f09fd7e1cdf1c",
+        "nested_children_ids": [],
+        "same_remote_ids": [
+          "1dacd5fdb2e12b93",
+          "276515dd2aa12ab2"
+        ],
+        "shared_name_ids": [
+          "03b9d799e59709ca",
+          "178f2599b076cad1",
+          "1dacd5fdb2e12b93",
+          "276515dd2aa12ab2"
+        ],
+        "possible_copy_ids": [
+          "03b9d799e59709ca",
+          "178f2599b076cad1",
+          "1dacd5fdb2e12b93",
+          "276515dd2aa12ab2"
+        ]
+      },
+      "provenance": {
+        "source": "mycelium-desktop-agent:discovery.json",
+        "discovery_timestamp": "2026-09-15T11:45:49.082952",
+        "scanner": "mycelium-desktop-agent",
+        "scanner_version": "0.2.0",
+        "indexed_at": "2026-09-15T11:46:04.645976",
+        "indexer": "mycelium-project-index",
+        "indexer_version": "1.0.0"
+      }
+    },
+    {
+      "id": "8ee10a747398ed7a",
+      "path": "C:\\Users\\Jelles\\Desktop\\Projects\\myceliuma-and-inventory\\mycelium-ai-main",
+      "name": "mycelium-ai-main",
+      "types": [
+        "documented",
+        "python"
+      ],
+      "git": false,
+      "git_remote": null,
+      "last_modified": "2026-09-11T13:29:31.836264",
+      "file_count": 44,
+      "recognized_files": [
+        ".gitignore",
+        "Dockerfile",
+        "README.md",
+        "docker-compose.yml",
+        "pyproject.toml"
+      ],
+      "is_backup_copy": false,
+      "is_nested": false,
+      "parent_id": null,
+      "relations": {
+        "parent_id": null,
+        "nested_children_ids": [],
+        "same_remote_ids": [],
+        "shared_name_ids": [
+          "d0532bf47c9f40cd"
+        ],
+        "possible_copy_ids": [
+          "d0532bf47c9f40cd"
+        ]
+      },
+      "provenance": {
+        "source": "mycelium-desktop-agent:discovery.json",
+        "discovery_timestamp": "2026-09-15T11:45:49.082952",
+        "scanner": "mycelium-desktop-agent",
+        "scanner_version": "0.2.0",
+        "indexed_at": "2026-09-15T11:46:04.645976",
+        "indexer": "mycelium-project-index",
+        "indexer_version": "1.0.0"
+      }
+    },
+    {
+      "id": "d0532bf47c9f40cd",
+      "path": "C:\\Users\\Jelles\\Documents\\Downloads\\mycelium-ai-main\\mycelium-ai-main",
+      "name": "mycelium-ai-main",
+      "types": [
+        "documented",
+        "python"
+      ],
+      "git": false,
+      "git_remote": null,
+      "last_modified": "2026-09-11T20:18:56.758309",
+      "file_count": 54,
+      "recognized_files": [
+        ".gitignore",
+        "Dockerfile",
+        "README.md",
+        "docker-compose.yml",
+        "pyproject.toml"
+      ],
+      "is_backup_copy": false,
+      "is_nested": false,
+      "parent_id": null,
+      "relations": {
+        "parent_id": null,
+        "nested_children_ids": [
+          "178f2599b076cad1"
+        ],
+        "same_remote_ids": [],
+        "shared_name_ids": [
+          "8ee10a747398ed7a"
+        ],
+        "possible_copy_ids": [
+          "8ee10a747398ed7a"
+        ]
+      },
+      "provenance": {
+        "source": "mycelium-desktop-agent:discovery.json",
+        "discovery_timestamp": "2026-09-15T11:45:49.082952",
+        "scanner": "mycelium-desktop-agent",
+        "scanner_version": "0.2.0",
+        "indexed_at": "2026-09-15T11:46:04.645976",
+        "indexer": "mycelium-project-index",
+        "indexer_version": "1.0.0"
+      }
+    }
+  ]
+}
