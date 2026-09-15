@@ -26,15 +26,24 @@ Kern van redeneren, coördineren en gecontroleerd uitvoeren.
 - Missies: plan, steps, executor, events, binding-bewijs — DONE (BIG #3)
 - Testbasis: 515 Mycelium-tests, 178 INVENTory-tests — DONE
 
-## PHASE B — UNDERSTANDING (NEXT)
+## PHASE B — UNDERSTANDING (DONE als BIG #4)
 
-Mycelium begrijpt de wereld beter vóórdat het handelt.
+Zie `docs/semantic-world-model.md` en `docs/camera-architecture.md`.
 
-- Semantische retrieval naast de substring-bridge (lokaal embedding-model, FTS blijft fallback) — NEXT (BIG #4-kandidaat)
-- Rijker wereldmodel-redeneren (relaties/grafiek als plan-context) — NEXT
-- Missie-sjablonen per projecttype (verken, diagnose, bouw-voorstel) — NEXT
-- Project-bewuste context (actief project als standaard-filter) — NEXT
-- `docs/first-node-blueprint.md` herstellen (README linkt erheen, bestand ontbreekt) — NEXT (klein)
+- Semantische retrieval naast de substring-bridge (lokaal
+  embedding-model via Ollama, lexicaal als fallback) — DONE
+- Rijker wereldmodel-redeneren (hybride RRF + relatie-expansie
+  als plan-context, provenance-bewust) — DONE
+- Missie-sjablonen per projecttype (5 stuks, geen bypass) — DONE
+- Uniforme wereldgrafiek-projectie (INVENTory + missie/agent
+  overlay, geen tweede waarheid) — DONE
+- Camera-foundation (abstractie, read-only detectie, observatie-
+  contract, Insta360-fase 1) — DONE (start van PHASE D)
+- Project-bewuste context (actief project als standaard-filter) —
+  NEXT (eerste stukje van BIG #5)
+- `docs/first-node-blueprint.md` herstellen (README linkt erheen,
+  bestand ontbreekt) — NEXT (klein)
+- Testbasis: 547 Mycelium-tests — DONE
 
 ## PHASE C — CONTROLLED WRITES (FUTURE)
 

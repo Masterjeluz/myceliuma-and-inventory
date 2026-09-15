@@ -20,6 +20,18 @@ from .agent_loop import (
     record_result as agent_record_result,
 )
 from .approval import ApprovalResult, decide as decide_approval, request_approval
+from .cameras import (
+    CameraRefusedError,
+    CameraUnavailable,
+    detect_local_imaging_devices,
+    get_device,
+    list_devices,
+    list_observations,
+    new_device,
+    save_device,
+    save_observation,
+    take_snapshot,
+)
 from .computer_actions import capability_for, new_action
 from .conversations import (
     generate_conversation_id,
@@ -27,6 +39,7 @@ from .conversations import (
 )
 from .database import chat_connection, connection, dump, init_chat_database, init_database, load
 from .mission_executor import ExecutorDeps, ExecutorError, MissionExecutor
+from .mission_templates import get_template, instantiate, list_templates
 from .missions import (
     MissionConflictError,
     bindings_for_mission,
@@ -45,6 +58,7 @@ from .git_context import (
 from .plans import Plan, PlanStep, plan_to_proposal, validate_plan
 from .project_context import default_context
 from .proposal_tasks import CoordinatorTask, proposal_to_task
+from .worldgraph import build_world_graph
 from .providers import (
     ProviderRefusedError,
     ProviderUnavailable,
@@ -63,7 +77,7 @@ from .ollama_advisor import (
     OllamaRefusedError,
     OllamaUnavailable,
 )
-from .schemas import AdviseRequest, AdviseResponse, ChatMissionBody, ChatRequest, ChatResponse, ClaimedTask, DecideApprovalBody, DesktopActionBody, DesktopClaimBody, DesktopDecisionBody, DesktopDispatchBody, DesktopResultBody, Heartbeat, MissionApproveBody, MissionCreateBody, MissionStepBody, NodeRegistration, PlanBody, PlanToProposalBody, SuggestStepsBody, TaskCreate, TaskFromProposalBody, TaskResult
+from .schemas import AdviseRequest, AdviseResponse, CameraRegisterBody, ChatMissionBody, ChatRequest, ChatResponse, ClaimedTask, DecideApprovalBody, DesktopActionBody, DesktopClaimBody, DesktopDecisionBody, DesktopDispatchBody, DesktopResultBody, Heartbeat, MissionApproveBody, MissionCreateBody, MissionStepBody, NodeRegistration, PlanBody, PlanToProposalBody, SuggestStepsBody, TaskCreate, TaskFromProposalBody, TaskResult, TemplateMissionBody
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 logger = logging.getLogger("mycelium.coordinator")
@@ -355,25 +369,46 @@ def _extract_advise_proposal(advice_text: str,
 
 @app.post("/api/v1/advise", response_model=AdviseResponse)
 async def advise(body: AdviseRequest) -> AdviseResponse:
-    try:
-        if body.q is None:
+    if body.mode not in ("lexical", "semantic", "hybrid"):
+        raise HTTPException(status_code=422,
+                            detail="Unknown retrieval mode")
+    if body.q is None:
+        try:
             found = await _world_reader().browse(body.type)
-        else:
-            found = await _world_reader().search(body.q, body.type)
-    except InventoryRefusedError as error:
-        raise HTTPException(status_code=422, detail=str(error))
-    except InventoryUnavailable:
-        raise HTTPException(status_code=502, detail="INVENTory unavailable")
-    records = [
-        {
-            "entity_type": item.entity_type,
-            "entity_id": item.entity_id,
-            "title": item.title,
-            "snippet": item.snippet,
-            "provenance": item.provenance.model_dump(mode="json"),
-        }
-        for item in found.results
-    ]
+        except InventoryRefusedError as error:
+            raise HTTPException(status_code=422, detail=str(error))
+        except InventoryUnavailable:
+            raise HTTPException(status_code=502,
+                                detail="INVENTory unavailable")
+        records = [
+            {
+                "entity_type": item.entity_type,
+                "entity_id": item.entity_id,
+                "title": item.title,
+                "snippet": item.snippet,
+                "provenance": item.provenance.model_dump(mode="json"),
+                "match_type": "lexical",
+                "score": 0.0,
+                "why": "browse context without query",
+            }
+            for item in found.results
+        ]
+        retrieval_mode = "lexical"
+    else:
+        if not body.q.strip():
+            raise HTTPException(status_code=422,
+                                detail="Search query must be non-empty text")
+        records, inventory_error, retrieval = await _chat_world_context(
+            body.q, mode=body.mode)
+        if inventory_error:
+            raise HTTPException(status_code=502,
+                                detail="INVENTory unavailable")
+        if body.type is not None:
+            from .inventory_read import LIST_TYPES
+            singular = LIST_TYPES.get(body.type)
+            records = [record for record in records
+                       if record.get("entity_type") == singular]
+        retrieval_mode = retrieval.get("mode_used", "lexical")
     try:
         answered = await _advisor().advise(body.question, records)
     except OllamaRefusedError as error:
@@ -383,7 +418,8 @@ async def advise(body: AdviseRequest) -> AdviseResponse:
                        body.q, len(records), error)
         raise HTTPException(status_code=502, detail="Ollama unavailable")
     proposal = _extract_advise_proposal(answered.advice, body)
-    return AdviseResponse(**answered.model_dump(), proposal=proposal)
+    return AdviseResponse(**answered.model_dump(), proposal=proposal,
+                          retrieval_mode=retrieval_mode)
 
 
 # =============================================================================
@@ -465,33 +501,70 @@ def _chat_messages(conversation_id: str, limit: int = 100) -> list[dict]:
     return [dict(row) for row in rows]
 
 
-async def _chat_world_context(message: str) -> tuple[list[dict], str | None]:
+async def _chat_world_context(
+        message: str, mode: str = "hybrid"
+) -> tuple[list[dict], str | None, dict]:
     """Read-only INVENTory context for one chat message.
 
-    Returns (records, inventory_error). Refused queries become a caller
+    Hybrid retrieval (lexical + semantic + relationship expansion)
+    with automatic lexical fallback. Returns (records,
+    inventory_error, retrieval_info). Refused queries become a caller
     error; an unreachable INVENTory yields empty context with a note.
+    Enriched records carry match_type/score/why audit trails;
+    provenance passes through untouched.
     """
+    from .embeddings import EmbeddingUnavailable, get_embed_provider
+    from .retrieval import hybrid_retrieve
     query = message.strip()[:200]
-    try:
-        if query:
-            found = await _world_reader().search(query)
-        else:
+    if not query:
+        try:
             found = await _world_reader().browse(None)
+        except InventoryRefusedError as error:
+            raise HTTPException(status_code=422, detail=str(error))
+        except InventoryUnavailable:
+            return [], "INVENTory unavailable", {"mode_used": "lexical"}
+        records = [
+            {
+                "entity_type": item.entity_type,
+                "entity_id": item.entity_id,
+                "title": item.title,
+                "snippet": item.snippet,
+                "provenance": item.provenance.model_dump(mode="json"),
+                "match_type": "lexical",
+                "score": 0.0,
+                "why": "browse context without query",
+            }
+            for item in found.results[:10]
+        ]
+        return records, None, {"mode_used": "lexical",
+                               "semantic_available": False}
+    embedder = None
+    if mode in ("hybrid", "semantic"):
+        try:
+            embedder = get_embed_provider("ollama")
+        except Exception:
+            embedder = None
+    try:
+        result = await hybrid_retrieve(query, _world_reader(), embedder,
+                                       mode=mode, depth=1, limit=15)
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    except EmbeddingUnavailable as error:
+        if mode == "semantic":
+            raise HTTPException(status_code=502,
+                                detail=f"Semantic unavailable: {error}")
+        result = await hybrid_retrieve(query, _world_reader(), None,
+                                       mode="lexical", depth=1, limit=15)
     except InventoryRefusedError as error:
         raise HTTPException(status_code=422, detail=str(error))
     except InventoryUnavailable:
-        return [], "INVENTory unavailable"
-    records = [
-        {
-            "entity_type": item.entity_type,
-            "entity_id": item.entity_id,
-            "title": item.title,
-            "snippet": item.snippet,
-            "provenance": item.provenance.model_dump(mode="json"),
-        }
-        for item in found.results[:10]
-    ]
-    return records, None
+        return [], "INVENTory unavailable", {"mode_used": "lexical"}
+    return result["results"][:10], None, {
+        "mode_used": result["mode_used"],
+        "semantic_available": result["semantic_available"],
+        "embed_model": result["embed_model"],
+        "expansions": result["expansions"],
+    }
 
 
 def _chat_fallback_reply(records: list[dict],
@@ -529,12 +602,15 @@ async def chat(body: ChatRequest) -> ChatResponse:
         user_message.message_id, conversation_id, "user",
         user_message.content, created,
         dump(user_message.provenance.model_dump(mode="json")), "[]")
-    records, inventory_error = await _chat_world_context(body.message)
+    records, inventory_error, retrieval = await _chat_world_context(
+        body.message, mode=body.mode)
     sources = [
         {"entity_id": record["entity_id"],
          "source_type": record["provenance"].get("source_type", "unknown"),
          "human_verified": bool(record["provenance"].get(
-             "human_verified", False))}
+             "human_verified", False)),
+         "match_type": record.get("match_type", "lexical"),
+         "score": record.get("score", 0.0)}
         for record in records
     ]
     provider_error: str | None = inventory_error
@@ -580,6 +656,7 @@ async def chat(body: ChatRequest) -> ChatResponse:
         sources=sources,
         proposal=proposal,
         provider_error=provider_error,
+        retrieval_mode=retrieval.get("mode_used", "lexical"),
     )
 
 
@@ -975,7 +1052,7 @@ def _executor() -> MissionExecutor:
         return await get_provider("ollama").advise(question, records)
 
     async def _inventory_search(query: str) -> list[dict]:
-        records, _ = await _chat_world_context(query)
+        records, _, _ = await _chat_world_context(query)
         return records
 
     def _git_read(source: str) -> dict:
@@ -1150,7 +1227,7 @@ async def chat_mission(conversation_id: str,
             "WHERE conversation_id=?", (conversation_id,)).fetchone()
     if row is None:
         raise HTTPException(404, "Conversation not found")
-    records, _ = await _chat_world_context(body.goal)
+    records, _, _ = await _chat_world_context(body.goal)
     try:
         mission = _executor().create(
             conversation_id, body.goal,
@@ -1170,7 +1247,7 @@ async def mission_suggest(body: SuggestStepsBody) -> dict:
     """Advisor-drafted step descriptions only. Untrusted: the operator
     assembles the real mission (kinds, actions, approvals) — the
     provider never decides permissions or execution."""
-    records, _ = await _chat_world_context(
+    records, _, _ = await _chat_world_context(
         f"{body.goal} {body.context}"[:200])
     try:
         answered = await get_provider("ollama").advise(
@@ -1203,6 +1280,135 @@ def _with_binding(summary: dict) -> dict:
     return {**summary,
             "mission_id": bound[0] if bound else None,
             "step_id": bound[1] if bound else None}
+
+
+# =============================================================================
+# MISSION TEMPLATES (BIG #4) — named starting points, same gates.
+# Instantiation renders step descriptions and runs through the exact
+# same mission validation/approval as hand-built missions.
+# =============================================================================
+
+@app.get("/api/v1/mission-templates")
+def mission_templates_list() -> list[dict]:
+    return list_templates()
+
+
+@app.post("/api/v1/missions/from-template", status_code=201)
+async def mission_from_template(body: TemplateMissionBody) -> dict:
+    try:
+        steps, template_max = instantiate(body.template_id, body.goal)
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    with chat_connection() as db:
+        init_chat_database()
+        row = db.execute(
+            "SELECT conversation_id FROM conversations "
+            "WHERE conversation_id=?", (body.conversation_id,)).fetchone()
+    if row is None:
+        raise HTTPException(404, "Conversation not found")
+    records, _, _ = await _chat_world_context(body.goal)
+    try:
+        mission = _executor().create(
+            body.conversation_id, body.goal,
+            steps,
+            max_steps=body.max_steps or template_max,
+            context_records=records)
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    except ExecutorError as error:
+        raise _mission_error(error)
+    return _mission_to_json(mission)
+
+
+# =============================================================================
+# CAMERAS (BIG #4) — generic device abstraction, Insta360-ready.
+# Registration is explicit; discovery is read-only names; snapshots
+# require an injected capture adapter and refuse without one.
+# No production adapter ships in this slice: snapshot calls
+# fail-closed (409) instead of fabricating bytes.
+# =============================================================================
+
+@app.post("/api/v1/cameras/register", status_code=201)
+def camera_register(body: CameraRegisterBody) -> dict:
+    import secrets
+    device_id = (body.device_id or f"cam-{secrets.token_hex(4)}")
+    try:
+        device = new_device(device_id, body.name, body.kinds,
+                            body.source, notes=body.notes)
+    except CameraRefusedError as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    save_device(device)
+    logger.info("camera_registered device_id=%s source=%s kinds=%s",
+                device_id, body.source, ",".join(device.kinds))
+    return device.model_dump(mode="json")
+
+
+@app.get("/api/v1/cameras")
+def cameras_list() -> list[dict]:
+    return [device.model_dump(mode="json") for device in list_devices()]
+
+
+@app.get("/api/v1/cameras/detected")
+def cameras_detected() -> dict:
+    """Read-only local imaging-device enumeration. No activation."""
+    return detect_local_imaging_devices()
+
+
+@app.get("/api/v1/cameras/{device_id}")
+def camera_get(device_id: str) -> dict:
+    device = get_device(device_id)
+    if device is None:
+        raise HTTPException(404, "Camera not found")
+    return device.model_dump(mode="json")
+
+
+@app.get("/api/v1/cameras/{device_id}/observations")
+def camera_observations(device_id: str) -> list[dict]:
+    if get_device(device_id) is None:
+        raise HTTPException(404, "Camera not found")
+    return [obs.model_dump(mode="json")
+            for obs in list_observations(device_id)]
+
+
+@app.post("/api/v1/cameras/{device_id}/snapshot", status_code=201)
+def camera_snapshot(device_id: str) -> dict:
+    device = get_device(device_id)
+    if device is None:
+        raise HTTPException(404, "Camera not found")
+    try:
+        observation = take_snapshot(device, None)
+    except CameraRefusedError as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    except CameraUnavailable as error:
+        raise HTTPException(status_code=409, detail=str(error))
+    save_observation(observation)
+    return observation.model_dump(mode="json")
+
+
+# =============================================================================
+# WORLD GRAPH (BIG #4) — uniform projection, no new source of truth.
+# =============================================================================
+
+@app.get("/api/v1/graph")
+async def world_graph_unified(entity_id: str, depth: int = 1,
+                              include_missions: bool = False) -> dict:
+    try:
+        with connection() as db:
+            agent_rows = db.execute(
+                "SELECT node_id, capabilities FROM nodes").fetchall()
+        agents = [{"node_id": row["node_id"],
+                   "capabilities": load(row["capabilities"])}
+                  for row in agent_rows]
+        graph = await build_world_graph(
+            _world_reader(), entity_id, depth,
+            include_missions=include_missions, agent_nodes=agents)
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    except InventoryRefusedError as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    except InventoryUnavailable:
+        raise HTTPException(status_code=502, detail="INVENTory unavailable")
+    return graph
 
 
 # =============================================================================
@@ -1257,6 +1463,7 @@ async def _form_fields(request: Request) -> dict[str, str]:
 
 def _workspace_nav() -> str:    return ("""<nav><a href="/">Mycelium</a><a href="/chat">Chat</a>"""
             """<a href="/agents">Agents</a><a href="/missions">Plans</a>"""
+            """<a href="/cameras">Cameras</a>"""
             """<a href="http://127.0.0.1:8080" target="_blank">INVENTory</a>"""
             """<a href="/api/v1/agent/status">Agent-status (JSON)</a></nav>""")
 
@@ -1399,7 +1606,19 @@ def missions_page() -> str:
     body{{font:16px system-ui;max-width:860px;margin:2rem auto;padding:0 1rem;color:#17352a;background:#f4f5ed}} h1{{color:#2f6b45}} nav a{{margin-right:1rem;color:#2f6b45}}
     .panel{{background:white;border:1px solid #dde5dc;padding:1rem;border-radius:6px;margin-bottom:1rem}} button{{background:#2f6b45;color:white;border:0;padding:.4rem .9rem;border-radius:4px}}</style></head>
     <body>{_workspace_nav()}<h1>Missies &amp; plannen</h1>
-    <div class="panel"><p>Autonomie bestaat alleen <b>binnen</b> een goedgekeurd plan. Desktop-input blijft per stap approval-gated.</p></div>
+    <div class="panel"><p>Autonomie bestaat alleen <b>binnen</b> een goedgekeurd plan. Desktop-input blijft per stap approval-gated.</p>
+    <form method="post" action="/web/missions/from-template">
+    <select name="template_id">
+    <option value="inspect_project">Project verkennen</option>
+    <option value="investigate_inventory">INVENTory onderzoeken</option>
+    <option value="analyze_problem">Probleem analyseren</option>
+    <option value="prepare_build_plan">Bouwplan voorbereiden</option>
+    <option value="inspect_desktop_project">Desktop-project bekijken</option>
+    </select>
+    <input type="text" name="goal" placeholder="Doel" style="width:40%">
+    <button type="submit">Start van template</button></form>
+    <p><small>Tip: start eerst een <a href="/chat">chat</a> — een missie hoort bij een gesprek.
+    Vanaf dit formulier wordt de missie gekoppeld aan het laatste gesprek.</small></p></div>
     <ul>{items or "<li>○ nog geen missies — start er een vanuit <a href='/chat'>Chat</a></li>"}</ul></body></html>"""
 
 
@@ -1430,6 +1649,11 @@ def mission_page(mission_id: str) -> str:
         f"<li><small>{escape(event.created_at)}</small> "
         f"<b>{escape(event.event_type)}</b> {escape(event.message[:200])}</li>"
         for event in list_events(mission_id=mission_id)[-20:])
+    first_entity = ""
+    for record in (mission.context_records or []):
+        if record.get("entity_id"):
+            first_entity = str(record["entity_id"])
+            break
     buttons = ""
     if mission.status == "pending_approval":
         buttons += (f"<form style='display:inline' method='post' action='/web/missions/{escape(mission_id)}/approve'>"
@@ -1453,9 +1677,36 @@ def mission_page(mission_id: str) -> str:
     <body>{_workspace_nav()}<h1>MISSION</h1>
     <div class="panel"><p>{escape(mission.goal)}</p>
     <p><code>{bar}</code> {percent}% · status <b>{escape(mission.status)}</b> · stap {mission.current_step}/{total}</p>
-    <p>{buttons}</p></div>
+    <p>{buttons}</p>
+    {f"<p><small>Wereldgrafiek (JSON-foundation): <a href='/api/v1/graph?entity_id={escape(first_entity)}&depth=1&include_missions=true'>graph rond eerste context</a></small></p>" if first_entity else ""}</div>
     <h2>Stappen</h2><ul>{steps}</ul>
     <h2>Gebeurtenissen</h2><ul>{events or "<li>○</li>"}</ul></body></html>"""
+
+
+@app.post("/web/missions/from-template")
+async def web_mission_from_template(request: Request) -> RedirectResponse:
+    fields = await _form_fields(request)
+    goal = fields.get("goal", "").strip()
+    template_id = fields.get("template_id", "").strip()
+    if not goal or not template_id:
+        return RedirectResponse("/missions", status_code=303)
+    init_chat_database()
+    with chat_connection() as db:
+        row = db.execute(
+            """SELECT conversation_id FROM conversations
+            ORDER BY created_at DESC LIMIT 1""").fetchone()
+    if row is None:
+        return RedirectResponse("/chat", status_code=303)
+    try:
+        steps, template_max = instantiate(template_id, goal)
+        records, _, _ = await _chat_world_context(goal)
+        mission = _executor().create(row["conversation_id"], goal,
+                                     steps, max_steps=template_max,
+                                     context_records=records)
+    except (ValueError, ExecutorError):
+        return RedirectResponse("/missions", status_code=303)
+    return RedirectResponse(f"/missions/{mission.mission_id}",
+                            status_code=303)
 
 
 @app.post("/web/missions")
@@ -1487,6 +1738,50 @@ async def web_mission_op(mission_id: str, op: str) -> RedirectResponse:
     except ExecutorError:
         pass
     return RedirectResponse(f"/missions/{mission_id}", status_code=303)
+
+
+@app.get("/cameras", response_class=HTMLResponse)
+def cameras_page() -> str:
+    devices = "".join(
+        f"<li><b>{escape(device.name)}</b> ({escape(device.device_id)}, "
+        f"{escape(device.source)}) — {escape(', '.join(device.kinds))} · "
+        f"<a href='/api/v1/cameras/{escape(device.device_id)}/observations'>"
+        "observaties (JSON)</a></li>"
+        for device in list_devices())
+    detected = detect_local_imaging_devices()
+    found = "".join(
+        f"<li><small>{escape(str(entry.get('path', '?')))}</small></li>"
+        for entry in detected.get("devices", []))
+    return f"""<!doctype html><html><head><title>Mycelium Cameras</title><style>
+    body{{font:16px system-ui;max-width:860px;margin:2rem auto;padding:0 1rem;color:#17352a;background:#f4f5ed}} h1{{color:#2f6b45}} nav a{{margin-right:1rem;color:#2f6b45}}
+    .panel{{background:white;border:1px solid #dde5dc;padding:1rem;border-radius:6px;margin-bottom:1rem}} button{{background:#2f6b45;color:white;border:0;padding:.4rem .9rem;border-radius:4px}} input,select{{margin:.2rem}}</style></head>
+    <body>{_workspace_nav()}<h1>Camera's</h1>
+    <div class="panel"><p>Camera's zijn <b>observatiebronnen</b>, geen actuatoren. Snapshots vereisen een
+    capture-runtime; zonder runtime weigert de API (409) in plaats van beeld te verzinnen. Insta360-fases: zie
+    <code>docs/camera-architecture.md</code>.</p></div>
+    <h2>Geregistreerd</h2><ul>{devices or "<li>○ geen camera's</li>"}</ul>
+    <h2>Lokaal gedetecteerd (alleen namen, read-only)</h2><ul>{found or "<li>○ niets gevonden / niet ondersteund</li>"}</ul>
+    <h2>Registreer</h2><form method="post" action="/web/cameras/register">
+    <input type="text" name="name" placeholder="Naam, bijv. Insta360 X4">
+    <select name="kinds"><option value="snapshot">snapshot</option><option value="snapshot,webcam">snapshot+webcam</option><option value="snapshot,webcam,stream,p360">alles (Insta360)</option></select>
+    <select name="source"><option value="manual">manual</option><option value="usb">usb</option><option value="insta360">insta360</option></select>
+    <button type="submit">Registreer</button></form></body></html>"""
+
+
+@app.post("/web/cameras/register")
+async def web_camera_register(request: Request) -> RedirectResponse:
+    import secrets
+    fields = await _form_fields(request)
+    kinds = [kind.strip() for kind in
+             fields.get("kinds", "snapshot").split(",") if kind.strip()]
+    try:
+        device = new_device(f"cam-{secrets.token_hex(4)}",
+                            fields.get("name", "Camera"), kinds,
+                            fields.get("source", "manual"))
+    except CameraRefusedError:
+        return RedirectResponse("/cameras", status_code=303)
+    save_device(device)
+    return RedirectResponse("/cameras", status_code=303)
 
 
 @app.post("/web/desktop/{action_id}/decision")

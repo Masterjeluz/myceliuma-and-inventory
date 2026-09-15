@@ -102,11 +102,13 @@ geen fysieke hardware · geen externe AI-call zonder configuratie ·
 screenshots lokaal · fail-closed bij onbekende capability/actie ·
 agent altijd stopbaar (cancel + rejected-default).
 
-## Keten (voorbeeld, BIG #3 — live bewezen)
+## Keten (voorbeeld, BIG #3 + #4 — live bewezen)
 
-1. `POST /api/v1/chat` → gesprek
-2. `POST /api/v1/chat/{id}/missions` {goal} → missie (default:
-   veilige verkenning: project + git + analyse) + plan-bericht
+1. `POST /api/v1/chat` {message, mode: hybrid} → hybrid retrieval
+   (semantisch + lexicaal + relaties) → reply + sources met
+   `match_type`/`score` + `retrieval_mode`
+2. `POST /api/v1/chat/{id}/missions` of `/missions/from-template`
+   → missie met wereldcontext → plan-bericht in gesprek
 3. `POST /api/v1/missions/{id}/approve` YES → plan goedgekeurd
 4. `POST .../tick` → readout-stappen direct; desktop-stap maakt
    één dact via bestaande gate + binding (mission, step, action)
@@ -118,6 +120,10 @@ agent altijd stopbaar (cancel + rejected-default).
 7. Events (`.../events`) + voortgang (`/missions/{id}`, `/agents`,
    `/chat`) tonen elke overgang; pause/resume/cancel altijd;
    voorstel-stappen produceren alleen artifacten (aparte approval).
+8. Wereldgrafiek (`/api/v1/graph`) projecteert INVENTory +
+   missie/agent-overlay voor navigatie en toekomstige UI.
+9. Camera's (`/cameras`): registratie + read-only detectie;
+   snapshots weigeren zonder capture-runtime (409).
 
 Autonomie geldt uitsluitend binnen de goedgekeurde stappen; een
 actie zonder geldige binding wordt genegeerd (fail-closed).

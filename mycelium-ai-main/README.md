@@ -21,7 +21,11 @@ persoonlijke computer-agent (verticale slice, live bewezen):
   dat goedgekeurde acties claimt, hervalideert en uitvoert via
   scherm/muis/toetsenbord — observe → act → observe, begrensd,
   altijd stopbaar
-- **Wereldmodel**: INVENTory alleen-lezen via GET-only loopback-bridge
+- **Wereldmodel**: INVENTory alleen-lezen via GET-only loopback-bridge,
+  nu met hybride retrieval (semantisch + lexicaal + relaties,
+  provenance-bewust, met fallback zonder embedding-model)
+- **Missie-sjablonen, camera-abstractie en wereldgrafiek** als
+  foundation voor begrijpen en waarnemen (zie `docs/`)
 - **Veiligheid**: geen shell/RCE, geen credentials-opslag, geen
   auto-approval/bypass, geen permanente autonomie, screenshots lokaal
 
@@ -222,8 +226,9 @@ tests/           515 tests (pytest -v)
 ```
 
 Zie `docs/ARCHITECTURE_STATUS.md` (wat het systeem is),
-`docs/chat-agent-architecture.md` (hoe de keten loopt) en
-`docs/ROADMAP.md` (wat volgt). Teststatus: **515 passed**.
+`docs/chat-agent-architecture.md` (hoe de keten loopt),
+`docs/semantic-world-model.md`, `docs/camera-architecture.md` en
+`docs/ROADMAP.md` (wat volgt). Teststatus: **547 passed**.
 
 ## Bijdragen
 

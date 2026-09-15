@@ -61,6 +61,10 @@ Momentopname van wat het systeem IS. Voor flows, zie
 | Agent-lus (state machine) | `agent_loop.py` | DONE |
 | Desktop-runtime (ctypes) | `desktop_runtime.py` | DONE |
 | Missies + executor | `missions.py`, `mission_executor.py` | DONE |
+| Semantische retrieval | `embeddings.py`, `semantic_store.py`, `retrieval.py` | DONE (lexicaal fallback) |
+| Missie-sjablonen | `mission_templates.py` | DONE (5 stuks) |
+| Camera-abstractie | `cameras.py` | DONE (contract + detectie) |
+| Wereldgrafiek | `worldgraph.py` | DONE (projectie) |
 | Project-/git-context (read-only) | `project_context.py`, `git_context.py` | DONE |
 | 3D-pijplijn | `pipeline3d.py` | PARTIAL (contracten) |
 | Standalone agent | `desktop_agent/` | DONE |
@@ -70,7 +74,7 @@ Momentopname van wat het systeem IS. Voor flows, zie
 
 ## Teststatus (gemeten, niet geschat)
 
-- Mycelium: **515 passed** (`pytest -v` in `mycelium-ai-main/`)
+- Mycelium: **547 passed** (`pytest -v` in `mycelium-ai-main/`)
 - INVENTory: **178 passed, 1 failed** — de faal is pre-existing:
   `test_real_inventory_db_untouched` pint de exacte byte-grootte van
   de gitignored lokale `data/inventory.db`; inhoud groeit bij normaal

@@ -154,6 +154,31 @@ def init_chat_database() -> None:
             step_id TEXT NOT NULL,
             bound_at TEXT NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS semantic_vectors (
+            entity_type TEXT NOT NULL,
+            entity_id TEXT NOT NULL,
+            fingerprint TEXT NOT NULL,
+            model TEXT NOT NULL,
+            dim INTEGER NOT NULL,
+            vector BLOB NOT NULL,
+            updated_at INTEGER NOT NULL,
+            PRIMARY KEY (entity_type, entity_id, model)
+        );
+        CREATE INDEX IF NOT EXISTS idx_vectors_model
+            ON semantic_vectors(model, updated_at);
+        CREATE TABLE IF NOT EXISTS camera_devices (
+            device_id TEXT PRIMARY KEY,
+            record TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS camera_observations (
+            observation_id TEXT PRIMARY KEY,
+            device_id TEXT NOT NULL,
+            record TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_cam_obs_device
+            ON camera_observations(device_id, created_at);
         """)
 
 

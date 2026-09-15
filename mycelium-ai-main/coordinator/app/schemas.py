@@ -57,6 +57,7 @@ class AdviseRequest(BaseModel):
     q: str | None = Field(default=None, min_length=1, max_length=200)
     question: str = Field(min_length=1, max_length=500)
     type: str | None = None
+    mode: str = Field(default="hybrid", min_length=1, max_length=20)
 
 
 class AdviseResponse(AdviceResponse):
@@ -69,6 +70,7 @@ class AdviseResponse(AdviceResponse):
     """
 
     proposal: AdapterProposal | None = None
+    retrieval_mode: str = "lexical"
 
 
 class DecideApprovalBody(BaseModel):
@@ -110,6 +112,7 @@ class ChatRequest(BaseModel):
     message: str = Field(min_length=1, max_length=4000)
     project_ref: str = Field(default="", max_length=200)
     provider: str = Field(default="ollama", min_length=1, max_length=40)
+    mode: str = Field(default="hybrid", min_length=1, max_length=20)
 
 
 class ChatResponse(BaseModel):
@@ -123,6 +126,7 @@ class ChatResponse(BaseModel):
     sources: list[dict[str, Any]] = Field(default_factory=list)
     proposal: AdapterProposal | None = None
     provider_error: str | None = None
+    retrieval_mode: str = "lexical"
 
 
 class PlanStepBody(BaseModel):
@@ -213,3 +217,18 @@ class ChatMissionBody(BaseModel):
 class SuggestStepsBody(BaseModel):
     goal: str = Field(min_length=1, max_length=500)
     context: str = Field(default="", max_length=1000)
+
+
+class TemplateMissionBody(BaseModel):
+    template_id: str = Field(min_length=1, max_length=80)
+    conversation_id: str = Field(min_length=3, max_length=80)
+    goal: str = Field(min_length=1, max_length=500)
+    max_steps: int | None = Field(default=None, ge=1, le=20)
+
+
+class CameraRegisterBody(BaseModel):
+    device_id: str | None = Field(default=None, min_length=3, max_length=80)
+    name: str = Field(min_length=1, max_length=120)
+    kinds: list[str] = Field(min_length=1, max_length=4)
+    source: str = Field(min_length=1, max_length=20)
+    notes: str = Field(default="", max_length=500)
