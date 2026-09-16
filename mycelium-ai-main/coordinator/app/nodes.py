@@ -76,6 +76,28 @@ VALID_ENERGY_PRIORITIES = frozenset({"low", "normal", "high"})
 VALID_LOCALITIES = frozenset({"same_host", "local_network",
                               "remote_lan", "any"})
 
+#: Closed capability set for phone nodes (BIG #9). Phones are
+#: interface + sensor + notification surface; capabilities stay
+#: authoritative — device type never implies permission.
+PHONE_CAPABILITIES = frozenset({
+    "phone.screen.read",
+    "phone.notification.send",
+    "phone.camera.read",
+    "phone.camera.snapshot",
+    "phone.microphone.read",
+    "phone.speaker.play",
+})
+
+
+def is_phone_node(capabilities) -> bool:
+    """True when the advertisement carries phone capabilities."""
+    try:
+        advertised = {str(cap).strip().lower()
+                      for cap in (capabilities or [])}
+    except TypeError:
+        return False
+    return bool(advertised & PHONE_CAPABILITIES)
+
 TOKEN_VERSION = "mycelium-node-v1"
 
 

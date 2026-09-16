@@ -25,7 +25,7 @@ INVENTory onthoudt de wereld; Ollama/Qwen adviseert lokaal.
 
 Zie [mycelium-ai-main/README.md](mycelium-ai-main/README.md) (coordinator
 + node) en [docs/ROADMAP.md](mycelium-ai-main/docs/ROADMAP.md) (richting).
-Verificatie per gebied: `pytest -v` in `mycelium-ai-main/` (784 passed)
+Verificatie per gebied: `pytest -v` in `mycelium-ai-main/` (822 passed)
 en `inventory/` (178 passed, 1 pre-existing faal op een gitignored
 lokale database-grootte).
 

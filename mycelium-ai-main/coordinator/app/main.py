@@ -100,6 +100,31 @@ from .verification import (
     new_verification_request,
     verify_inventory_write,
 )
+from .events import (
+    EventRefusedError,
+    list_events as bus_events,
+    list_notifications,
+    mark_notification_read,
+    new_event as bus_event,
+    new_notification,
+    prune_events,
+    save_event as save_bus_event,
+    save_notification,
+)
+from .interface import (
+    InterfaceRefusedError,
+    TextInterface,
+    VoiceInterface,
+    generate_interface_id,
+    list_sessions,
+    load_session,
+    new_interface_message,
+    new_session,
+    revoke_session,
+    save_session,
+    session_usable,
+    touch_session,
+)
 from .vision_flow import (
     VisionAnalysisRecord,
     identification_candidates,
@@ -109,6 +134,36 @@ from .vision_flow import (
     verify_observation,
     vision_to_file_proposal,
     vision_to_object_proposal,
+)
+from .voice import (
+    TestSTTProvider,
+    TestTTSProvider,
+    UnavailableSTTProvider,
+    UnavailableTTSProvider,
+    VoiceRefusedError,
+    VoiceUnavailable,
+    audio_facts,
+    check_audio_ref,
+    clear_capture_sessions,
+    close_capture_session,
+    delete_audio,
+    get_capture_session,
+    get_stt_provider,
+    get_tts_provider,
+    open_capture_session,
+    prune_audio,
+    read_audio_bytes,
+)
+from .voice_approval import (
+    VOICE_APPROVABLE_KINDS,
+    VoiceApprovalRefusedError,
+    VoiceApprovalRequest,
+    load_voice_request,
+    mark_voice_resolved,
+    now as voice_now,
+    pending_voice_requests,
+    resolve_voice_approval,
+    save_voice_request,
 )
 from .vision_ingest import (
     IngestRefusedError,
@@ -205,7 +260,7 @@ from .routing import (
     requirements_from_payload,
     route_task,
 )
-from .schemas import AdviseRequest, AdviseResponse, CameraRegisterBody, ChatMissionBody, ChatRequest, ChatResponse, ClaimedTask, DecideApprovalBody, DesktopActionBody, DesktopClaimBody, DesktopDecisionBody, DesktopDispatchBody, DesktopResultBody, FabGenerateBody, FabSliceBody, GitCommitBody, Heartbeat, InventoryWriteBody, MissionApproveBody, MissionCreateBody, MissionStepBody, NodeRegistration, PlanBody, PlanToProposalBody, PrintCancelBody, PrintProposeBody, PrinterRegisterBody, StreamStartBody, SuggestStepsBody, TaskAssignBody, TaskCreate, TaskFromProposalBody, TaskResult, TaskRouteBody, TemplateMissionBody, VisionAnalyzeBody, VisionProposeBody, WriteDecisionBody
+from .schemas import AdviseRequest, AdviseResponse, CameraRegisterBody, CaptureCloseBody, CaptureOpenBody, ChatMissionBody, ChatRequest, ChatResponse, ClaimedTask, DecideApprovalBody, DesktopActionBody, DesktopClaimBody, DesktopDecisionBody, DesktopDispatchBody, DesktopResultBody, FabGenerateBody, FabSliceBody, GitCommitBody, Heartbeat, InterfaceChatBody, InventoryWriteBody, MissionApproveBody, MissionCreateBody, MissionStepBody, NodeRegistration, NotifyBody, PhoneCameraBody, PlanBody, PlanToProposalBody, PrintCancelBody, PrintProposeBody, PrinterRegisterBody, SessionOpenBody, StreamStartBody, SuggestStepsBody, TaskAssignBody, TaskCreate, TaskFromProposalBody, TaskResult, TaskRouteBody, TemplateMissionBody, VisionAnalyzeBody, VisionProposeBody, VoiceApprovalRequestBody, VoiceApproveBody, VoiceChatBody, VoiceSynthesizeBody, VoiceTranscribeBody, WriteDecisionBody
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 logger = logging.getLogger("mycelium.coordinator")
@@ -320,6 +375,8 @@ def register_node(node: NodeRegistration) -> dict[str, str]:
     logger.info("node_registered node_id=%s tier=%s auth=%s",
                 node_id, node.tier,
                 "token" if auth_mode == "token" else "legacy")
+    emit_event("node.online", f"Node {node_id} registered",
+               node_id=node_id)
     return {"node_id": node_id, "status": "registered"}
 
 
@@ -468,6 +525,8 @@ def create_task(task: TaskCreate) -> dict[str, object]:
         (task.kind, dump(payload), dump(task.required_capabilities), task.preferred_tier, task.priority, now(),
          dump(requirements.model_dump(mode="json"))))
     logger.info("task_created task_id=%s kind=%s", cursor.lastrowid, task.kind)
+    emit_event("task.queued", f"Task {cursor.lastrowid} ({task.kind}) queued",
+               task_id=str(cursor.lastrowid))
     return {"id": cursor.lastrowid, "status": "queued"}
 
 
@@ -587,6 +646,10 @@ def assign_task(task_id: int, body: TaskAssignBody) -> dict:
                             detail="Task changed state; refusing")
     logger.info("task_assigned task_id=%s node_id=%s", task_id,
                 decision.selected_node_id)
+    emit_event("task.assigned", f"Task {task_id} assigned to "
+               f"{decision.selected_node_id}",
+               task_id=str(task_id),
+               node_id=decision.selected_node_id or "")
     return {"id": task_id, "assigned_node_id":
             decision.selected_node_id,
             "routing": decision.model_dump(mode="json")}
@@ -698,6 +761,9 @@ def _complete_task(task_id: int, result: TaskResult, completing_node_id: str | N
     if not changed:
         raise HTTPException(404, "Assigned task not found")
     logger.info("task_finished task_id=%s status=%s", task_id, status)
+    emit_event(f"task.{status}", f"Task {task_id} {status}",
+               task_id=str(task_id),
+               node_id=completing_node_id or "")
 
 
 def expire_leases(now_str: str | None = None) -> dict[str, int]:
@@ -1110,9 +1176,23 @@ async def chat(body: ChatRequest) -> ChatResponse:
         provider = get_provider(body.provider)
     except ProviderRefusedError as error:
         raise HTTPException(status_code=422, detail=str(error))
+    from .interface import VALID_INPUT_TYPES as _VALID_INPUT
+    if body.input_type not in _VALID_INPUT:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Unknown input type '{body.input_type}'")
     conversation_id = body.conversation_id or generate_conversation_id()
     created = now()
-    user_message = new_message(conversation_id, "user", body.message)
+    user_provenance = None
+    if body.input_type == "voice":
+        from .inventory_read import Provenance as _Provenance
+        user_provenance = _Provenance(
+            source_type="user-created", creator_id="voice-interface",
+            human_verified=True,
+            notes="spoken turn; interpretation pending, never "
+                  "authorization")
+    user_message = new_message(conversation_id, "user", body.message,
+                               provenance=user_provenance)
     _chat_ensure_conversation(
         conversation_id, body.message.strip()[:120],
         body.project_ref, created)
@@ -1180,6 +1260,10 @@ async def chat(body: ChatRequest) -> ChatResponse:
         dump(sources))
     logger.info("chat_turn conversation_id=%s records=%d model=%s",
                 conversation_id, len(records), model_name or "none")
+    emit_event("conversation.message",
+               f"Chat turn in {conversation_id} "
+               f"({body.input_type}, {len(sources)} sources)",
+               conversation_id=conversation_id)
     return ChatResponse(
         conversation_id=conversation_id,
         message_id=assistant_message.message_id,
@@ -1826,6 +1910,10 @@ def mission_create(body: MissionCreateBody) -> dict:
         raise HTTPException(status_code=422, detail=str(error))
     except ExecutorError as error:
         raise _mission_error(error)
+    emit_event("mission.started", f"Mission {mission.mission_id}: "
+               f"{mission.goal[:120]}",
+               conversation_id=mission.conversation_id,
+               mission_id=mission.mission_id)
     return _mission_to_json(mission)
 
 
@@ -1873,6 +1961,10 @@ def mission_approve(mission_id: str, body: MissionApproveBody) -> dict:
                                       decided_by=body.decided_by)
     except ExecutorError as error:
         raise _mission_error(error)
+    emit_event("approval.resolved",
+               f"Mission {mission_id} approved",
+               conversation_id=mission.conversation_id,
+               mission_id=mission_id)
     return _mission_to_json(mission)
 
 
@@ -2206,6 +2298,10 @@ def camera_ingest(device_id: str) -> dict:
     save_observation(result.observation)
     logger.info("camera_ingested device_id=%s observation_id=%s",
                 device_id, result.observation.observation_id)
+    emit_event("observation.created",
+               f"Observation {result.observation.observation_id} "
+               f"via {device_id}",
+               node_id=device_id)
     return result.model_dump(mode="json")
 
 
@@ -2702,6 +2798,611 @@ def _fabrication_overlay(fabrication_id: str) -> list[dict]:
 
 
 # =============================================================================
+# HUMAN INTERFACE — VOICE, PHONE NODES, EVENTS (BIG #9).
+# The interface is never a second coordinator: adapters carry
+# structured turns, STT/TTS render locally, events inform but
+# never authorize, and every decision still flows through chat,
+# proposals, approvals, routing and verification. Voice
+# recognition is not authorization; notifications are not
+# commands; sessions are presence, not credentials.
+# =============================================================================
+
+def emit_event(event_type: str, summary: str = "", **fields) -> None:
+    """Best-effort bus event. Event failures never break flows."""
+    try:
+        save_bus_event(bus_event(event_type, summary, **fields))
+    except (EventRefusedError, ValueError):
+        pass
+
+
+def _usable_session_or_none(session_id: str):
+    if not session_id:
+        return None
+    try:
+        session = load_session(session_id)
+    except ValueError:
+        return None
+    if session is None:
+        return None
+    touched = touch_session(session)
+    if touched is not session:
+        try:
+            save_session(touched)
+        except ValueError:
+            pass
+    return touched if session_usable(touched) else None
+
+
+@app.post("/api/v1/interface/sessions", status_code=201)
+def interface_session_open(body: SessionOpenBody) -> dict:
+    """Open one interface session (presence only). Never a
+    credential, never node identity."""
+    try:
+        session = new_session(body.interface_id,
+                              node_id=body.node_id,
+                              conversation_id=body.conversation_id,
+                              ttl_seconds=body.ttl_seconds)
+    except InterfaceRefusedError as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    try:
+        save_session(session)
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    return session.model_dump(mode="json")
+
+
+@app.get("/api/v1/interface/sessions")
+def interface_sessions(interface_id: str = "") -> list[dict]:
+    try:
+        sessions = list_sessions(interface_id)
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    return [session.model_dump(mode="json") for session in sessions]
+
+
+@app.post("/api/v1/interface/sessions/{session_id}/touch")
+def interface_session_touch(session_id: str) -> dict:
+    session = load_session(session_id)
+    if session is None:
+        raise HTTPException(404, "Session not found")
+    touched = touch_session(session)
+    try:
+        save_session(touched)
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    return touched.model_dump(mode="json")
+
+
+@app.post("/api/v1/interface/sessions/{session_id}/revoke")
+def interface_session_revoke(session_id: str) -> dict:
+    session = load_session(session_id)
+    if session is None:
+        raise HTTPException(404, "Session not found")
+    revoked = revoke_session(session)
+    save_session(revoked)
+    return revoked.model_dump(mode="json")
+
+
+@app.post("/api/v1/interface/chat")
+async def interface_chat(body: InterfaceChatBody) -> dict:
+    """One interface turn converging into the chat flow. Text and
+    voice arrive here identically; the coordinator cannot tell
+    them apart beyond provenance."""
+    from .interface import VALID_INPUT_TYPES as _VALID_INPUT
+    if body.input_type not in _VALID_INPUT:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Unknown input type '{body.input_type}'")
+    session = None
+    if body.session_id:
+        session = _usable_session_or_none(body.session_id)
+        if session is None:
+            raise HTTPException(
+                status_code=409,
+                detail="Session unknown, expired or revoked")
+    try:
+        envelope = new_interface_message(
+            __import__("secrets").token_hex(4),
+            body.conversation_id or
+            generate_conversation_id(),
+            "user", body.content,
+            session_id=body.session_id,
+            input_type=body.input_type)
+    except InterfaceRefusedError as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    answer = await chat(ChatRequest(
+        conversation_id=envelope.conversation_id,
+        message=body.content,
+        observation_ids=list(body.observation_ids),
+        input_type=body.input_type))
+    if session is not None:
+        touched = touch_session(session)
+        try:
+            save_session(touched)
+        except ValueError:
+            pass
+    adapter = VoiceInterface() if body.input_type == "voice" \
+        else TextInterface()
+    return {"chat": answer.model_dump(mode="json"),
+            "interface": adapter.send_response(
+                new_interface_message(
+                    answer.message_id, answer.conversation_id,
+                    "assistant", answer.reply,
+                    session_id=body.session_id,
+                    input_type=body.input_type,
+                    output_type=("voice" if body.input_type ==
+                                 "voice" else "text")))}
+
+
+@app.post("/api/v1/voice/transcribe", status_code=201)
+async def voice_transcribe(body: VoiceTranscribeBody) -> dict:
+    """Transcribe one local audio file. Interpretation input only:
+    the text that comes back is never FACT and never a gate."""
+    try:
+        provider = get_stt_provider(body.provider)
+    except VoiceRefusedError as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    try:
+        result = await provider.transcribe(body.audio_ref)
+    except VoiceRefusedError as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    except VoiceUnavailable as error:
+        raise HTTPException(status_code=502, detail=str(error))
+    emit_event("voice.transcribed",
+               f"Transcription {result.transcript_id} "
+               f"({result.provider})",
+               node_id="")
+    return result.model_dump(mode="json")
+
+
+@app.post("/api/v1/voice/synthesize", status_code=201)
+async def voice_synthesize(body: VoiceSynthesizeBody) -> dict:
+    """Render coordinator text to local audio. Rendering only:
+    authorization semantics unchanged."""
+    try:
+        provider = get_tts_provider(body.provider)
+    except VoiceRefusedError as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    try:
+        result = await provider.synthesize(body.text)
+    except VoiceRefusedError as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    except VoiceUnavailable as error:
+        raise HTTPException(status_code=502, detail=str(error))
+    return result.model_dump(mode="json")
+
+
+@app.post("/api/v1/voice/chat")
+async def voice_chat(body: VoiceChatBody) -> dict:
+    """Voice turn end to end: audio -> STT -> conversation ->
+    advice/task -> response (+ optional spoken rendering). Typed
+    and voice commands converge in chat(); no voice-specific
+    task pipeline exists."""
+    text = (body.transcript or "").strip()
+    if body.audio_ref:
+        try:
+            provider = get_stt_provider(body.provider)
+        except VoiceRefusedError as error:
+            raise HTTPException(status_code=422, detail=str(error))
+        try:
+            transcription = await provider.transcribe(
+                body.audio_ref)
+        except VoiceRefusedError as error:
+            raise HTTPException(status_code=422, detail=str(error))
+        except VoiceUnavailable as error:
+            raise HTTPException(status_code=502, detail=str(error))
+        emit_event("voice.transcribed",
+                   f"Transcription {transcription.transcript_id} "
+                   f"for voice chat")
+        if not text:
+            text = transcription.text
+    if not text:
+        raise HTTPException(
+            status_code=422,
+            detail="Voice chat needs transcript text or audio")
+    session = None
+    if body.session_id:
+        session = _usable_session_or_none(body.session_id)
+        if session is None:
+            raise HTTPException(
+                status_code=409,
+                detail="Session unknown, expired or revoked")
+    answer = await chat(ChatRequest(
+        conversation_id=body.conversation_id,
+        message=text[:4000], input_type="voice"))
+    spoken = None
+    if body.speak:
+        try:
+            tts = get_tts_provider(body.provider)
+        except VoiceRefusedError as error:
+            raise HTTPException(status_code=422, detail=str(error))
+        try:
+            spoken = (await tts.synthesize(
+                answer.reply)).model_dump(mode="json")
+        except VoiceRefusedError as error:
+            raise HTTPException(status_code=422, detail=str(error))
+        except VoiceUnavailable as error:
+            raise HTTPException(status_code=502, detail=str(error))
+    if session is not None:
+        try:
+            save_session(touch_session(session))
+        except ValueError:
+            pass
+    return {"chat": answer.model_dump(mode="json"),
+            "spoken": spoken}
+
+
+@app.post("/api/v1/voice/capture/open", status_code=201)
+def voice_capture_open(body: CaptureOpenBody) -> dict:
+    """Open one explicit microphone window on a node that
+    advertises phone.microphone.read. Recording starts only
+    here — never in the background, never silently."""
+    with connection() as db:
+        row = db.execute(
+            "SELECT capabilities FROM nodes WHERE node_id=?",
+            (body.node_id,)).fetchone()
+    if row is None:
+        raise HTTPException(404, "Node is not registered")
+    try:
+        advertised = {str(cap).strip().lower()
+                      for cap in load(row["capabilities"])}
+    except ValueError:
+        advertised = set()
+    if "phone.microphone.read" not in advertised:
+        raise HTTPException(
+            status_code=422,
+            detail="Node does not advertise phone.microphone.read; "
+                   "no capture without the explicit capability")
+    try:
+        session = open_capture_session(body.node_id,
+                                       body.max_seconds)
+    except VoiceRefusedError as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    return session.model_dump(mode="json")
+
+
+@app.post("/api/v1/voice/capture/close")
+def voice_capture_close(body: CaptureCloseBody) -> dict:
+    try:
+        session = close_capture_session(body.session_id,
+                                        body.audio_ref)
+    except VoiceRefusedError as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    return session.model_dump(mode="json")
+
+
+@app.delete("/api/v1/voice/audio/{audio_ref}")
+def voice_audio_delete(audio_ref: str) -> dict:
+    """Explicit audio expiry. Missing files report removed=False."""
+    try:
+        removed = delete_audio(audio_ref)
+    except VoiceRefusedError as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    return {"audio_ref": audio_ref, "removed": removed}
+
+
+@app.get("/api/v1/events")
+def events_poll(after: str = "", limit: int = 50,
+                type: str = "") -> list[dict]:
+    """Bounded pollable event feed with cursor replay. Events
+    inform; they never authorize."""
+    from .events import list_events as _list_events
+    try:
+        found = _list_events(limit=limit, after=after,
+                             event_type=type)
+    except EventRefusedError as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    return [event.model_dump(mode="json") for event in found]
+
+
+@app.post("/api/v1/notifications", status_code=201)
+def notification_create(body: NotifyBody) -> dict:
+    """Create one informational notification. Reading it performs
+    nothing; approvals still need the approval mechanism."""
+    with connection() as db:
+        row = db.execute("SELECT node_id FROM nodes WHERE node_id=?",
+                         (body.recipient_node_id,)).fetchone()
+    if row is None:
+        raise HTTPException(
+            404, "Recipient node is not registered")
+    try:
+        notification = new_notification(
+            body.recipient_node_id, body.type, body.title,
+            body.body, severity=body.severity,
+            related_entity=body.related_entity,
+            related_mission=body.related_mission,
+            related_task=body.related_task)
+    except EventRefusedError as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    try:
+        save_notification(notification)
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    return notification.model_dump(mode="json")
+
+
+@app.get("/api/v1/notifications")
+def notifications_list(node_id: str, limit: int = 50,
+                       unread_only: bool = False) -> list[dict]:
+    try:
+        found = list_notifications(node_id, limit=limit,
+                                   unread_only=unread_only)
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    return [item.model_dump(mode="json") for item in found]
+
+
+@app.post("/api/v1/notifications/{notification_id}/read")
+def notification_read(notification_id: str,
+                      node_id: str) -> dict:
+    if not mark_notification_read(notification_id, node_id):
+        raise HTTPException(404, "Notification not found")
+    return {"notification_id": notification_id, "read": True}
+
+
+@app.get("/api/v1/status")
+def coordinator_status() -> dict:
+    """Bounded coordinator summary for interfaces. Counts and
+    states only: no secrets, no dumps, no filesystem paths."""
+    with connection() as db:
+        node_rows = db.execute(
+            "SELECT status, last_seen FROM nodes").fetchall()
+        task_rows = db.execute(
+            "SELECT status FROM tasks").fetchall()
+    online = 0
+    stale = 0
+    for row in node_rows:
+        derived = derive_status(row["status"], row["last_seen"])
+        if derived in ("online", "busy"):
+            online += 1
+        elif derived == "stale":
+            stale += 1
+    by_status: dict[str, int] = {}
+    for row in task_rows:
+        key = str(row["status"])
+        by_status[key] = by_status.get(key, 0) + 1
+    init_chat_database()
+    with chat_connection() as db:
+        missions = db.execute(
+            "SELECT status, COUNT(*) AS n FROM missions "
+            "GROUP BY status").fetchall()
+        pending_actions = db.execute(
+            "SELECT COUNT(*) AS n FROM desktop_actions WHERE "
+            "status='pending_approval'").fetchone()["n"]
+        proposed_writes = db.execute(
+            "SELECT COUNT(*) AS n FROM write_proposals WHERE "
+            "status='proposed'").fetchone()["n"]
+        pending_missions = db.execute(
+            "SELECT COUNT(*) AS n FROM missions WHERE "
+            "status='pending_approval'").fetchone()["n"]
+    return {
+        "coordinator": "online",
+        "nodes": {"total": len(node_rows), "online": online,
+                  "stale": stale},
+        "tasks": by_status,
+        "missions": {str(row["status"]): row["n"]
+                     for row in missions},
+        "pending_approvals": {
+            "desktop_actions": pending_actions,
+            "write_proposals": proposed_writes,
+            "missions": pending_missions,
+        },
+    }
+
+
+@app.post("/api/v1/voice/approval-requests", status_code=201)
+def voice_approval_open(body: VoiceApprovalRequestBody) -> dict:
+    """Open one voice-approval request against a still-pending
+    target. Refuses when another voice request is already
+    pending (ambiguity never approves) and for physical kinds
+    (voice never satisfies physical approval)."""
+    import secrets as _secrets
+    if body.kind not in VOICE_APPROVABLE_KINDS:
+        raise HTTPException(
+            status_code=422,
+            detail=f"kind '{body.kind}' never resolves by voice")
+    if pending_voice_requests():
+        raise HTTPException(
+            status_code=409,
+            detail="another voice approval is already pending; "
+                   "resolve it first")
+    fingerprint = ""
+    if body.kind == "write":
+        record = _write_load(body.target_id)
+        if record is None:
+            raise HTTPException(404, "Write proposal not found")
+        if record["status"] != "proposed":
+            raise HTTPException(
+                status_code=409,
+                detail="Write proposal is not pending")
+        from .controlled_writes import write_fingerprint as _fp
+        fingerprint = _fp(
+            WriteProposal.model_validate(record["record"]))
+        if body.fingerprint and body.fingerprint != fingerprint:
+            raise HTTPException(
+                status_code=422,
+                detail="Fingerprint does not match the proposal")
+    elif body.kind == "mission":
+        mission = load_mission(body.target_id)
+        if mission is None:
+            raise HTTPException(404, "Mission not found")
+        if mission.status != "pending_approval":
+            raise HTTPException(
+                status_code=409,
+                detail="Mission is not pending approval")
+    elif body.kind == "desktop":
+        try:
+            record = _desktop_load(body.target_id)
+        except HTTPException:
+            raise HTTPException(404, "Desktop action not found")
+        if record.status != "pending_approval":
+            raise HTTPException(
+                status_code=409,
+                detail="Desktop action is not pending approval")
+    else:  # pragma: no cover - kind gate above
+        raise HTTPException(status_code=422, detail="unknown kind")
+    from datetime import timedelta as _delta
+    created = now()
+    request = VoiceApprovalRequest(
+        approval_id=f"vapr-{_secrets.token_hex(4)}",
+        kind=body.kind, target_id=body.target_id,
+        fingerprint=fingerprint,
+        summary=body.summary or f"{body.kind} {body.target_id}",
+        created_at=created, expires_at=(
+            _parse_time(created) + _delta(
+                seconds=body.ttl_seconds)).isoformat())
+    save_voice_request(request)
+    emit_event("approval.required",
+               f"Voice approval requested for {body.kind} "
+               f"{body.target_id}",
+               proposal_id=(body.target_id if body.kind == "write"
+                            else ""),
+               mission_id=(body.target_id if body.kind == "mission"
+                           else ""))
+    return request.model_dump(mode="json")
+
+
+@app.post("/api/v1/voice/approve")
+def voice_approve(body: VoiceApproveBody) -> dict:
+    """Resolve one spoken answer. Exactly one pending request,
+    unexpired, target still pending with unchanged binding,
+    allowed word — otherwise refusal. Physical kinds cannot
+    reach this path. On YES the EXISTING decide path runs."""
+    stored = load_voice_request(body.approval_id)
+    if stored is None:
+        raise HTTPException(404, "Voice approval not found")
+    if stored.status != "pending":
+        raise HTTPException(
+            status_code=409, detail="Voice approval not pending")
+    others = [request for request in pending_voice_requests()
+              if request.approval_id != stored.approval_id]
+    if others:
+        raise HTTPException(
+            status_code=409,
+            detail="competing approval requests; refusing")
+    target_ok = _voice_target_ok(stored)
+    try:
+        outcome = resolve_voice_approval(
+            [stored], body.transcript, kind=stored.kind,
+            target_ok=target_ok)
+    except VoiceApprovalRefusedError as error:
+        if not error.retryable:
+            mark_voice_resolved(stored.approval_id, "rejected")
+        raise HTTPException(status_code=422, detail=str(error))
+    if not outcome["approved"]:
+        mark_voice_resolved(stored.approval_id, "rejected")
+        emit_event("approval.resolved",
+                   f"Voice approval {stored.approval_id} declined",
+                   proposal_id=(stored.target_id
+                                if stored.kind == "write" else ""))
+        return outcome
+    try:
+        _voice_execute_decide(stored)
+    except (ValueError, HTTPException) as error:
+        mark_voice_resolved(stored.approval_id, "rejected")
+        detail = (error.detail if isinstance(error, HTTPException)
+                  else str(error))
+        raise HTTPException(status_code=422, detail=detail)
+    mark_voice_resolved(stored.approval_id, "resolved")
+    emit_event("approval.resolved",
+               f"Voice approval {stored.approval_id} granted via "
+               f"existing {stored.kind} gate",
+               proposal_id=(stored.target_id
+                            if stored.kind == "write" else ""),
+               mission_id=(stored.target_id
+                           if stored.kind == "mission" else ""))
+    return outcome
+
+
+def _voice_target_ok(stored: VoiceApprovalRequest) -> bool:
+    """Recheck the target live: still pending, binding unchanged."""
+    if stored.kind == "write":
+        record = _write_load(stored.target_id)
+        if record is None or record["status"] != "proposed":
+            return False
+        from .controlled_writes import write_fingerprint as _fp
+        try:
+            current = _fp(
+                WriteProposal.model_validate(record["record"]))
+        except ValueError:
+            return False
+        return current == stored.fingerprint
+    if stored.kind == "mission":
+        mission = load_mission(stored.target_id)
+        return mission is not None and \
+            mission.status == "pending_approval"
+    if stored.kind == "desktop":
+        try:
+            record = _desktop_load(stored.target_id)
+        except HTTPException:
+            return False
+        return record.status == "pending_approval"
+    return False
+
+
+def _voice_execute_decide(stored: VoiceApprovalRequest) -> None:
+    """Run the EXISTING decide path for a voice-approved request."""
+    if stored.kind == "write":
+        record = _write_load(stored.target_id)
+        proposal = WriteProposal.model_validate(record["record"])
+        approval = decide_write(
+            request_write_approval(proposal), proposal, "YES",
+            decided_by=f"voice:{stored.approval_id}")
+        _write_save(proposal, "approved", approval=approval)
+    elif stored.kind == "mission":
+        _executor().approve(stored.target_id, "YES",
+                            decided_by=f"voice:{stored.approval_id}")
+    elif stored.kind == "desktop":
+        desktop_decide(stored.target_id,
+                       DesktopDecisionBody(response="YES",
+                                           decided_by="voice:"
+                                           f"{stored.approval_id}"))
+    else:  # pragma: no cover - kind gate at open time
+        raise VoiceApprovalRefusedError("unknown kind")
+
+
+@app.post("/api/v1/phone/{node_id}/camera", status_code=201)
+def phone_camera_register(node_id: str,
+                          body: PhoneCameraBody) -> dict:
+    """Register a phone-owned camera device. Explicit only: the
+    node must advertise phone.camera.snapshot, capture still
+    runs through the existing ingest path with its own gates."""
+    with connection() as db:
+        row = db.execute(
+            "SELECT capabilities FROM nodes WHERE node_id=?",
+            (node_id,)).fetchone()
+    if row is None:
+        raise HTTPException(404, "Node is not registered")
+    try:
+        advertised = {str(cap).strip().lower()
+                      for cap in load(row["capabilities"])}
+    except ValueError:
+        advertised = set()
+    if "phone.camera.snapshot" not in advertised:
+        raise HTTPException(
+            status_code=422,
+            detail="Node does not advertise phone.camera.snapshot")
+    import secrets as _secrets
+    try:
+        device = new_device(f"cam-{_secrets.token_hex(4)}",
+                            body.name,
+                            list(body.kinds), "phone",
+                            notes=f"phone-owned by {node_id}; no "
+                                  "background capture, explicit "
+                                  "ingest only")
+    except CameraRefusedError as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    save_device(device)
+    emit_event("observation.created",
+               f"Phone camera {device.device_id} registered "
+               f"for {node_id}",
+               node_id=node_id)
+    return device.model_dump(mode="json")
+
+
+# =============================================================================
 # WORLD GRAPH (BIG #4) — uniform projection, no new source of truth.
 # =============================================================================
 
@@ -2891,6 +3592,9 @@ def write_approve(proposal_id: str, body: WriteDecisionBody) -> dict:
     _write_save(proposal, status, approval=approval)
     logger.info("write_decided proposal_id=%s decision=%s",
                 proposal_id, approval.decision)
+    emit_event("approval.resolved",
+               f"Write {proposal_id} {approval.decision}",
+               proposal_id=proposal_id)
     return _write_to_json(_write_load(proposal_id))
 
 
@@ -3190,6 +3894,7 @@ def _workspace_nav() -> str:    return ("""<nav><a href="/">Mycelium</a><a href=
             """<a href="/agents">Agents</a><a href="/missions">Plans</a>"""
             """<a href="/cameras">Cameras</a>"""
             """<a href="/fabrication">Fabrication</a>"""
+            """<a href="/mobile">Mobile</a>"""
             """<a href="http://127.0.0.1:8080" target="_blank">INVENTory</a>"""
             """<a href="/api/v1/agent/status">Agent-status (JSON)</a></nav>""")
 
@@ -3215,6 +3920,19 @@ def chat_page(id: str | None = None) -> str:
         f"<div class='msg {escape(msg['role'])}'><b>{escape(msg['role'])}</b>"
         f"<p>{escape(msg['content'])}</p></div>"
         for msg in history)
+    try:
+        live = coordinator_status()
+        live_html = (
+            f"<p><small>Interface: web · nodes "
+            f"{live['nodes']['online']} online / "
+            f"{live['nodes']['stale']} stale · open approvals: "
+            f"desktop {live['pending_approvals']['desktop_actions']}, "
+            f"writes {live['pending_approvals']['write_proposals']}, "
+            f"missies {live['pending_approvals']['missions']} · "
+            f"<a href='/mobile'>mobile</a> · "
+            f"<a href='/api/v1/status'>status (JSON)</a></small></p>")
+    except (ValueError, KeyError):
+        live_html = ""
     return f"""<!doctype html><html><head><title>Mycelium Chat</title><style>
     body{{font:16px system-ui;max-width:860px;margin:2rem auto;padding:0 1rem;color:#17352a;background:#f4f5ed}} h1{{color:#2f6b45}} nav a{{margin-right:1rem;color:#2f6b45}}
     .msg{{background:white;border:1px solid #dde5dc;padding:.6rem .9rem;margin-bottom:.6rem;border-radius:6px}} .msg.user{{border-left:4px solid #2f6b45}} .msg.assistant{{border-left:4px solid #6b5ca5}} .msg.agent{{border-left:4px solid #b5892e}} .msg.system{{border-left:4px solid #888}}
@@ -3222,6 +3940,7 @@ def chat_page(id: str | None = None) -> str:
     <body>{_workspace_nav()}<h1>Mycelium Chat</h1>
     <p><label>Gesprek: <select onchange="location='/chat?id='+this.value">{options}</select></label>
     <a href="/chat">+ nieuw gesprek</a></p>
+    {live_html}
     {f"<p>⏳ <a href='/agents'>{len(waiting)} desktop-actie(s) wachten op goedkeuring</a> — de Desktop Agent voert ze pas uit na jouw YES.</p>" if waiting else ""}
     <form method="post" action="/web/missions">
     <input type="hidden" name="conversation_id" value="{escape(active or '')}">
@@ -3544,6 +4263,64 @@ def fabrication_page() -> str:
     geen fysieke e-stop. Details: <code>docs/3d-architecture.md</code>.</p></div>
     <h2>Runs</h2><ul>{runs or "<li>○ geen runs</li>"}</ul>
     <h2>Printers</h2><ul>{printers or "<li>○ geen printers</li>"}</ul></body></html>"""
+
+
+@app.get("/mobile", response_class=HTMLResponse)
+def mobile_page(node: str = "") -> str:
+    """Mobile-first interface foundation: chat, status, missions,
+    approvals, notifications, nodes. Server-rendered, no
+    framework, no secrets, usable from a phone browser on the
+    local network."""
+    status = coordinator_status()
+    approvals = status["pending_approvals"]
+    nodes_html = "".join(
+        f"<li><b>{escape(record['node_id'])}</b> — "
+        f"{escape(record['derived_status'])} · "
+        f"{len(record['capabilities'])} caps</li>"
+        for record in list_nodes()[:20])
+    events_html = "".join(
+        f"<li><small>{escape(event.created_at)}</small> "
+        f"<b>{escape(event.event_type)}</b> — "
+        f"{escape(event.summary[:120])}</li>"
+        for event in bus_events(limit=10))
+    notifications_html = ""
+    if node:
+        try:
+            items = list_notifications(node, limit=10)
+        except ValueError:
+            items = []
+        notifications_html = "".join(
+            f"<li><b>{escape(item.title)}</b> "
+            f"[{escape(item.type)}] — "
+            f"{escape(item.body[:120])}</li>"
+            for item in items) or "<li>○ geen notificaties</li>"
+    return f"""<!doctype html><html><head><title>Mycelium Mobile</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <style>
+    body{{font:16px system-ui;margin:0 auto;padding:0 1rem;max-width:640px;color:#17352a;background:#f4f5ed}}
+    h1{{color:#2f6b45;font-size:1.4rem}} nav a{{margin-right:.7rem;color:#2f6b45}}
+    .panel{{background:white;border:1px solid #dde5dc;padding:.8rem;border-radius:6px;margin-bottom:.8rem}}
+    ul{{padding-left:1.2rem}} button{{background:#2f6b45;color:white;border:0;padding:.5rem 1rem;border-radius:4px}}
+    textarea{{width:100%;min-height:3rem}}</style></head>
+    <body>{_workspace_nav()}<h1>Mycelium</h1>
+    <div class="panel"><b>Status:</b> nodes {status['nodes']['online']} online /
+    {status['nodes']['stale']} stale · taken {escape(str(status['tasks']))}<br>
+    <b>Open approvals:</b> desktop {approvals['desktop_actions']} ·
+    writes {approvals['write_proposals']} · missies {approvals['missions']}</div>
+    <div class="panel"><h2>Chat</h2>
+    <form method="post" action="/web/chat">
+    <textarea name="message" placeholder="Bijv. Wat ligt er op mijn werkbank?"></textarea><br><br>
+    <button type="submit">Verstuur</button></form>
+    <p><small>Spraak, taken en missies lopen via dezelfde
+    coordinator — deze pagina is interface, geen tweede
+    coordinator.</small></p></div>
+    <div class="panel"><h2>Missies</h2>
+    <p><a href="/missions">Plannen bekijken</a></p></div>
+    <div class="panel"><h2>Notificaties{escape(' voor ' + node) if node else ''}</h2>
+    <ul>{notifications_html or "<li>koppel ?node=&lt;node_id&gt; voor notificaties</li>"}</ul></div>
+    <div class="panel"><h2>Nodes</h2><ul>{nodes_html or "<li>○ geen nodes</li>"}</ul></div>
+    <div class="panel"><h2>Events</h2><ul>{events_html or "<li>○ geen events</li>"}</ul></div>
+    </body></html>"""
 
 
 @app.post("/web/desktop/{action_id}/decision")

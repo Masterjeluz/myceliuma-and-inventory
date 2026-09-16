@@ -227,6 +227,56 @@ def init_chat_database() -> None:
         );
         CREATE INDEX IF NOT EXISTS idx_fab_status
             ON fabrications(status, created_at);
+        CREATE TABLE IF NOT EXISTS interface_events (
+            event_id TEXT PRIMARY KEY,
+            event_type TEXT NOT NULL,
+            conversation_id TEXT NOT NULL DEFAULT '',
+            mission_id TEXT NOT NULL DEFAULT '',
+            task_id TEXT NOT NULL DEFAULT '',
+            proposal_id TEXT NOT NULL DEFAULT '',
+            node_id TEXT NOT NULL DEFAULT '',
+            summary TEXT NOT NULL DEFAULT '',
+            payload TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_events_type
+            ON interface_events(event_type, created_at);
+        CREATE TABLE IF NOT EXISTS notifications (
+            notification_id TEXT PRIMARY KEY,
+            recipient_node_id TEXT NOT NULL,
+            type TEXT NOT NULL,
+            title TEXT NOT NULL DEFAULT '',
+            body TEXT NOT NULL DEFAULT '',
+            severity TEXT NOT NULL DEFAULT 'info',
+            related_entity TEXT NOT NULL DEFAULT '',
+            related_mission TEXT NOT NULL DEFAULT '',
+            related_task TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL,
+            expires_at TEXT NOT NULL DEFAULT '',
+            read INTEGER NOT NULL DEFAULT 0
+        );
+        CREATE INDEX IF NOT EXISTS idx_ntf_recipient
+            ON notifications(recipient_node_id, created_at);
+        CREATE TABLE IF NOT EXISTS interface_sessions (
+            session_id TEXT PRIMARY KEY,
+            interface_id TEXT NOT NULL,
+            node_id TEXT NOT NULL DEFAULT '',
+            conversation_id TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL DEFAULT 'active',
+            created_at TEXT NOT NULL,
+            last_seen TEXT NOT NULL,
+            expires_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS voice_approvals (
+            approval_id TEXT PRIMARY KEY,
+            kind TEXT NOT NULL,
+            target_id TEXT NOT NULL,
+            fingerprint TEXT NOT NULL DEFAULT '',
+            summary TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL DEFAULT 'pending',
+            created_at TEXT NOT NULL,
+            expires_at TEXT NOT NULL
+        );
         CREATE TABLE IF NOT EXISTS write_proposals (
             proposal_id TEXT PRIMARY KEY,
             record TEXT NOT NULL,

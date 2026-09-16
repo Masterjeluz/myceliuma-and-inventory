@@ -28,6 +28,11 @@ persoonlijke computer-agent (verticale slice, live bewezen):
   pull-only claims met lease-bescherming; fysieke taken blokkeren
   bij lease-verval i.p.v. stil herrouteren, zie
   `docs/distributed-architecture.md`
+- **Human interface** (`/api/v1/interface/*`, `/api/v1/voice/*`,
+  `/api/v1/events`, `/mobile`): tekst/voice-convergentie, lokale
+  STT/TTS-contracten, telefoon-als-node, eventbus + notificaties,
+  voice-approval met binding (fysiek nooit via voice), zie
+  `docs/human-interface-architecture.md`
 - **Project-pakketten** (`/api/v1/project/package`): bounded,
   project-bewuste context zonder secrets of dumps
 - **Vision** (`/api/v1/cameras/*/ingest`, `/api/v1/vision/*`):
@@ -250,7 +255,7 @@ coordinator/app/nodes.py, routing.py, sim_nodes.py
 desktop_agent/   standalone lokale agent (poll, claim, voer uit, rapporteer)
 node_client/     lichte client voor seed/worker/core nodes (pull-only, token-optie)
 docs/            architectuurstatus, roadmap, principes, oorsprong
-tests/           784 tests (pytest -v)
+tests/           822 tests (pytest -v)
 ```
 
 Zie `docs/ARCHITECTURE_STATUS.md` (wat het systeem is),
@@ -258,7 +263,7 @@ Zie `docs/ARCHITECTURE_STATUS.md` (wat het systeem is),
 `docs/controlled-writes-and-verification.md` (schrijven + bewijzen),
 `docs/first-node-blueprint.md` (eerste externe node),
 `docs/semantic-world-model.md`, `docs/camera-architecture.md` en
-`docs/ROADMAP.md` (wat volgt). Teststatus: **784 passed**.
+`docs/ROADMAP.md` (wat volgt). Teststatus: **822 passed**.
 
 ## Bijdragen
 

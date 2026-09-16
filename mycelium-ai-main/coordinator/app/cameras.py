@@ -13,7 +13,7 @@ Kinds are explicit per device; nothing is assumed:
 Rules (tested, all fail-closed):
 
 - CameraDevice pins device_id (cam-*), name, kinds (closed
-  literal, no wildcards), source (manual/usb/insta360) and
+  literal, no wildcards), source (manual/usb/insta360/phone) and
   status. Unknown kinds/sources are refused at registration.
 - Cameras are observation sources, never actuators: this module
   has no capture, network or shell surface. A snapshot only
@@ -53,8 +53,8 @@ from .observations import check_image_ref
 CameraKind = Literal["snapshot", "webcam", "stream", "p360"]
 VALID_KINDS = frozenset({"snapshot", "webcam", "stream", "p360"})
 
-CameraSource = Literal["manual", "usb", "insta360"]
-VALID_SOURCES = frozenset({"manual", "usb", "insta360"})
+CameraSource = Literal["manual", "usb", "insta360", "phone"]
+VALID_SOURCES = frozenset({"manual", "usb", "insta360", "phone"})
 
 CAMERA_CAPABILITIES = {
     "snapshot": "camera.snapshot",
@@ -124,8 +124,8 @@ def new_device(device_id: str, name: str, kinds, source: str,
                notes: str = "") -> CameraDevice:
     if source not in VALID_SOURCES:
         raise CameraRefusedError(
-            f"Unknown camera source '{source}'; expected manual, usb "
-            "or insta360")
+            f"Unknown camera source '{source}'; expected manual, usb, "
+            "insta360 or phone")
     if not isinstance(name, str) or not name.strip():
         raise CameraRefusedError("Camera name must be non-empty text")
     return CameraDevice(

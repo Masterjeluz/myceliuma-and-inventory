@@ -149,6 +149,8 @@ class ChatRequest(BaseModel):
     mode: str = Field(default="hybrid", min_length=1, max_length=20)
     observation_ids: list[str] = Field(default_factory=list,
                                        max_length=3)
+    input_type: str = Field(default="text", min_length=1,
+                            max_length=20)
 
 
 class ChatResponse(BaseModel):
@@ -380,3 +382,101 @@ class PrintProposeBody(BaseModel):
 
 class PrintCancelBody(BaseModel):
     job_id: str = Field(min_length=3, max_length=80)
+
+
+class SessionOpenBody(BaseModel):
+    """Open one interface session (presence only, no permission)."""
+
+    interface_id: str = Field(min_length=1, max_length=80)
+    node_id: str = Field(default="", max_length=80)
+    conversation_id: str = Field(default="", max_length=80)
+    ttl_seconds: int = Field(default=86400, ge=1, le=604800)
+
+
+class InterfaceChatBody(BaseModel):
+    """One interface turn converging into the chat flow."""
+
+    session_id: str = Field(default="", max_length=80)
+    conversation_id: str | None = Field(default=None, min_length=3,
+                                        max_length=80)
+    content: str = Field(min_length=1, max_length=4000)
+    input_type: str = Field(default="text", min_length=1,
+                            max_length=20)
+    observation_ids: list[str] = Field(default_factory=list,
+                                       max_length=3)
+    speak: bool = False
+
+
+class VoiceTranscribeBody(BaseModel):
+    audio_ref: str = Field(min_length=1, max_length=200)
+    provider: str = Field(default="unavailable", min_length=1,
+                          max_length=40)
+
+
+class VoiceSynthesizeBody(BaseModel):
+    text: str = Field(min_length=1, max_length=4000)
+    provider: str = Field(default="unavailable", min_length=1,
+                          max_length=40)
+
+
+class VoiceChatBody(BaseModel):
+    """Voice turn: transcript and/or audio, converging into chat."""
+
+    transcript: str = Field(default="", max_length=4000)
+    audio_ref: str = Field(default="", max_length=200)
+    provider: str = Field(default="unavailable", min_length=1,
+                          max_length=40)
+    session_id: str = Field(default="", max_length=80)
+    conversation_id: str | None = Field(default=None, min_length=3,
+                                        max_length=80)
+    speak: bool = False
+
+
+class CaptureOpenBody(BaseModel):
+    node_id: str = Field(min_length=3, max_length=80)
+    max_seconds: int = Field(default=60, ge=1, le=600)
+
+
+class CaptureCloseBody(BaseModel):
+    session_id: str = Field(min_length=3, max_length=80)
+    audio_ref: str = Field(default="", max_length=200)
+
+
+class NotifyBody(BaseModel):
+    """Create one informational notification (never executable)."""
+
+    recipient_node_id: str = Field(min_length=3, max_length=80)
+    type: str = Field(min_length=1, max_length=40)
+    title: str = Field(min_length=1, max_length=200)
+    body: str = Field(default="", max_length=1000)
+    severity: str = Field(default="info", min_length=1,
+                          max_length=20)
+    related_entity: str = Field(default="", max_length=100)
+    related_mission: str = Field(default="", max_length=80)
+    related_task: str = Field(default="", max_length=80)
+
+
+class VoiceApprovalRequestBody(BaseModel):
+    """Open one voice-approval request. Target must be pending;
+    physical kinds are refused outright."""
+
+    kind: str = Field(min_length=1, max_length=20)
+    target_id: str = Field(min_length=3, max_length=80)
+    fingerprint: str = Field(default="", max_length=64)
+    summary: str = Field(default="", max_length=500)
+    ttl_seconds: int = Field(default=300, ge=30, le=3600)
+
+
+class VoiceApproveBody(BaseModel):
+    approval_id: str = Field(min_length=3, max_length=80)
+    transcript: str = Field(min_length=1, max_length=200)
+
+
+class PhoneCameraBody(BaseModel):
+    """Register a phone-owned camera device (explicit, no capture)."""
+
+    node_id: str = Field(min_length=3, max_length=80)
+    name: str = Field(default="Phone camera", min_length=1,
+                      max_length=120)
+    kinds: list[str] = Field(default_factory=lambda: ["snapshot"],
+                             min_length=1, max_length=4)

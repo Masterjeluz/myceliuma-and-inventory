@@ -1,4 +1,4 @@
-# Architecture Status (september 2026, na BIG #8)
+# Architecture Status (september 2026, na BIG #9)
 
 Momentopname van wat het systeem IS. Voor flows, zie
 `chat-agent-architecture.md`; voor richting, zie `ROADMAP.md`.
@@ -81,6 +81,11 @@ Momentopname van wat het systeem IS. Voor flows, zie
 | Deterministische routing | `routing.py` | DONE (uitlegbaar, geen kwaliteitsranking) |
 | Queue-plaatsing + claim-revalidatie | `main.py` (assign/route/claim/expire) | DONE (fysieke no-reroute) |
 | Multi-node-simulator | `sim_nodes.py` | DONE (test-only) |
+| Human-interface-adapters | `interface.py` | DONE (tekst echt, voice-architectuur) |
+| STT/TTS + audio-security | `voice.py` | DONE (loopback/test/unavailable) |
+| Voice-approval-safety | `voice_approval.py` | DONE (binding, geen fysiek) |
+| Eventbus + notificaties | `events.py` | DONE (polling, geen broker) |
+| Mobiele interface | `main.py` (`/mobile`) | DONE (server-rendered) |
 | Wereldgrafiek | `worldgraph.py` | DONE (projectie) |
 | Project-/git-context (read-only) | `project_context.py`, `git_context.py` | DONE |
 | Controlled writes (generiek) | `controlled_writes.py` | DONE |
@@ -98,8 +103,8 @@ Momentopname van wat het systeem IS. Voor flows, zie
 
 ## Teststatus (gemeten, niet geschat)
 
-- Mycelium: **784 passed** (`pytest -v` in `mycelium-ai-main/`)
-  (745 vóór BIG #8 + 39 nieuwe distributed-tests; camera-ctypes geeft
+- Mycelium: **822 passed** (`pytest -v` in `mycelium-ai-main/`)
+  (784 vóór BIG #9 + 38 nieuwe interface-tests; camera-ctypes geeft
   dezelfde pre-existing access-violation-meldingen als altijd)
 - INVENTory: **178 passed, 1 failed** — de faal is pre-existing:
   `test_real_inventory_db_untouched` pint de exacte byte-grootte van

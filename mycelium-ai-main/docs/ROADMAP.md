@@ -120,12 +120,27 @@ bestaan; echte multi-machine-praktijk volgt.
 - API-tokens vóór nodes buiten het vertrouwde LAN — DONE
   (per-node tokens; geen PKI, LAN-vertrouwen gedocumenteerd)
 
-## PHASE G — HUMAN INTERFACE (FUTURE)
+## PHASE G — HUMAN INTERFACE (PARTIAL als BIG #9)
 
-- Spraak (lokaal model, expliciete activering) — FUTURE
-- Telefoon als node/bediening — FUTURE
+Zie `docs/human-interface-architecture.md`.
+
+- Interface-abstractie (tekst echt, voice als architectuur,
+  nooit een tweede coordinator) — DONE
+- STT/TTS-abstracties (lokaal-first contract, unavailable +
+  test-providers, geen cloud/downloads) — DONE
+- Telefoon als node (bestaande BIG #8-auth, `phone.*`-
+  capabilities, pull-only, camera/mic expliciet gated) — DONE
+- Eventbus + notificaties (polling, cursor-replay, geen
+  broker) — DONE
+- Voice-approval met binding/eenmaligheid/verval (fysiek
+  nooit via voice) — DONE
+- Mobiele webinterface (server-rendered, geen framework) — DONE
+- Spraak (lokaal model, expliciete activering) — PARTIAL
+  (contract + capture-sessies; echte STT-engine FUTURE)
+- Telefoon als node/bediening — PARTIAL (foundation; geen
+  native app, geen push-infra)
+- Realtime status — DONE (polling + `/status`; geen sockets)
 - Garmin/auto/camper-integraties — FUTURE
-- Realtime scherm/warme observatie — FUTURE
 - Toekomstige AR-weergave van wereldmodel — FUTURE
 
 ## PHASE H — LIVING WORKSHOP (FUTURE)
