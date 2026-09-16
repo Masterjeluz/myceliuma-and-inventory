@@ -20,8 +20,8 @@ from coordinator.app.missions import new_mission
 
 
 def client(tmp_path, monkeypatch):
-    os.environ["MYCELIUM_DATABASE_PATH"] = str(tmp_path / "t.db")
-    os.environ["MYCELIUM_CHAT_DATABASE_PATH"] = str(tmp_path / "t-chat.db")
+    monkeypatch.setenv("MYCELIUM_DATABASE_PATH", str(tmp_path / "t.db"))
+    monkeypatch.setenv("MYCELIUM_CHAT_DATABASE_PATH", str(tmp_path / "t-chat.db"))
     with TestClient(main_mod.app) as test_client:
         yield test_client
 

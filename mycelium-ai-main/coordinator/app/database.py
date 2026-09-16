@@ -1,8 +1,17 @@
 import json
 import os
 import sqlite3
+import threading
 from contextlib import contextmanager
 from pathlib import Path
+
+
+#: Serializes schema setup. DDL (executescript with CREATE
+#: TABLE/INDEX) cannot run concurrently against one file;
+#: this lock makes first-touch init a critical section.
+#: Data writes never take this lock — they serialize in
+#: the engine via WAL + busy_timeout instead.
+_INIT_LOCK = threading.Lock()
 
 
 def database_path() -> str:
@@ -11,10 +20,29 @@ def database_path() -> str:
     return path
 
 
+#: Conservative busy timeout for local concurrent writers
+#: (claim + campaign + sync-apply + jobs). Writers wait
+#: instead of failing with "database is locked"; no retry
+#: loop masks real contention, the engine serializes it.
+BUSY_TIMEOUT_MS = 15000
+
+
+def _open_db(path: str) -> sqlite3.Connection:
+    """One deterministic connection setup for every database
+    file: WAL journal mode (readers never block writers),
+    busy timeout (writers wait instead of failing), row
+    factory. Short-lived connections only — never shared
+    across threads, never held open across requests."""
+    db = sqlite3.connect(path, timeout=BUSY_TIMEOUT_MS / 1000.0)
+    db.row_factory = sqlite3.Row
+    db.execute(f"PRAGMA busy_timeout={BUSY_TIMEOUT_MS}")
+    db.execute("PRAGMA journal_mode=WAL")
+    return db
+
+
 @contextmanager
 def connection():
-    db = sqlite3.connect(database_path())
-    db.row_factory = sqlite3.Row
+    db = _open_db(database_path())
     try:
         yield db
         db.commit()
@@ -23,8 +51,9 @@ def connection():
 
 
 def init_database() -> None:
-    with connection() as db:
-        db.executescript("""
+    with _INIT_LOCK:
+        with connection() as db:
+            db.executescript("""
         CREATE TABLE IF NOT EXISTS nodes (
             node_id TEXT PRIMARY KEY,
             hostname TEXT NOT NULL,
@@ -52,9 +81,13 @@ def init_database() -> None:
             lease_until TEXT,
             attempt_count INTEGER NOT NULL DEFAULT 0
         );
+        CREATE INDEX IF NOT EXISTS idx_tasks_status
+            ON tasks(status, priority DESC, id ASC);
+        CREATE INDEX IF NOT EXISTS idx_nodes_last_seen
+            ON nodes(last_seen);
         """)
-        _ensure_task_columns(db)
-        _ensure_node_columns(db)
+            _ensure_task_columns(db)
+            _ensure_node_columns(db)
 
 
 def _ensure_node_columns(db) -> None:
@@ -116,8 +149,7 @@ def chat_connection():
     actions live here instead. Same JSON conventions, same additive
     discipline, lazily initialized on first use.
     """
-    db = sqlite3.connect(chat_database_path())
-    db.row_factory = sqlite3.Row
+    db = _open_db(chat_database_path())
     try:
         yield db
         db.commit()
@@ -126,8 +158,9 @@ def chat_connection():
 
 
 def init_chat_database() -> None:
-    with chat_connection() as db:
-        db.executescript("""
+    with _INIT_LOCK:
+        with chat_connection() as db:
+            db.executescript("""
         CREATE TABLE IF NOT EXISTS conversations (
             conversation_id TEXT PRIMARY KEY,
             title TEXT NOT NULL DEFAULT '',
@@ -364,6 +397,10 @@ def init_chat_database() -> None:
             ON memories(memory_type, status);
         CREATE INDEX IF NOT EXISTS idx_memories_project
             ON memories(project_ref, status);
+        CREATE INDEX IF NOT EXISTS idx_memories_updated
+            ON memories(updated_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_memories_truth
+            ON memories(truth, status);
         CREATE TABLE IF NOT EXISTS health_measurements (
             measurement_id TEXT PRIMARY KEY,
             metric TEXT NOT NULL DEFAULT '',
@@ -411,6 +448,10 @@ def init_chat_database() -> None:
             captured_at TEXT NOT NULL,
             published_at TEXT NOT NULL DEFAULT ''
         );
+        CREATE INDEX IF NOT EXISTS idx_research_sources_hash
+            ON research_sources(content_hash);
+        CREATE INDEX IF NOT EXISTS idx_research_sources_type
+            ON research_sources(source_type, captured_at);
         CREATE TABLE IF NOT EXISTS research_records (
             record_id TEXT PRIMARY KEY,
             question TEXT NOT NULL DEFAULT '',
@@ -521,7 +562,7 @@ def init_chat_database() -> None:
             started_at TEXT NOT NULL,
             finished_at TEXT NOT NULL DEFAULT ''
         );
-        """)
+            """)
 
 
 def dump(value: object) -> str:

@@ -88,7 +88,7 @@ def new_familiar(name: str, kind: str, *,
         linked_id=str(linked_id or "")[:120], status="idle",
         provenance=provenance or Provenance(
             source_type="user-created",
-            creator_id="familiars", human_verified=True),
+            creator_id="familiars", human_verified=False),
         updated_at=now())
 
 

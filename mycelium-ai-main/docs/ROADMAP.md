@@ -211,6 +211,27 @@ Zie `docs/memory.md`, `docs/watcher.md`,
   printertransports, live Garmin/Instagram, CAD-
   runtimes, fysieke robot/drone-executie — FUTURE
 
+## PHASE J — STABILIZATION (DONE als BIG #16)
+
+Zie `docs/stabilization.md`. Geen nieuwe productfeatures;
+concurrency, fencing, approvals, auth en retentie
+gehard als voorwaarde voor elke echte LIVE-integratie.
+
+- SQLite WAL + busy_timeout, atomische claim/campaign-
+  writes, concurrency-tests — DONE
+- Globale fencing (sync/claim/complete/campaign) + atomaire
+  campaign (één houder per epoch) — DONE
+- Retentie (logs) + indexen (hot paths) — DONE
+- Robot/drone via WriteProposal (exact YES, fingerprint,
+  target-binding) + bewijs-verificatie — DONE
+- Node-auth (token-plicht nieuw, legacy bevroren, rotatie,
+  operator-gated enable/disable) — DONE
+- Health-isolatie, provenance-defaults, save-invarianten,
+  payload-unificatie, paginatie-conventie — DONE
+- Mock-badges, voice-beleid (optie A), testhygiëne,
+  perf-sanity — DONE
+- Testbasis: 920 Mycelium-tests — DONE
+
 ## Expliciet niet op de kaart
 
 Autonome ongelimiteerde computerbediening, credential-automatisering,

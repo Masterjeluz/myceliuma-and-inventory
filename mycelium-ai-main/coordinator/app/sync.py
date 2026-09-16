@@ -27,6 +27,7 @@ from .diststate import (
     known_event_ids,
     read_log,
 )
+from .failover import FencingError
 
 SYNC_BATCH = 100
 
@@ -70,7 +71,7 @@ def apply_pulled(items: list[dict]) -> dict:
             continue
         try:
             outcome = apply_envelope(envelope)
-        except DistStateRefusedError:
+        except (DistStateRefusedError, FencingError):
             summary["failed"] += 1
             continue
         if outcome["status"] == "applied":

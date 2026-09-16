@@ -104,7 +104,7 @@ def new_spool(material: str, weight_g: float, *,
         location=str(location or "")[:200],
         provenance=provenance or Provenance(
             source_type="user-created", creator_id="filament",
-            human_verified=True),
+            human_verified=False),
         updated_at=now())
 
 

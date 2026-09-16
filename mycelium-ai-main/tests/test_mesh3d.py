@@ -11,6 +11,13 @@ import struct
 
 import pytest
 
+
+@pytest.fixture(autouse=True)
+def isolated_fab_dir(tmp_path, monkeypatch):
+    """Each test gets its own fabrication dir: no cross-test
+    file bleed through the shared temp directory."""
+    monkeypatch.setenv("MYCELIUM_FABRICATION_DIR",
+                       str(tmp_path / "fab"))
 from coordinator.app.mesh3d import (
     MeshRefusedError,
     MeshUnavailable,

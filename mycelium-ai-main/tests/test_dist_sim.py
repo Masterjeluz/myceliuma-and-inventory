@@ -25,17 +25,30 @@ def make_client(tmp_path, monkeypatch):
         yield test_client
 
 
+def sim_token(node_id: str) -> str:
+    return f"sim-token-{node_id}-123"
+
+
 def register_all(test_client):
     for node_id in ("node_desktop", "node_vision", "node_cpu"):
-        response = test_client.post("/api/v1/nodes/register",
-                                    json=sim_registration(node_id))
+        response = test_client.post(
+            "/api/v1/nodes/register",
+            json={**sim_registration(node_id),
+                  "node_token": sim_token(node_id)})
         assert response.status_code == 201, response.text
 
 
 def heartbeat(test_client, node_id):
     assert test_client.post(
         f"/api/v1/nodes/{node_id}/heartbeat",
-        json={"available": True}).status_code == 204
+        json={"available": True,
+              "node_token": sim_token(node_id)}).status_code == 204
+
+
+def claim(test_client, node_id):
+    return test_client.post(
+        f"/api/v1/tasks/claim/{node_id}",
+        params={"node_token": sim_token(node_id)}).json()
 
 
 def test_case_1_vision_task_flows(tmp_path, monkeypatch):
@@ -54,8 +67,7 @@ def test_case_1_vision_task_flows(tmp_path, monkeypatch):
             json={"policy": {
                 "require_authenticated": False}}).json()
         assert assigned["assigned_node_id"] == "node_vision"
-        claimed = test_client.post(
-            "/api/v1/tasks/claim/node_vision").json()
+        claimed = claim(test_client, "node_vision")
         assert claimed["id"] == task["id"]
         assert test_client.post(
             f"/api/v1/tasks/{task['id']}/complete",
@@ -95,10 +107,8 @@ def test_case_2_stale_vision_node_reroutes(tmp_path, monkeypatch):
             json={"policy": {
                 "require_authenticated": False}}).json()
         assert assigned["assigned_node_id"] == "node_cpu"
-        assert test_client.post(
-            "/api/v1/tasks/claim/node_vision").json() is None
-        claimed = test_client.post(
-            "/api/v1/tasks/claim/node_cpu").json()
+        assert claim(test_client, "node_vision") is None
+        claimed = claim(test_client, "node_cpu")
         assert claimed["id"] == task["id"]
 
 
@@ -125,8 +135,7 @@ def test_case_3_physical_disappearance_blocks(tmp_path, monkeypatch):
             json={"policy": {
                 "require_authenticated": False}}).json()
         assert assigned["assigned_node_id"] == "node_cpu"
-        claimed = test_client.post(
-            "/api/v1/tasks/claim/node_cpu").json()
+        claimed = claim(test_client, "node_cpu")
         assert claimed["id"] == task["id"]
         # Node disappears mid-lease: expire, then prove no reroute.
         with connection() as db:
@@ -146,5 +155,4 @@ def test_case_3_physical_disappearance_blocks(tmp_path, monkeypatch):
         assert status == "blocked"
         # Even a fresh capable node never re-claims it.
         heartbeat(test_client, "node_cpu")
-        assert test_client.post(
-            "/api/v1/tasks/claim/node_cpu").json() is None
+        assert claim(test_client, "node_cpu") is None

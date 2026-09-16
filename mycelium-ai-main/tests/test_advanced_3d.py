@@ -11,6 +11,8 @@ def make_client(tmp_path, monkeypatch):
                        str(tmp_path / "p4.db"))
     monkeypatch.setenv("MYCELIUM_CHAT_DATABASE_PATH",
                        str(tmp_path / "p4-chat.db"))
+    monkeypatch.setenv("MYCELIUM_FABRICATION_DIR",
+                       str(tmp_path / "p4-fab"))
     with TestClient(main_mod.app) as test_client:
         yield test_client
 

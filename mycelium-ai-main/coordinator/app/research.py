@@ -413,6 +413,10 @@ def instagram_export_to_sources(export: dict, *,
     if not isinstance(items, list) or len(items) > 100:
         raise ResearchRefusedError(
             "export holds 0..100 items")
+    # The mock flag survives ingestion: mock exports stay
+    # visibly mock down to storage, never laundered into
+    # "user-owned manual export".
+    mocked = bool(export.get("mock"))
     sources = []
     for item in items[:100]:
         if not isinstance(item, dict):
@@ -423,7 +427,7 @@ def instagram_export_to_sources(export: dict, *,
             str(item.get("title", "Instagram import"))[:300],
             content=caption,
             external_id=str(item.get("id", ""))[:200],
-            reference=f"manual-export:"
+            reference=f"{'mock' if mocked else 'manual-export'}:"
                       f"{collection or item.get('collection', '')}"
                       f":{item.get('id', '')}"[:500],
             author=str(item.get("author", ""))[:200],
@@ -431,9 +435,12 @@ def instagram_export_to_sources(export: dict, *,
                     for topic in (item.get("topics") or [])][:20],
             provenance=Provenance(
                 source_type="external-source",
-                creator_id="instagram:manual-export",
+                creator_id="instagram:mock" if mocked else
+                "instagram:manual-export",
                 human_verified=False,
-                notes="user-owned manual export; content is "
+                notes="mock export for tests; not a live "
+                      "integration" if mocked else
+                      "user-owned manual export; content is "
                       "inspiration, not fact")))
     return sources
 

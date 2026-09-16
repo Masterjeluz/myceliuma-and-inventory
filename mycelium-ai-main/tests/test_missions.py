@@ -23,8 +23,8 @@ from coordinator.app.missions import (
 
 
 def client(tmp_path, monkeypatch):
-    os.environ["MYCELIUM_DATABASE_PATH"] = str(tmp_path / "m.db")
-    os.environ["MYCELIUM_CHAT_DATABASE_PATH"] = str(tmp_path / "m-chat.db")
+    monkeypatch.setenv("MYCELIUM_DATABASE_PATH", str(tmp_path / "m.db"))
+    monkeypatch.setenv("MYCELIUM_CHAT_DATABASE_PATH", str(tmp_path / "m-chat.db"))
     with TestClient(main_mod.app) as test_client:
         yield test_client
 
@@ -156,7 +156,7 @@ def test_new_mission_model_rules():
 
 
 def test_save_conflict_is_atomic(tmp_path, monkeypatch):
-    os.environ["MYCELIUM_CHAT_DATABASE_PATH"] = str(tmp_path / "c.db")
+    monkeypatch.setenv("MYCELIUM_CHAT_DATABASE_PATH", str(tmp_path / "c.db"))
     mission = new_mission("mission_race", "conv-1", "doel",
                           readonly_steps())
     save_mission(mission)
@@ -240,9 +240,12 @@ def test_full_step_chain_with_agent(tmp_path, monkeypatch, fakes):
         # standalone agent claims and "executes" (simulated via HTTP)
         test_client.post("/api/v1/nodes/register", json={
             "node_id": "desktop-chain-01", "hostname": "pc",
-            "capabilities": ["agent:desktop", "desktop.screen.read"]})
+            "capabilities": ["agent:desktop", "desktop.screen.read"],
+            "node_token": "chain-token-123456"})
         claimed = test_client.post("/api/v1/desktop/actions/next",
-                                   json={"node_id": "desktop-chain-01"})
+                                   json={"node_id": "desktop-chain-01",
+                                         "node_token":
+                                         "chain-token-123456"})
         assert claimed.json()["action_id"] == action_id
         assert claimed.json()["mission_id"] == mission_id
         test_client.post(f"/api/v1/desktop/actions/{action_id}/result",
@@ -293,14 +296,18 @@ def test_desktop_step_waits_for_human_yes(tmp_path, monkeypatch, fakes):
         # agent cannot claim before approval
         test_client.post("/api/v1/nodes/register", json={
             "node_id": "desktop-wait-01", "hostname": "pc",
-            "capabilities": ["agent:desktop", "desktop.mouse.click"]})
+            "capabilities": ["agent:desktop", "desktop.mouse.click"],
+            "node_token": "wait-token-123456"})
         assert test_client.post("/api/v1/desktop/actions/next", json={
-            "node_id": "desktop-wait-01"}).json() is None
+            "node_id": "desktop-wait-01",
+            "node_token": "wait-token-123456"}).json() is None
         # human YES unblocks; agent claims; failure stops mission safely
         test_client.post(f"/api/v1/desktop/actions/{action_id}/decision",
                          json={"response": "YES"})
         assert test_client.post("/api/v1/desktop/actions/next", json={
-            "node_id": "desktop-wait-01"}).json()["action_id"] == action_id
+            "node_id": "desktop-wait-01",
+            "node_token": "wait-token-123456"}).json()[
+                "action_id"] == action_id
         test_client.post(f"/api/v1/desktop/actions/{action_id}/result",
                          json={"status": "failed",
                                "error": "knop niet gevonden"})
@@ -333,9 +340,11 @@ def test_scope_violation_blocks_step(tmp_path, monkeypatch, fakes):
         db.close()
         test_client.post("/api/v1/nodes/register", json={
             "node_id": "desktop-scope-01", "hostname": "pc",
-            "capabilities": ["agent:desktop", "desktop.screen.read"]})
+            "capabilities": ["agent:desktop", "desktop.screen.read"],
+            "node_token": "scope-token-123456"})
         test_client.post("/api/v1/desktop/actions/next",
-                         json={"node_id": "desktop-scope-01"})
+                         json={"node_id": "desktop-scope-01",
+                               "node_token": "scope-token-123456"})
         test_client.post(f"/api/v1/desktop/actions/{action_id}/result",
                          json={"status": "completed",
                                "observation_reference": "obs-x"})

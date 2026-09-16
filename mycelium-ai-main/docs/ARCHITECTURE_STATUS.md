@@ -1,4 +1,4 @@
-# Architecture Status (september 2026, na BIG #11-15)
+# Architecture Status (september 2026, na BIG #16)
 
 Momentopname van wat het systeem IS. Voor flows, zie
 `chat-agent-architecture.md`; voor richting, zie `ROADMAP.md`.
@@ -116,16 +116,17 @@ Momentopname van wat het systeem IS. Voor flows, zie
 | Fabricatie-orkestratie | `fabrication.py` | PARTIAL (plant/selecteert; start blijft gated) |
 | Robots/drones/familiars/twin | `robots.py`, `drones.py`, `familiars.py`, `twin.py` | PARTIAL (modellen + gates; executie HARDWARE_REQUIRED) |
 | Jobs | `jobs.py` | DONE (bounded, observable, idempotent) |
+| Stabilization | `retention.py`, `payloads.py`, node-auth, fencing | DONE (BIG #16; zie `stabilization.md`) |
 | Live-universiteit | `live.py` + secties | PARTIAL (8 nieuwe secties, health apart gescoped) |
 | Lokale desktop-scanner | `Mycelium/agent/` | Bestaand, read-only |
 
 ## Teststatus (gemeten, niet geschat)
 
-- Mycelium: **885 passed** (`pytest -v` in `mycelium-ai-main/`)
-  (857 vóór BIG #11-15 + 28 nieuwe memory/health/nutrition/
-  research/skills/3D/physical/live/smoke-tests; camera-ctypes
-  geeft dezelfde pre-existing access-violation-meldingen als
-  altijd)
+- Mycelium: **920 passed** (`pytest -v` in `mycelium-ai-main/`)
+  (885 voor BIG #16 + 35 nieuwe concurrency/fencing/race/
+  retention/node-auth/hardening/honesty/perf-tests;
+  camera-ctypes geeft dezelfde pre-existing
+  access-violation-meldingen als altijd)
 - INVENTory: **179 passed, 1 failed** (ongewijzigd schema) — de faal is pre-existing:
   `test_real_inventory_db_untouched` pint de exacte byte-grootte van
   de gitignored lokale `data/inventory.db`; inhoud groeit bij normaal

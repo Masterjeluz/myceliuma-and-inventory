@@ -57,9 +57,9 @@ def make_result(entity_id="obj_abc123", title="Arduino Uno"):
 
 
 def client(tmp_path, monkeypatch, reader=None, provider=None):
-    os.environ["MYCELIUM_DATABASE_PATH"] = str(tmp_path / "chat.db")
-    os.environ["MYCELIUM_CHAT_DATABASE_PATH"] = str(
-        tmp_path / "chat-state.db")
+    monkeypatch.setenv("MYCELIUM_DATABASE_PATH", str(tmp_path / "chat.db"))
+    monkeypatch.setenv("MYCELIUM_CHAT_DATABASE_PATH", str(
+        tmp_path / "chat-state.db"))
     monkeypatch.setattr(main_mod, "_world_reader",
                         lambda: reader or FakeReader(
                             [make_result()]))
@@ -130,9 +130,9 @@ def test_chat_unknown_provider_refused(tmp_path, monkeypatch):
     def bad_provider(name=None, **kwargs):
         raise ProviderRefusedError("Unknown AI provider")
 
-    os.environ["MYCELIUM_DATABASE_PATH"] = str(tmp_path / "chat.db")
-    os.environ["MYCELIUM_CHAT_DATABASE_PATH"] = str(
-        tmp_path / "chat-state.db")
+    monkeypatch.setenv("MYCELIUM_DATABASE_PATH", str(tmp_path / "chat.db"))
+    monkeypatch.setenv("MYCELIUM_CHAT_DATABASE_PATH", str(
+        tmp_path / "chat-state.db"))
     monkeypatch.setattr(main_mod, "get_provider", bad_provider)
     with TestClient(main_mod.app) as test_client:
         response = test_client.post("/api/v1/chat", json={

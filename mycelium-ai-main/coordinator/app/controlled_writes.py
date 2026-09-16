@@ -47,13 +47,18 @@ REJECT_TEXT = "NO"
 #: ``printer.execute`` (BIG #7) reuses the exact-YES/fingerprint/
 #: staleness machinery for physical execution: it is a second,
 #: explicit approval on top of any mission/plan approval — a plan
-#: YES never means "start the machine".
+#: YES never means "start the machine". ``robot.execute`` and
+#: ``drone.mission`` (BIG #16) reuse the same machinery for
+#: physical-agent actions; like printing, approval authorizes
+#: but execution itself stays HARDWARE_REQUIRED.
 VALID_MUTATION_TYPES = frozenset({
     "inventory.create",
     "inventory.update",
     "inventory.create_relationship",
     "git.commit",
     "printer.execute",
+    "robot.execute",
+    "drone.mission",
 })
 
 MUTATION_CAPABILITIES = {
@@ -62,6 +67,8 @@ MUTATION_CAPABILITIES = {
     "inventory.create_relationship": "inventory.write.relate",
     "git.commit": "git.write.commit",
     "printer.execute": "printer.execute",
+    "robot.execute": "robot.execute",
+    "drone.mission": "drone.mission",
 }
 
 #: A proposal authorizes execution for at most one hour afterwards.

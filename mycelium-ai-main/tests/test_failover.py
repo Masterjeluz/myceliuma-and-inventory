@@ -31,7 +31,8 @@ def register(node_id, capable=True, live=True):
     with TestClient(main_mod.app) as client:
         response = client.post("/api/v1/nodes/register", json={
             "node_id": node_id, "hostname": "h",
-            "capabilities": [], "coordinator_capable": capable})
+            "capabilities": [], "coordinator_capable": capable,
+            "node_token": f"failover-token-{node_id}-123"})
         assert response.status_code == 201, response.text
         if not live:
             from coordinator.app.database import connection

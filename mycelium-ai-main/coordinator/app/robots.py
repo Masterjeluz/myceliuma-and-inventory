@@ -97,19 +97,6 @@ class Robot(BaseModel):
     updated_at: str = Field(default="", max_length=80)
 
 
-class RobotActionProposal(BaseModel):
-    action_id: str = Field(min_length=3, max_length=80)
-    robot_id: str = Field(min_length=1, max_length=80)
-    action: str = Field(min_length=1, max_length=40)
-    params: dict = Field(default_factory=dict)
-    physical: bool = False
-    safety_state: str = Field(default="safe", max_length=20)
-    simulation_note: str = Field(default="", max_length=500)
-    status: str = Field(default="proposed", max_length=20)
-    approved_by: str = Field(default="", max_length=80)
-    created_at: str = Field(default="", max_length=80)
-
-
 class RobotTelemetry(BaseModel):
     action_id: str = Field(min_length=1, max_length=80)
     robot_id: str = Field(min_length=1, max_length=80)
@@ -148,7 +135,7 @@ def new_robot(name: str, *, robot_type: str = "other",
                    for item in (actuators or [])][:20],
         provenance=provenance or Provenance(
             source_type="user-created", creator_id="robots",
-            human_verified=True),
+            human_verified=False),
         updated_at=now())
 
 
@@ -220,10 +207,17 @@ def set_safety(robot_id: str, safety_state: str) -> Robot:
     return updated
 
 
-def propose_action(robot_id: str, action: str, params: dict,
-                   *, simulation_note: str = "") -> RobotActionProposal:
-    """Intent → proposal. Physical actions are flagged and
-    need approval + safe|supervised state at approve time."""
+def build_robot_proposal(robot_id: str, action: str,
+                         params: dict, actor: str,
+                         *, simulation_note: str = ""):
+    """Intent → inert WriteProposal (mutation type
+    robot.execute). Same exact-YES/fingerprint/staleness
+    machinery as every other mutation: approval happens
+    through the generic write-approval flow, never through
+    a robot-local string check. The payload snapshots the
+    safety state and capabilities, so later changes break
+    the fingerprint instead of slipping through."""
+    from .controlled_writes import propose_write
     robot = get_robot(robot_id)
     if robot is None:
         raise RobotRefusedError("robot not found")
@@ -235,39 +229,55 @@ def propose_action(robot_id: str, action: str, params: dict,
             f"robot lacks capability '{action}'")
     if not isinstance(params, dict) or len(params) > 10:
         raise RobotRefusedError("params must be a small object")
-    return RobotActionProposal(
-        action_id=generate_action_id(), robot_id=robot_id,
-        action=action, params=dict(params),
-        physical=action in PHYSICAL_ACTIONS,
-        safety_state=robot.safety_state,
-        simulation_note=str(simulation_note or "")[:500],
-        status="proposed", created_at=now())
+    if not isinstance(actor, str) or not actor.strip():
+        raise RobotRefusedError("proposal needs an actor")
+    return propose_write(
+        generate_action_id(), "robot.execute",
+        f"robot:{robot_id}",
+        {"action": action, "params": dict(params),
+         "physical": action in PHYSICAL_ACTIONS,
+         "safety_state": robot.safety_state,
+         "capabilities": sorted(robot.capabilities),
+         "simulation_note": str(simulation_note or "")[:500]},
+        actor=actor.strip()[:80])
 
 
-def approve_action(proposal: RobotActionProposal,
-                   approved_by: str) -> RobotActionProposal:
-    """Human approval. Physical actions refuse unless the
-    robot is safe|supervised right now."""
-    if not str(approved_by or "").strip():
-        raise RobotRefusedError(
-            "robot actions need a human approver")
-    robot = get_robot(proposal.robot_id)
+def check_robot_state_for_approval(robot_id: str,
+                                   proposal) -> Robot:
+    """Pre-approval recheck against live state (not the
+    client body): target binding, capability still owned,
+    safety still safe|supervised for physical actions,
+    robot still idle. Called by the approve route after
+    loading the stored proposal."""
+    robot = get_robot(robot_id)
     if robot is None:
         raise RobotRefusedError("robot not found")
-    if proposal.physical and robot.safety_state not in (
+    payload = proposal.payload or {}
+    if proposal.target != f"robot:{robot_id}":
+        raise RobotRefusedError(
+            "proposal target does not bind to this robot")
+    action = str(payload.get("action", ""))
+    if action not in robot.capabilities:
+        raise RobotRefusedError(
+            f"robot no longer holds capability '{action}'")
+    if payload.get("physical") and robot.safety_state not in (
             "safe", "supervised"):
         raise RobotRefusedError(
             f"physical action refused: safety state is "
             f"'{robot.safety_state}'")
-    if robot.status not in ("idle",):
+    if robot.status != "idle":
         raise RobotRefusedError(
             f"robot is '{robot.status}'; only idle robots "
             "take new actions")
+    return robot
+
+
+def mark_robot_busy(robot_id: str) -> None:
+    robot = get_robot(robot_id)
+    if robot is None:
+        raise RobotRefusedError("robot not found")
     save_robot(robot.model_copy(update={
         "status": "busy", "updated_at": now()}))
-    return proposal.model_copy(update={
-        "status": "approved",
-        "approved_by": approved_by.strip()[:80]})
 
 
 def record_telemetry(action_id: str, robot_id: str,
@@ -283,14 +293,53 @@ def record_telemetry(action_id: str, robot_id: str,
         detail=str(detail or "")[:500], observed_at=now())
 
 
-def verify_action(telemetry: RobotTelemetry,
-                  observation: str) -> dict:
-    """Independent verification: telemetry alone never
-    verifies; an observation note is required."""
-    if not str(observation or "").strip():
+def resolve_observation(ref: str) -> dict:
+    """Resolve an observation reference to a stored record:
+    mem_<...> memories or obs-... camera observations. Free
+    caller text never resolves — it cannot become evidence."""
+    text = str(ref or "").strip()
+    if text.startswith("mem_"):
+        from .memory import get_memory
+        entry = get_memory(text)
+        if entry is None or entry.status == "deleted":
+            raise RobotRefusedError(
+                "observation reference resolves to nothing")
+        return {"kind": "memory", "id": entry.memory_id,
+                "title": entry.title,
+                "truth": entry.truth}
+    if text.startswith("obs-"):
+        from .database import chat_connection, init_chat_database
+        init_chat_database()
+        with chat_connection() as db:
+            rows = db.execute(
+                "SELECT record FROM camera_observations ORDER "
+                "BY created_at DESC LIMIT 200").fetchall()
+        from .database import load
+        for row in rows:
+            try:
+                record = load(row["record"])
+            except ValueError:
+                continue
+            if isinstance(record, dict) and record.get(
+                    "observation_id") == text:
+                return {"kind": "camera_observation",
+                        "id": text,
+                        "device_id": record.get("device_id",
+                                                "")}
         raise RobotRefusedError(
-            "verification needs an independent observation; "
-            "telemetry never verifies alone")
+            "observation reference resolves to nothing")
+    raise RobotRefusedError(
+        "observation must cite a stored record "
+        "(mem_... memory or obs-... camera observation); "
+        "caller assertions are never evidence")
+
+
+def verify_action(telemetry: RobotTelemetry,
+                  observation_ref: str) -> dict:
+    """Independent verification: telemetry alone never
+    verifies; a cited stored observation is required, and
+    only telemetry success + resolvable evidence verifies."""
+    evidence = resolve_observation(observation_ref)
     robot = get_robot(telemetry.robot_id)
     if robot is not None:
         save_robot(robot.model_copy(update={
@@ -299,6 +348,7 @@ def verify_action(telemetry: RobotTelemetry,
         "completed", "success", "done") else "not_verified"
     return {"action_id": telemetry.action_id,
             "verdict": verdict,
-            "method": "telemetry status + independent "
-                      "observation",
-            "observation": str(observation)[:500]}
+            "method": "telemetry status + cited stored "
+                      "observation (caller text alone never "
+                      "verifies)",
+            "evidence": evidence}

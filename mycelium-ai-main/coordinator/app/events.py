@@ -59,12 +59,6 @@ VALID_SEVERITIES = frozenset({"info", "approval_required",
                               "completed", "failed", "warning",
                               "node_status"})
 
-BANNED_PAYLOAD_KEYS = frozenset({
-    "command", "commands", "exec", "execute", "shell", "code",
-    "script", "url", "callback", "webhook", "approved",
-    "decision", "execute_now",
-})
-
 MAX_PAYLOAD_KEYS = 20
 MAX_PAYLOAD_VALUE_CHARS = 500
 POLL_LIMIT = 100
@@ -120,31 +114,12 @@ def generate_notification_id() -> str:
 
 
 def _check_payload(payload) -> dict:
-    if payload is None:
-        return {}
-    if not isinstance(payload, dict):
-        raise EventRefusedError("payload must be an object")
-    if len(payload) > MAX_PAYLOAD_KEYS:
-        raise EventRefusedError(
-            f"at most {MAX_PAYLOAD_KEYS} payload keys")
-    for key, value in payload.items():
-        if not isinstance(key, str) or not key.strip() \
-                or len(key) > 80:
-            raise EventRefusedError(
-                "payload keys must be short text")
-        lowered = key.strip().lower()
-        if lowered in BANNED_PAYLOAD_KEYS:
-            raise EventRefusedError(
-                f"payload key '{key}' would make the event "
-                "executable; refusing")
-        if isinstance(value, str) and len(value) > \
-                MAX_PAYLOAD_VALUE_CHARS:
-            raise EventRefusedError("payload values are capped")
-        if not isinstance(value, (str, int, float, bool, type(None),
-                                  list, dict)):
-            raise EventRefusedError(
-                f"payload value for '{key}' has an unsupported type")
-    return dict(payload)
+    """Bus-event payloads: shared security rules, tighter
+    bus limits. Raises EventRefusedError (callers unchanged)."""
+    from .payloads import check_payload
+    return check_payload(payload, max_keys=MAX_PAYLOAD_KEYS,
+                         max_value_chars=MAX_PAYLOAD_VALUE_CHARS,
+                         error=EventRefusedError)
 
 
 def new_event(event_type: str, summary: str = "", *,

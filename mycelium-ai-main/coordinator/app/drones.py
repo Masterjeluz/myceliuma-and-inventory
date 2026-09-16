@@ -74,19 +74,6 @@ class Drone(BaseModel):
     updated_at: str = Field(default="", max_length=80)
 
 
-class DroneMission(BaseModel):
-    mission_id: str = Field(min_length=3, max_length=80)
-    drone_id: str = Field(min_length=1, max_length=80)
-    kind: str = Field(min_length=1, max_length=40)
-    params: dict = Field(default_factory=dict)
-    autonomous: bool = False
-    geofence: str = Field(default="", max_length=200)
-    max_altitude_m: float = Field(default=0.0, ge=0, le=120)
-    status: str = Field(default="proposed", max_length=20)
-    approved_by: str = Field(default="", max_length=80)
-    created_at: str = Field(default="", max_length=80)
-
-
 def new_drone(name: str, *,
               capabilities: list | None = None,
               home_location: str = "",
@@ -106,7 +93,7 @@ def new_drone(name: str, *,
         home_location=str(home_location or "")[:200],
         provenance=provenance or Provenance(
             source_type="user-created", creator_id="drones",
-            human_verified=True),
+            human_verified=False),
         updated_at=now())
 
 
@@ -159,12 +146,17 @@ def list_drones() -> list[Drone]:
     return [_row_to_drone(row) for row in rows]
 
 
-def propose_mission(drone_id: str, kind: str, params: dict, *,
-                    autonomous: bool = False,
-                    geofence: str = "",
-                    max_altitude_m: float = 0.0) -> DroneMission:
-    """Mission proposal. Autonomous flight needs geofence +
-    altitude cap now; human approval still required later."""
+def build_drone_proposal(drone_id: str, kind: str,
+                         params: dict, actor: str, *,
+                         autonomous: bool = False,
+                         geofence: str = "",
+                         max_altitude_m: float = 0.0):
+    """Intent → inert WriteProposal (mutation type
+    drone.mission). Same exact-YES/fingerprint/staleness
+    machinery as every other mutation. Autonomous flight
+    needs geofence + altitude cap at propose time; human
+    approval still required later."""
+    from .controlled_writes import propose_write
     drone = get_drone(drone_id)
     if drone is None:
         raise DroneRefusedError("drone not found")
@@ -178,32 +170,51 @@ def propose_mission(drone_id: str, kind: str, params: dict, *,
             f"drone lacks capability '{capability}'")
     if not isinstance(params, dict) or len(params) > 10:
         raise DroneRefusedError("params must be a small object")
-    if autonomous and (not str(geofence or "").strip() or not
-                       float(max_altitude_m or 0) > 0):
+    if not isinstance(actor, str) or not actor.strip():
+        raise DroneRefusedError("proposal needs an actor")
+    try:
+        altitude = float(max_altitude_m or 0.0)
+    except (TypeError, ValueError):
+        raise DroneRefusedError(
+            "max_altitude_m must be numeric")
+    if not 0.0 <= altitude <= 120.0:
+        raise DroneRefusedError(
+            "max_altitude_m must be 0..120")
+    if autonomous and (not str(geofence or "").strip()
+                       or not altitude > 0):
         raise DroneRefusedError(
             "autonomous flight needs a named geofence and a "
             "positive altitude cap")
-    return DroneMission(
-        mission_id=generate_mission_id(), drone_id=drone_id,
-        kind=capability, params=dict(params),
-        autonomous=bool(autonomous),
-        geofence=str(geofence or "")[:200],
-        max_altitude_m=float(max_altitude_m or 0.0),
-        status="proposed", created_at=now())
+    return propose_write(
+        generate_mission_id(), "drone.mission",
+        f"drone:{drone_id}",
+        {"kind": capability, "params": dict(params),
+         "autonomous": bool(autonomous),
+         "geofence": str(geofence or "")[:200],
+         "max_altitude_m": altitude,
+         "safety_state": drone.safety_state,
+         "capabilities": sorted(drone.capabilities)},
+        actor=actor.strip()[:80])
 
 
-def approve_mission(mission: DroneMission,
-                    approved_by: str) -> DroneMission:
-    if not str(approved_by or "").strip():
-        raise DroneRefusedError(
-            "drone missions need a human approver")
-    drone = get_drone(mission.drone_id)
+def check_drone_state_for_approval(drone_id: str,
+                                   proposal) -> Drone:
+    """Pre-approval recheck against live state (not the
+    client body): target binding, capability still owned,
+    safety still safe|supervised."""
+    drone = get_drone(drone_id)
     if drone is None:
         raise DroneRefusedError("drone not found")
+    payload = proposal.payload or {}
+    if proposal.target != f"drone:{drone_id}":
+        raise DroneRefusedError(
+            "proposal target does not bind to this drone")
+    kind = str(payload.get("kind", ""))
+    if kind not in drone.capabilities:
+        raise DroneRefusedError(
+            f"drone no longer holds capability '{kind}'")
     if drone.safety_state not in ("safe", "supervised"):
         raise DroneRefusedError(
             f"mission refused: safety state is "
             f"'{drone.safety_state}'")
-    return mission.model_copy(update={
-        "status": "approved",
-        "approved_by": approved_by.strip()[:80]})
+    return drone

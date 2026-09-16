@@ -233,6 +233,17 @@ def take_snapshot(device: CameraDevice,
     if (not isinstance(observation, CameraObservation)
             or observation.device_id != device.device_id):
         raise CameraUnavailable("Adapter returned an invalid observation")
+    if getattr(adapter, "name", "") == "test-only":
+        # Test adapters stay visibly test down to storage:
+        # synthetic pixels must never read as sensed.
+        notes = str(
+            observation.provenance.notes or "")
+        if "test-only" not in notes:
+            observation = observation.model_copy(update={
+                "provenance": observation.provenance.model_copy(
+                    update={"notes": (
+                        notes + " | test-only adapter; synthetic "
+                        "pixels, never sensed").strip(" |")})})
     return observation
 
 

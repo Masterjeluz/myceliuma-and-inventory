@@ -44,6 +44,10 @@ def free_port() -> int:
 @pytest.fixture(scope="module")
 def live_base_url(tmp_path_factory):
     tmp = tmp_path_factory.mktemp("agent-live")
+    # Module scope cannot use monkeypatch: save and restore
+    # manually so no database path leaks to other modules.
+    saved = {key: os.environ.get(key) for key in (
+        "MYCELIUM_DATABASE_PATH", "MYCELIUM_CHAT_DATABASE_PATH")}
     os.environ["MYCELIUM_DATABASE_PATH"] = str(tmp / "live.db")
     os.environ["MYCELIUM_CHAT_DATABASE_PATH"] = str(tmp / "live-chat.db")
     import uvicorn
@@ -67,6 +71,11 @@ def live_base_url(tmp_path_factory):
     yield f"http://127.0.0.1:{port}"
     server.should_exit = True
     thread.join(timeout=10)
+    for key, value in saved.items():
+        if value is None:
+            os.environ.pop(key, None)
+        else:
+            os.environ[key] = value
 
 
 @pytest.fixture()
@@ -101,19 +110,24 @@ class FakeBackend:
                           observation_reference=reference)
 
 
+def agent_token(node_id: str) -> str:
+    return f"token-{node_id}-123456"
+
+
 def make_agent(api, backend=None, node_id="desktop-test-01",
                capabilities=None):
     return DesktopAgent(
         base_url=str(api.base_url), node_id=node_id,
         capabilities=capabilities or list(FULL_CAPABILITIES),
         backend=backend or FakeBackend(), poll_seconds=0.1,
-        max_steps=5)
+        max_steps=5, node_token=agent_token(node_id))
 
 
 def register_node(api, node_id, capabilities=None):
     response = api.post("/api/v1/nodes/register", json={
         "node_id": node_id, "hostname": "test-pc",
-        "capabilities": capabilities or list(FULL_CAPABILITIES)})
+        "capabilities": capabilities or list(FULL_CAPABILITIES),
+        "node_token": agent_token(node_id)})
     assert response.status_code == 201
 
 

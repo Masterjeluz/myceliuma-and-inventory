@@ -23,12 +23,19 @@ def make_client(tmp_path, monkeypatch):
 def register(test_client, node_id, capable=True, token=None):
     body = {"node_id": node_id, "hostname": "h",
             "capabilities": ["exec:system_inventory"],
-            "coordinator_capable": capable}
+            "coordinator_capable": capable,
+            "node_token": token or f"b10-token-{node_id}-123"}
     if token:
         body["node_token"] = token
     response = test_client.post("/api/v1/nodes/register",
                                 json=body)
     assert response.status_code == 201, response.text
+
+
+def claim_as(test_client, node_id):
+    return test_client.post(
+        f"/api/v1/tasks/claim/{node_id}",
+        params={"node_token": f"b10-token-{node_id}-123"}).json()
 
 
 def test_old_epoch_write_refused(tmp_path, monkeypatch):
@@ -63,10 +70,8 @@ def test_old_epoch_write_refused(tmp_path, monkeypatch):
             "/api/v1/coordinator/status").json()
         assert status["epoch"] == 2
         assert status["holder"] == "node-old2"
-        assert test_client.post(
-            "/api/v1/tasks/claim/node-old1").json() is None
-        assert test_client.post(
-            "/api/v1/tasks/claim/node-old2").json() is None
+        assert claim_as(test_client, "node-old1") is None
+        assert claim_as(test_client, "node-old2") is None
 
 
 def test_fresh_assignment_claims_after_election(tmp_path,
@@ -84,8 +89,7 @@ def test_fresh_assignment_claims_after_election(tmp_path,
             json={"policy": {
                 "require_authenticated": False}}).json()
         assert assigned["routing"]["epoch"] == 1
-        claimed = test_client.post(
-            "/api/v1/tasks/claim/node-f1").json()
+        claimed = claim_as(test_client, "node-f1")
         assert claimed["id"] == task["id"]
 
 

@@ -25,8 +25,14 @@ T0_LATE = "2026-01-01T00:10:00+00:00"
 
 NODE = {"node_id": "worker-1", "hostname": "shop", "tier": "worker",
         "capabilities": ["python"], "cpu_cores": 2, "memory_mb": 1024,
-        "energy_source": "solar"}
+        "energy_source": "solar", "node_token": "queue-token-123456"}
 TASK = {"kind": "system_inventory", "required_capabilities": ["python"]}
+
+
+def claim(node_id, when):
+    """_claim_task with this file's node token bound."""
+    return _claim_task(node_id, when,
+                       node_token="queue-token-123456")
 
 
 @pytest.fixture()
@@ -76,7 +82,7 @@ def test_new_task_has_no_assignment(api):
 def test_live_node_claims_with_lease(api):
     register(api)
     task_id = queue(api)
-    claimed = _claim_task("worker-1", T0)
+    claimed = claim("worker-1", T0)
     assert claimed is not None
     assert claimed.id == task_id
     stored = row(task_id)
@@ -90,7 +96,8 @@ def test_live_node_claims_with_lease(api):
 def test_claim_via_http_still_works(api):
     register(api)
     task_id = queue(api)
-    res = api.post("/api/v1/tasks/claim/worker-1")
+    res = api.post("/api/v1/tasks/claim/worker-1",
+                   params={"node_token": "queue-token-123456"})
     assert res.status_code == 200
     assert row(task_id)["status"] == "assigned"
 
@@ -101,35 +108,35 @@ def test_stale_node_cannot_claim(api):
     task_id = queue(api)
     stale_moment = (datetime.now(timezone.utc)
                     + timedelta(seconds=NODE_STALE_SECONDS + 1)).isoformat()
-    assert _claim_task("worker-1", stale_moment) is None
+    assert claim("worker-1", stale_moment) is None
     assert row(task_id)["status"] == "queued"
 
 
 def test_missing_node_claim_404(api):
     queue(api)
     with pytest.raises(HTTPException):
-        _claim_task("ghost", T0)
+        claim("ghost", T0)
 
 
 def test_capability_mismatch_still_denies(api):
     register(api, node_id="weak-1", capabilities=["rust"])
     queue(api)
-    assert _claim_task("weak-1", T0) is None
+    assert claim("weak-1", T0) is None
 
 
 def test_double_claim_single_winner(api):
     register(api, node_id="worker-1")
     register(api, node_id="worker-2")
     queue(api)
-    assert _claim_task("worker-1", T0) is not None
-    assert _claim_task("worker-2", T0) is None
+    assert claim("worker-1", T0) is not None
+    assert claim("worker-2", T0) is None
 
 
 def test_complete_within_lease(api):
     from coordinator.app.schemas import TaskResult
     register(api)
     task_id = queue(api)
-    _claim_task("worker-1", T0)
+    claim("worker-1", T0)
     _complete_task(task_id, TaskResult(success=True, result={}),
                    completing_node_id="worker-1", now_str=T0)
     assert row(task_id)["status"] == "completed"
@@ -139,7 +146,7 @@ def test_complete_wrong_node_refused(api):
     from coordinator.app.schemas import TaskResult
     register(api)
     task_id = queue(api)
-    _claim_task("worker-1", T0)
+    claim("worker-1", T0)
     with pytest.raises(HTTPException):
         _complete_task(task_id, TaskResult(success=True, result={}),
                        completing_node_id="other-1", now_str=T0)
@@ -150,7 +157,7 @@ def test_complete_expired_lease_refused(api):
     from coordinator.app.schemas import TaskResult
     register(api)
     task_id = queue(api)
-    _claim_task("worker-1", T0)
+    claim("worker-1", T0)
     with pytest.raises(HTTPException):
         _complete_task(task_id, TaskResult(success=True, result={}),
                        completing_node_id="worker-1", now_str=T0_LATE)
@@ -160,7 +167,7 @@ def test_complete_expired_lease_refused(api):
 def test_expired_lease_requeues_below_max(api):
     register(api)
     task_id = queue(api)
-    _claim_task("worker-1", T0)
+    claim("worker-1", T0)
     summary = expire_leases(T0_LATE)
     assert summary == {"requeued": 1, "failed": 0, "blocked": 0}
     stored = row(task_id)
@@ -184,15 +191,15 @@ def test_expired_lease_fails_at_max(api):
     assert stored["assigned_node_id"] is None
     assert stored["assigned_at"] is None
     assert stored["lease_until"] is None
-    assert _claim_task("worker-1", T0_LATE) is None
+    assert claim("worker-1", T0_LATE) is None
 
 
 def test_retry_increments_attempts(api):
     register(api)
     task_id = queue(api)
-    _claim_task("worker-1", T0)
+    claim("worker-1", T0)
     expire_leases(T0_LATE)
-    claimed = _claim_task("worker-1", T0_LATE)
+    claimed = claim("worker-1", T0_LATE)
     assert claimed is not None
     assert row(task_id)["attempt_count"] == 2
 
@@ -200,33 +207,33 @@ def test_retry_increments_attempts(api):
 def test_max_attempts_never_exceeded(api):
     register(api)
     task_id = queue(api)
-    _claim_task("worker-1", T0)
+    claim("worker-1", T0)
     expire_leases("2026-01-01T00:10:00+00:00")
-    _claim_task("worker-1", "2026-01-01T00:10:00+00:00")
+    claim("worker-1", "2026-01-01T00:10:00+00:00")
     expire_leases("2026-01-01T00:20:00+00:00")
-    _claim_task("worker-1", "2026-01-01T00:20:00+00:00")
+    claim("worker-1", "2026-01-01T00:20:00+00:00")
     assert row(task_id)["attempt_count"] == MAX_ATTEMPTS
     expire_leases("2026-01-01T00:30:00+00:00")
     stored = row(task_id)
     assert stored["status"] == "failed"
     assert stored["attempt_count"] == MAX_ATTEMPTS
-    assert _claim_task("worker-1", "2026-01-01T00:30:00+00:00") is None
+    assert claim("worker-1", "2026-01-01T00:30:00+00:00") is None
 
 
 def test_completed_task_not_reclaimable(api):
     from coordinator.app.schemas import TaskResult
     register(api)
     task_id = queue(api)
-    _claim_task("worker-1", T0)
+    claim("worker-1", T0)
     _complete_task(task_id, TaskResult(success=True, result={}), now_str=T0)
-    assert _claim_task("worker-1", T0) is None
+    assert claim("worker-1", T0) is None
 
 
 def test_stale_node_assigned_task_not_completed(api):
     from coordinator.app.schemas import TaskResult
     register(api)
     task_id = queue(api)
-    _claim_task("worker-1", T0)
+    claim("worker-1", T0)
     with pytest.raises(HTTPException):
         _complete_task(task_id, TaskResult(success=True, result={}),
                        completing_node_id="worker-1", now_str=T0_LATE)
@@ -236,7 +243,7 @@ def test_stale_node_assigned_task_not_completed(api):
 def test_recovery_idempotent(api):
     register(api)
     task_id = queue(api)
-    _claim_task("worker-1", T0)
+    claim("worker-1", T0)
     assert expire_leases(T0_LATE) == {"requeued": 1, "failed": 0,
                                         "blocked": 0}
     assert expire_leases(T0_LATE) == {"requeued": 0, "failed": 0,

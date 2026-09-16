@@ -295,8 +295,8 @@ def _api_client(tmp_path, monkeypatch, reader=None, provider=None):
     from fastapi.testclient import TestClient
 
     import coordinator.app.main as main_mod
-    os.environ["MYCELIUM_DATABASE_PATH"] = str(tmp_path / "api.db")
-    os.environ["MYCELIUM_CHAT_DATABASE_PATH"] = str(tmp_path / "api-c.db")
+    monkeypatch.setenv("MYCELIUM_DATABASE_PATH", str(tmp_path / "api.db"))
+    monkeypatch.setenv("MYCELIUM_CHAT_DATABASE_PATH", str(tmp_path / "api-c.db"))
     monkeypatch.setattr(main_mod, "_world_reader",
                         lambda: reader or FakeReader([make_result()]))
     if provider is not None:

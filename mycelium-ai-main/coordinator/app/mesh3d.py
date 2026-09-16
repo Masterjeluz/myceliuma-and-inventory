@@ -112,7 +112,12 @@ class PrintabilityAssessment(BaseModel):
 
 
 def fabrication_dir() -> str:
-    path = os.path.join(tempfile.gettempdir(), FABRICATION_DIR_NAME)
+    """Working directory for mesh/gcode artifacts. Tests point
+    MYCELIUM_FABRICATION_DIR at a tmp dir for isolation;
+    production uses the shared temp dir with retention."""
+    override = os.environ.get("MYCELIUM_FABRICATION_DIR", "")
+    path = override or os.path.join(tempfile.gettempdir(),
+                                    FABRICATION_DIR_NAME)
     os.makedirs(path, exist_ok=True)
     return path
 

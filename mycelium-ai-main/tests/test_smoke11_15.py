@@ -28,6 +28,8 @@ def clients(tmp_path, monkeypatch):
                        str(tmp_path / "smoke-chat.db"))
     monkeypatch.setenv("INVENTORY_DATABASE_PATH",
                        str(tmp_path / "smoke-inv.db"))
+    monkeypatch.setenv("MYCELIUM_FABRICATION_DIR",
+                       str(tmp_path / "smoke-fab"))
     import importlib
     import app.database as inv_db
     import app.main as inv_main
@@ -57,7 +59,8 @@ def test_smoke11_15_integrated(clients, monkeypatch):
         response = c.post("/api/v1/nodes/register", json={
             "node_id": node_id, "hostname": "h",
             "capabilities": ["exec:system_inventory"],
-            "coordinator_capable": True})
+            "coordinator_capable": True,
+            "node_token": f"smoke-token-{node_id}-123"})
         check(f"register {node_id}", response.status_code == 201)
     # 4. Load world: object round-trip in INVENTory.
     obj = inv.post("/api/v1/objects",
@@ -220,19 +223,23 @@ def test_smoke11_15_integrated(clients, monkeypatch):
     check("capability visible",
           any("robot.move" in item["capabilities"]
               for item in robots))
-    # 26. Robot physical action remains gated.
+    # 26. Robot physical action remains gated (exact YES).
     denied = c.post(
         f"/api/v1/robots/{robot['robot_id']}/propose",
-        json={"action": "robot.grab"})
+        json={"action": "robot.grab",
+              "actor": "smoke"})
     check("robot capability enforced",
           denied.status_code == 422)
     move = c.post(
         f"/api/v1/robots/{robot['robot_id']}/propose",
-        json={"action": "robot.move"}).json()
+        json={"action": "robot.move",
+              "actor": "smoke"}).json()
     check("robot approval gated",
           c.post(f"/api/v1/robots/{robot['robot_id']}/approve",
-                 json={**move,
-                       "approved_by": ""}).status_code == 422)
+                 json={"proposal_id": move["proposal"][
+                     "proposal_id"], "response": "maybe",
+                       "decided_by": "smoke"}).json()[
+                           "status"] == "rejected")
     # 27-28. Live opens with bounded context.
     session = c.post("/api/v1/live/sessions", json={
         "interface": "web", "actor": "smoke",

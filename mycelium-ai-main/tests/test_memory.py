@@ -139,6 +139,77 @@ def test_memory_consolidation_dedup_and_contradiction(
                                 ).status_code == 422
 
 
+def test_health_memories_need_explicit_scope(tmp_path,
+                                              monkeypatch):
+    for test_client in make_client(tmp_path, monkeypatch):
+        health = test_client.post("/api/v1/memory", json={
+            "memory_type": "health", "title": "Sleep 7.5h",
+            "content": "slept seven and a half hours",
+            "truth": "observed"}).json()
+        plain = test_client.post("/api/v1/memory", json={
+            "memory_type": "fact", "title": "Workshop shelf",
+            "content": "unrelated workshop note about brackets",
+            "truth": "observed"}).json()
+        # Default retrieval never surfaces health memories.
+        results = test_client.post("/api/v1/memory/retrieve",
+                                   json={
+                                       "query": "sleep hours",
+                                       "limit": 10}).json()["results"]
+        assert health["memory_id"] not in {
+            item["memory_id"] for item in results}
+        # Explicit health type without scope refuses.
+        assert test_client.post("/api/v1/memory/retrieve", json={
+            "query": "sleep", "memory_types": ["health"]}
+        ).status_code == 422
+        # Opt-in returns them.
+        scoped = test_client.post("/api/v1/memory/retrieve",
+                                  json={
+                                      "query": "sleep hours",
+                                      "include_health": True,
+                                      "limit": 10}).json()["results"]
+        assert health["memory_id"] in {
+            item["memory_id"] for item in scoped}
+        # Same rule on the list endpoint.
+        assert test_client.get(
+            "/api/v1/memory",
+            params={"memory_type": "health"}).status_code == 422
+        listed = test_client.get("/api/v1/memory").json()
+        assert health["memory_id"] not in {
+            item["memory_id"] for item in listed}
+        scoped_list = test_client.get(
+            "/api/v1/memory",
+            params={"memory_type": "health",
+                    "include_health": True}).json()
+        assert {item["memory_id"] for item in scoped_list} == {
+            health["memory_id"]}
+        # Live memory sections exclude health without scope.
+        session = test_client.post("/api/v1/live/sessions",
+                                   json={
+                                       "interface": "web",
+                                       "actor": "jelles",
+                                       "capabilities": [
+                                           "memory.read"]}).json()[
+                                               "session_id"]
+        package = test_client.post("/api/v1/live/context",
+                                   json={
+                                       "session_id": session,
+                                       "query": "sleep hours"}).json()
+        assert "memory" in package["sections"]
+        assert "7.5" not in package["sections"].get("memory", "")
+        scoped_session = test_client.post(
+            "/api/v1/live/sessions",
+            json={"interface": "web", "actor": "jelles",
+                  "capabilities": ["memory.read", "health.read"],
+                  "context_scope": {
+                      "include_health": True}}).json()["session_id"]
+        scoped_package = test_client.post(
+            "/api/v1/live/context",
+            json={"session_id": scoped_session,
+                  "query": "sleep hours"}).json()
+        assert "7.5" in scoped_package["sections"].get("memory",
+                                                       "")
+
+
 def test_memory_no_shell_sql_in_module():
     import pathlib
     source = (pathlib.Path(__file__).resolve().parent.parent /

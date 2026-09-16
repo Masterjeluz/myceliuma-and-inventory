@@ -83,11 +83,6 @@ MERGEABLE_METADATA_KEYS = frozenset({
     "attempt_count_hint",
 })
 
-BANNED_DIST_PAYLOAD_KEYS = frozenset({
-    "command", "commands", "exec", "execute", "shell", "code",
-    "script", "url", "callback", "webhook", "sql", "query",
-})
-
 MAX_DIST_PAYLOAD_KEYS = 30
 MAX_DIST_PAYLOAD_VALUE_CHARS = 1000
 MAX_ENTITY_ID_CHARS = 100
@@ -153,30 +148,13 @@ def payload_hash(payload: dict) -> str:
 
 
 def _check_payload(payload) -> dict:
-    if payload is None:
-        return {}
-    if not isinstance(payload, dict):
-        raise DistStateRefusedError("payload must be an object")
-    if len(payload) > MAX_DIST_PAYLOAD_KEYS:
-        raise DistStateRefusedError(
-            f"at most {MAX_DIST_PAYLOAD_KEYS} payload keys")
-    for key, value in payload.items():
-        if not isinstance(key, str) or not key.strip() \
-                or len(key) > 80:
-            raise DistStateRefusedError(
-                "payload keys must be short text")
-        if key.strip().lower() in BANNED_DIST_PAYLOAD_KEYS:
-            raise DistStateRefusedError(
-                f"payload key '{key}' is not allowed in "
-                "distributed envelopes")
-        if isinstance(value, str) and len(value) > \
-                MAX_DIST_PAYLOAD_VALUE_CHARS:
-            raise DistStateRefusedError("payload values are capped")
-        if not isinstance(value, (str, int, float, bool, type(None),
-                                  list, dict)):
-            raise DistStateRefusedError(
-                f"payload value for '{key}' has an unsupported type")
-    return dict(payload)
+    """Envelope payloads: shared security rules, envelope
+    limits. Raises DistStateRefusedError (callers unchanged)."""
+    from .payloads import check_payload
+    return check_payload(
+        payload, max_keys=MAX_DIST_PAYLOAD_KEYS,
+        max_value_chars=MAX_DIST_PAYLOAD_VALUE_CHARS,
+        error=DistStateRefusedError)
 
 
 def new_envelope(origin_node_id: str, entity_id: str,
@@ -258,31 +236,33 @@ def mergeable_update(current: dict, incoming: dict) -> dict | None:
 
 def save_envelope(envelope: DistEnvelope) -> bool:
     """Record one envelope. Returns True when newly applied,
-    False when it was already known (idempotent duplicate)."""
+    False when it was already known (idempotent duplicate).
+    The insert is conflict-atomic so concurrent duplicates
+    converge instead of raising."""
     from .database import chat_connection, dump, init_chat_database
     init_chat_database()
     with chat_connection() as db:
-        existing = db.execute(
-            "SELECT event_id FROM dist_events WHERE event_id=?",
-            (envelope.event_id,)).fetchone()
-        if existing is not None:
-            return False
-        db.execute("""INSERT INTO dist_events
+        cursor = db.execute("""INSERT INTO dist_events
         (event_id, origin_node_id, entity_id, entity_type,
          entity_revision, base_revision, event_type, timestamp,
          payload, provenance, epoch, payload_hash, applied_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                    (envelope.event_id, envelope.origin_node_id,
-                     envelope.entity_id, envelope.entity_type,
-                     envelope.entity_revision,
-                     envelope.base_revision, envelope.event_type,
-                     envelope.timestamp,
-                     dump(envelope.payload),
-                     dump(envelope.provenance.model_dump(
-                         mode="json")),
-                     envelope.epoch,
-                     payload_hash(envelope.payload), now()))
-    return True
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(event_id) DO NOTHING""",
+                            (envelope.event_id,
+                             envelope.origin_node_id,
+                             envelope.entity_id,
+                             envelope.entity_type,
+                             envelope.entity_revision,
+                             envelope.base_revision,
+                             envelope.event_type,
+                             envelope.timestamp,
+                             dump(envelope.payload),
+                             dump(envelope.provenance.model_dump(
+                                 mode="json")),
+                             envelope.epoch,
+                             payload_hash(envelope.payload),
+                             now()))
+    return cursor.rowcount > 0
 
 
 def known_event_ids(event_ids: list[str]) -> set[str]:
@@ -360,11 +340,14 @@ def detect_conflict(envelope: DistEnvelope) -> DistConflict | None:
 
 
 def apply_envelope(envelope: DistEnvelope) -> dict:
-    """Idempotent apply: duplicate → acknowledged, conflict →
-    recorded (envelope still stored for audit, never silently
-    merged), else applied. Returns a status dict."""
+    """Idempotent apply: fencing first (stale-epoch writers
+    refuse), then payload revalidation; duplicate →
+    acknowledged, conflict → recorded (envelope still stored
+    for audit, never silently merged), else applied."""
     if not isinstance(envelope, DistEnvelope):
         raise DistStateRefusedError("apply needs a DistEnvelope")
+    from .failover import require_writer_epoch
+    require_writer_epoch(envelope.epoch)
     # Re-validate pulled payloads: they bypass new_envelope(), so
     # banned keys (shell/command/exec/...) must refuse here too.
     _check_payload(envelope.payload)

@@ -28,7 +28,25 @@ class NodeRegistration(BaseModel):
                                max_length=20)
     node_token: str | None = Field(default=None, min_length=8,
                                    max_length=256)
+    operator_key: str = Field(default="", max_length=256)
     coordinator_capable: bool = False
+
+
+class OperatorBody(BaseModel):
+    """Operator authorization for identity administration
+    (enable/disable). Key lives in local env, never in DB."""
+
+    operator_key: str = Field(default="", max_length=256)
+
+
+class NodeRotateBody(BaseModel):
+    """Bind or rotate a node token. Bound identities need
+    the current token; legacy identities need the operator
+    key. The new token must be non-trivial."""
+
+    current_token: str = Field(default="", max_length=256)
+    new_token: str = Field(min_length=1, max_length=256)
+    operator_key: str = Field(default="", max_length=256)
 
 
 class NodeResponse(NodeRegistration):
@@ -590,6 +608,7 @@ class MemoryRetrieveBody(BaseModel):
     truth: str = Field(default="", max_length=20)
     limit: int = Field(default=10, ge=1, le=50)
     semantic: bool = False
+    include_health: bool = False
 
 
 class MemoryConsolidateBody(BaseModel):
@@ -819,17 +838,13 @@ class RobotActionBody(BaseModel):
     action: str = Field(min_length=1, max_length=40)
     params: dict[str, Any] = Field(default_factory=dict)
     simulation_note: str = Field(default="", max_length=500)
+    actor: str = Field(min_length=1, max_length=80)
 
 
 class RobotApproveBody(BaseModel):
-    action_id: str = Field(min_length=1, max_length=80)
-    robot_id: str = Field(min_length=1, max_length=80)
-    action: str = Field(min_length=1, max_length=40)
-    params: dict[str, Any] = Field(default_factory=dict)
-    physical: bool = False
-    safety_state: str = Field(default="safe", max_length=20)
-    simulation_note: str = Field(default="", max_length=500)
-    approved_by: str = Field(min_length=1, max_length=80)
+    proposal_id: str = Field(min_length=1, max_length=80)
+    response: str = Field(min_length=1, max_length=20)
+    decided_by: str = Field(min_length=1, max_length=80)
 
 
 class RobotTelemetryBody(BaseModel):
@@ -837,7 +852,7 @@ class RobotTelemetryBody(BaseModel):
     robot_id: str = Field(min_length=1, max_length=80)
     status: str = Field(min_length=1, max_length=40)
     detail: str = Field(default="", max_length=500)
-    observation: str = Field(default="", max_length=500)
+    observation_ref: str = Field(default="", max_length=120)
 
 
 class DroneCreateBody(BaseModel):
@@ -854,7 +869,13 @@ class DroneMissionBody(BaseModel):
     autonomous: bool = False
     geofence: str = Field(default="", max_length=200)
     max_altitude_m: float = Field(default=0.0, ge=0, le=120)
-    approved_by: str = Field(default="", max_length=80)
+    actor: str = Field(min_length=1, max_length=80)
+
+
+class DroneMissionApproveBody(BaseModel):
+    proposal_id: str = Field(min_length=1, max_length=80)
+    response: str = Field(min_length=1, max_length=20)
+    decided_by: str = Field(min_length=1, max_length=80)
 
 
 class FamiliarCreateBody(BaseModel):

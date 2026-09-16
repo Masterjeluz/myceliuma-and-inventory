@@ -100,6 +100,17 @@ def is_phone_node(capabilities) -> bool:
 
 TOKEN_VERSION = "mycelium-node-v1"
 
+#: Operator key env var for identity administration
+#: (token binding on existing identities, enable/disable).
+#: The operator runs on this machine; the key lives in local
+#: env config, never in the database, never in logs.
+OPERATOR_KEY_ENV_VAR = "MYCELIUM_OPERATOR_KEY"
+
+#: Minimum token length. generate_token() issues 64 hex
+#: chars; anything shorter is refused at registration and
+#: rotation so trivial secrets cannot bind an identity.
+MIN_NODE_TOKEN_CHARS = 16
+
 
 class NodeRefusedError(ValueError):
     """Local validation refused the node data; nothing was stored."""
@@ -144,6 +155,30 @@ def authenticate(node_id: str, stored_hash: str | None,
             and verify_token(node_id, presented, stored_hash)):
         return "token"
     raise NodeAuthError("node credential rejected")
+
+
+def check_node_token_strength(token) -> str:
+    """Refuse trivially short tokens before they bind."""
+    if not isinstance(token, str) or len(token.strip()) < \
+            MIN_NODE_TOKEN_CHARS:
+        raise NodeRefusedError(
+            f"node token must be at least "
+            f"{MIN_NODE_TOKEN_CHARS} characters")
+    return token.strip()
+
+
+def check_operator_key(presented) -> None:
+    """Operator authorization for identity administration.
+    The expected key comes from local env only; unset means
+    refuse everything (fail-closed, no default key)."""
+    import hmac
+    import os
+    expected = os.environ.get(OPERATOR_KEY_ENV_VAR, "")
+    if not expected or not isinstance(presented, str) or \
+            not presented:
+        raise NodeAuthError("operator authorization rejected")
+    if not hmac.compare_digest(presented, expected):
+        raise NodeAuthError("operator authorization rejected")
 
 
 # -- advertisement validation ---------------------------------------

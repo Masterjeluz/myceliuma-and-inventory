@@ -9,7 +9,7 @@ existing derived-mesh path).
 
 External executor boundary (when one ever lands):
 allow-list → proposal → approval → sandbox → result →
-verification. Nothing here runs subprocesses.
+verification. This module spawns no external processes.
 """
 
 import secrets
@@ -107,7 +107,7 @@ def new_document(name: str, *,
         status="draft",
         provenance=provenance or Provenance(
             source_type="user-created", creator_id="cad",
-            human_verified=True),
+            human_verified=False),
         created_at=stamp, updated_at=stamp)
 
 

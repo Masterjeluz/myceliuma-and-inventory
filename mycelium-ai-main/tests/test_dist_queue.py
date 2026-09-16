@@ -13,19 +13,25 @@ import coordinator.app.main as main_mod
 from coordinator.app.sim_nodes import sim_registration
 
 
+OPERATOR_KEY = "op-key-dist-queue-123"
+
+
 def make_client(tmp_path, monkeypatch):
     monkeypatch.setenv("MYCELIUM_DATABASE_PATH",
                        str(tmp_path / "dist.db"))
     monkeypatch.setenv("MYCELIUM_CHAT_DATABASE_PATH",
                        str(tmp_path / "dist-chat.db"))
+    monkeypatch.setenv("MYCELIUM_OPERATOR_KEY", OPERATOR_KEY)
     with TestClient(main_mod.app) as test_client:
         yield test_client
 
 
 def register_all(test_client):
     for node_id in ("node_desktop", "node_vision", "node_cpu"):
-        response = test_client.post("/api/v1/nodes/register",
-                                    json=sim_registration(node_id))
+        response = test_client.post(
+            "/api/v1/nodes/register",
+            json={**sim_registration(node_id),
+                  "node_token": f"sim-token-{node_id}-123"})
         assert response.status_code == 201, response.text
 
 
@@ -61,11 +67,12 @@ def test_token_bind_and_enforce(tmp_path, monkeypatch):
     for test_client in make_client(tmp_path, monkeypatch):
         test_client.post("/api/v1/nodes/register", json={
             "node_id": "node-t1", "hostname": "h",
-            "capabilities": [], "node_token": "token-abc-123"})
+            "capabilities": [],
+            "node_token": "token-abc-123456789"})
         # Wrong token on re-register: 403, nothing logged/leaked.
         denied = test_client.post("/api/v1/nodes/register", json={
             "node_id": "node-t1", "hostname": "h",
-            "capabilities": [], "node_token": "wrong-token-xyz"})
+            "capabilities": [], "node_token": "wrong-token-xyz123"})
         assert denied.status_code == 403
         # Heartbeat without token: 403.
         assert test_client.post(
@@ -75,7 +82,8 @@ def test_token_bind_and_enforce(tmp_path, monkeypatch):
         assert test_client.post(
             "/api/v1/nodes/node-t1/heartbeat",
             json={"available": True,
-                  "node_token": "token-abc-123"}).status_code == 204
+                  "node_token": "token-abc-123456789"}
+        ).status_code == 204
         # Claim without token: 403.
         assert test_client.post(
             "/api/v1/tasks/claim/node-t1").status_code == 403
@@ -87,10 +95,24 @@ def test_token_bind_and_enforce(tmp_path, monkeypatch):
 
 def test_legacy_nodes_keep_working(tmp_path, monkeypatch):
     for test_client in make_client(tmp_path, monkeypatch):
+        # New identities without a token are refused outright:
+        # choosing a node_id alone creates no authority.
         assert test_client.post("/api/v1/nodes/register", json={
             "node_id": "node-old", "hostname": "h",
             "capabilities": ["exec:system_inventory"]
-        }).status_code == 201
+        }).status_code == 403
+        # Pre-existing legacy rows (bound before the token
+        # mandate) keep heartbeating and claiming, frozen.
+        from coordinator.app.database import connection
+        with connection() as db:
+            db.execute(
+                "INSERT INTO nodes (node_id, hostname, tier, "
+                "capabilities, cpu_cores, memory_mb, "
+                "energy_source, last_seen, status) VALUES (?, "
+                "?, ?, ?, ?, ?, ?, ?, ?)",
+                ("node-old", "h", "seed", '["exec:'
+                 'system_inventory"]', 1, 0, "unknown",
+                 "2026-09-16T00:00:00+00:00", "online"))
         assert test_client.post(
             "/api/v1/nodes/node-old/heartbeat",
             json={"available": True}).status_code == 204
@@ -107,35 +129,50 @@ def test_disable_enable(tmp_path, monkeypatch):
     for test_client in make_client(tmp_path, monkeypatch):
         test_client.post("/api/v1/nodes/register", json={
             "node_id": "node-d1", "hostname": "h",
-            "capabilities": ["exec:system_inventory"]})
+            "capabilities": ["exec:system_inventory"],
+            "node_token": "disable-token-123456"})
+        # Operator key required: unauthenticated callers fail.
         assert test_client.post(
-            "/api/v1/nodes/node-d1/disable").json()[
+            "/api/v1/nodes/node-d1/disable",
+            json={}).status_code == 403
+        assert test_client.post(
+            "/api/v1/nodes/node-d1/disable",
+            json={"operator_key": OPERATOR_KEY}).json()[
                 "status"] == "disabled"
         # Disabled nodes cannot heartbeat or claim.
         assert test_client.post(
             "/api/v1/nodes/node-d1/heartbeat",
-            json={"available": True}).status_code == 403
+            json={"available": True,
+                  "node_token": "disable-token-123456"}
+        ).status_code == 403
         task = test_client.post("/api/v1/tasks", json={
             "kind": "system_inventory",
             "required_capabilities": [
                 "exec:system_inventory"]}).json()
         assert test_client.post(
-            "/api/v1/tasks/claim/node-d1").json() is None
+            "/api/v1/tasks/claim/node-d1",
+            params={
+                "node_token": "disable-token-123456"}).json() is None
         # Re-registering a disabled node keeps it disabled.
         test_client.post("/api/v1/nodes/register", json={
             "node_id": "node-d1", "hostname": "h",
-            "capabilities": ["exec:system_inventory"]})
+            "capabilities": ["exec:system_inventory"],
+            "node_token": "disable-token-123456"})
         assert test_client.get(
             "/api/v1/nodes/node-d1").json()[
                 "derived_status"] == "disabled"
         assert test_client.post(
-            "/api/v1/nodes/node-d1/enable").json()[
+            "/api/v1/nodes/node-d1/enable",
+            json={"operator_key": OPERATOR_KEY}).json()[
                 "status"] == "online"
         claimed = test_client.post(
-            "/api/v1/tasks/claim/node-d1").json()
+            "/api/v1/tasks/claim/node-d1",
+            params={
+                "node_token": "disable-token-123456"}).json()
         assert claimed["id"] == task["id"]
         assert test_client.post(
-            "/api/v1/nodes/node-ghost/disable").status_code == 404
+            "/api/v1/nodes/node-ghost/disable",
+            json={"operator_key": OPERATOR_KEY}).status_code == 404
 
 
 def test_invalid_advertisement_refused(tmp_path, monkeypatch):
@@ -143,10 +180,11 @@ def test_invalid_advertisement_refused(tmp_path, monkeypatch):
         for bad in ({"capabilities": ["*"]},
                     {"executors": ["desktop"]},
                     {"models": [{"model_id": "x",
-                                 "model_type": "llm"}]},
+                                  "model_type": "llm"}]},
                     {"resources": {"energy_source": "coal"}},
                     {"locality_zone": "internet"}):
-            body = {"node_id": "node-bad", "hostname": "h"}
+            body = {"node_id": "node-bad", "hostname": "h",
+                    "node_token": "advertisement-token-123"}
             body.update(bad)
             assert test_client.post(
                 "/api/v1/nodes/register",
@@ -156,8 +194,13 @@ def test_invalid_advertisement_refused(tmp_path, monkeypatch):
 def test_route_and_assign(tmp_path, monkeypatch):
     for test_client in make_client(tmp_path, monkeypatch):
         register_all(test_client)
-        # Bind a token to node_vision: strict default policy then
-        # selects only the authenticated node, with reasons.
+        # Rotate node_vision to a dedicated token: strict default
+        # policy then selects only the authenticated node.
+        assert test_client.post(
+            "/api/v1/nodes/node_vision/rotate-token",
+            json={"current_token": "sim-token-node_vision-123",
+                  "new_token": "vision-token-123"}).json()[
+                      "bound"] is True
         body = sim_registration("node_vision")
         body["node_token"] = "vision-token-123"
         assert test_client.post(
@@ -187,7 +230,9 @@ def test_route_and_assign(tmp_path, monkeypatch):
             "node_vision"
         # The assignee can claim (with token); others cannot take it.
         assert test_client.post(
-            "/api/v1/tasks/claim/node_cpu").json() is None
+            "/api/v1/tasks/claim/node_cpu",
+            params={
+                "node_token": "sim-token-node_cpu-123"}).json() is None
         claimed = test_client.post(
             "/api/v1/tasks/claim/node_vision",
             params={"node_token": "vision-token-123"}).json()
@@ -216,7 +261,10 @@ def test_claim_revalidates_routing_requirements(tmp_path,
         ).json()
         # node_vision has the capability but no ocr model.
         assert test_client.post(
-            "/api/v1/tasks/claim/node_vision").json() is None
+            "/api/v1/tasks/claim/node_vision",
+            params={
+                "node_token": "sim-token-node_vision-123"}
+        ).json() is None
         listed = test_client.get("/api/v1/tasks").json()
         entry = next(item for item in listed
                      if item["id"] == task["id"])
@@ -241,7 +289,9 @@ def test_stale_node_rejected_from_routing(tmp_path, monkeypatch):
                    for entry in preview["rejected"])
         # Fresh again: selectable.
         test_client.post("/api/v1/nodes/node_vision/heartbeat",
-                         json={"available": True})
+                         json={"available": True,
+                               "node_token":
+                               "sim-token-node_vision-123"})
         preview = test_client.post("/api/v1/tasks/route", json={
             "requirements": {
                 "required_capabilities": ["vision.describe"]},
@@ -254,13 +304,15 @@ def test_physical_lease_becomes_blocked(tmp_path, monkeypatch):
     for test_client in make_client(tmp_path, monkeypatch):
         test_client.post("/api/v1/nodes/register", json={
             "node_id": "node-p1", "hostname": "h",
-            "capabilities": ["printer.execute"]})
+            "capabilities": ["printer.execute"],
+            "node_token": "printer-token-123456"})
         task = test_client.post("/api/v1/tasks", json={
             "kind": "printer.execute",
             "required_capabilities": ["printer.execute"],
             "requirements": {"physical_action": True}}).json()
         claimed = test_client.post(
-            "/api/v1/tasks/claim/node-p1").json()
+            "/api/v1/tasks/claim/node-p1",
+            params={"node_token": "printer-token-123456"}).json()
         assert claimed["id"] == task["id"]
         # Node disappears: lease expiry must NOT requeue.
         from coordinator.app.database import connection
@@ -277,4 +329,6 @@ def test_physical_lease_becomes_blocked(tmp_path, monkeypatch):
         assert status == "blocked"
         # Blocked physical work never claims again.
         assert test_client.post(
-            "/api/v1/tasks/claim/node-p1").json() is None
+            "/api/v1/tasks/claim/node-p1",
+            params={
+                "node_token": "printer-token-123456"}).json() is None

@@ -151,7 +151,7 @@ def new_skill(name: str, *, category: str = "",
         source=str(source or "")[:200],
         provenance=provenance or Provenance(
             source_type="user-created", creator_id="skills",
-            human_verified=True),
+            human_verified=False),
         project_refs=[str(item)[:100]
                       for item in (project_refs or [])][:20],
         created_at=stamp, updated_at=stamp)
@@ -176,6 +176,28 @@ def _row_to_skill(row) -> Skill:
 
 
 def save_skill(skill: Skill) -> None:
+    """Persist a skill. Stage/evidence invariants hold here,
+    not only in the routes: applied needs evidence,
+    demonstrated/mastered need ≥2 evidence plus verified
+    provenance. A future caller cannot bypass the gates by
+    writing directly."""
+    if skill.stage not in SKILL_STAGES:
+        raise SkillRefusedError(
+            f"Unknown stage '{skill.stage}'")
+    if skill.proficiency not in PROFICIENCIES:
+        raise SkillRefusedError(
+            f"Unknown proficiency '{skill.proficiency}'")
+    if skill.stage == "applied" and len(skill.evidence) < 1:
+        raise SkillRefusedError(
+            "applied needs at least one evidence entry")
+    if skill.stage in ("demonstrated", "mastered"):
+        if len(skill.evidence) < 2:
+            raise SkillRefusedError(
+                f"{skill.stage} needs at least two evidence "
+                "entries")
+        if not skill.provenance.human_verified:
+            raise SkillRefusedError(
+                f"{skill.stage} needs verified provenance")
     from .database import chat_connection, dump, init_chat_database
     init_chat_database()
     with chat_connection() as db:

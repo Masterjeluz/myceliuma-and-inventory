@@ -182,7 +182,7 @@ def test_no_global_state_and_no_clock():
 
 def test_coordinator_db_untouched(tmp_path, monkeypatch):
     import os
-    os.environ["MYCELIUM_DATABASE_PATH"] = str(tmp_path / "m64.db")
+    monkeypatch.setenv("MYCELIUM_DATABASE_PATH", str(tmp_path / "m64.db"))
     proposal, approval, fingerprint = make_approved()
     translate(proposal, approval, fingerprint)
     from coordinator.app.database import connection

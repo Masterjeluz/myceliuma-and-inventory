@@ -30,8 +30,8 @@ from coordinator.app.cameras import (
 
 
 def client(tmp_path, monkeypatch):
-    os.environ["MYCELIUM_DATABASE_PATH"] = str(tmp_path / "c.db")
-    os.environ["MYCELIUM_CHAT_DATABASE_PATH"] = str(tmp_path / "c-chat.db")
+    monkeypatch.setenv("MYCELIUM_DATABASE_PATH", str(tmp_path / "c.db"))
+    monkeypatch.setenv("MYCELIUM_CHAT_DATABASE_PATH", str(tmp_path / "c-chat.db"))
     with TestClient(main_mod.app) as test_client:
         yield test_client
 

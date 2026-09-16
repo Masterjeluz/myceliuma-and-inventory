@@ -133,8 +133,11 @@ def test_instagram_manual_export_only(tmp_path, monkeypatch):
         assert result["stored"] == 3
         refs = [item["reference"] for item in
                 result["sources"]]
-        assert all(ref.startswith("manual-export:")
-                   for ref in refs)
+        creators = {item["provenance"]["creator_id"]
+                    for item in result["sources"]}
+        # Mock stays visibly mock down to storage.
+        assert all(ref.startswith("mock:") for ref in refs)
+        assert creators == {"instagram:mock"}
         # Re-ingest dedups on content hash.
         again = test_client.post("/api/v1/ingest/instagram",
                                  json={"export": mock}).json()
@@ -144,6 +147,29 @@ def test_instagram_manual_export_only(tmp_path, monkeypatch):
                                  params={
                                      "source_type": "instagram"}).json()
         assert len(listed) == 3
+        # A genuine manual export keeps its honest label.
+        real = test_client.post("/api/v1/ingest/instagram",
+                                json={
+                                    "export": {
+                                        "export_kind":
+                                        "manual_export",
+                                        "items": [{
+                                            "id": "saved-1",
+                                            "title": "Saved reel",
+                                            "author": "creator",
+                                            "collection":
+                                            "3d-printing",
+                                            "caption": "bracket "
+                                                       "idea",
+                                            "topics": [
+                                                "3d-printing"]}]},
+                                    "collection": "3d-printing"}
+                                ).json()
+        assert real["stored"] == 1
+        assert real["sources"][0][
+            "reference"].startswith("manual-export:")
+        assert real["sources"][0]["provenance"][
+            "creator_id"] == "instagram:manual-export"
 
 
 def test_skills_candidate_evidence_progression(tmp_path,

@@ -121,6 +121,27 @@ def require_epoch(epoch, now_str: str | None = None) -> int:
     return live
 
 
+def require_writer_epoch(presented_epoch=None,
+                         now_str: str | None = None) -> int:
+    """Central fencing gate for coordinator-owned mutations.
+
+    Invariant: a writer holding an old fencing epoch cannot
+    perform coordinator-owned mutations. No lease row yet
+    means no election ever ran: live epoch is 0 and epoch-0
+    writers pass (single-coordinator bootstrap preserved).
+    Once an election ran, only the live epoch passes.
+
+    Call sites present the epoch they act under (sync
+    envelopes, stamped task routings). Local same-process
+    writes present the current epoch. Fencing is authority
+    protection only — never approval, never verification,
+    never a human_verified bypass.
+    """
+    if presented_epoch is None:
+        presented_epoch = current_epoch(now_str)
+    return require_epoch(presented_epoch, now_str)
+
+
 def _capable_set(nodes: list) -> list[dict]:
     """All enabled coordinator-capable nodes, fresh or not."""
     capable = []
@@ -174,6 +195,14 @@ def campaign(node_id: str, get_nodes,
             f"'{node_id}'")
     init_chat_database()
     with chat_connection() as db:
+        # Atomic takeover: BEGIN IMMEDIATE takes the write
+        # lock first, then every write is conditional on the
+        # exact row just read. A concurrent campaigner that
+        # read the same row finds zero rows changed and loses
+        # loudly instead of silently co-owning the epoch.
+        # Invariant: two simultaneous campaigners can never
+        # both become valid holders of the same epoch.
+        db.execute("BEGIN IMMEDIATE")
         row = db.execute(
             "SELECT * FROM coordinator_lease WHERE id=1").fetchone()
         live_holder = None
@@ -194,12 +223,15 @@ def campaign(node_id: str, get_nodes,
                 f"lease held by '{live_holder}' until "
                 f"{row['expires_at']}; wait for expiry")
         if live_holder == node_id:
-            db.execute(
+            changed = db.execute(
                 "UPDATE coordinator_lease SET expires_at=? "
-                "WHERE id=1 AND holder_node_id=?",
+                "WHERE id=1 AND holder_node_id=? AND epoch=?",
                 ((current + timedelta(
                     seconds=COORDINATOR_LEASE_SECONDS)).isoformat(),
-                 node_id))
+                 node_id, live_epoch)).rowcount
+            if not changed:
+                raise ElectionRefusedError(
+                    "lease moved during renewal; re-campaign")
             return {"node_id": node_id, "epoch": live_epoch,
                     "fencing_token": row["fencing_token"],
                     "mode": "renewed",
@@ -218,16 +250,37 @@ def campaign(node_id: str, get_nodes,
         fencing = secrets.token_hex(16)
         expires = (current + timedelta(
             seconds=COORDINATOR_LEASE_SECONDS)).isoformat()
-        db.execute("""INSERT INTO coordinator_lease
-        (id, epoch, holder_node_id, fencing_token, expires_at,
-         updated_at) VALUES (1, ?, ?, ?, ?, ?)
-        ON CONFLICT(id) DO UPDATE SET epoch=excluded.epoch,
-        holder_node_id=excluded.holder_node_id,
-        fencing_token=excluded.fencing_token,
-        expires_at=excluded.expires_at,
-        updated_at=excluded.updated_at""",
-                    (epoch, node_id, fencing, expires,
-                     current.isoformat()))
+        if row is None:
+            # First lease ever. A concurrent campaigner may
+            # insert between our read and write; ON CONFLICT
+            # DO NOTHING plus rowcount detects the lost race
+            # without exception parsing.
+            changed = db.execute("""INSERT INTO coordinator_lease
+                (id, epoch, holder_node_id, fencing_token,
+                 expires_at, updated_at)
+                VALUES (1, ?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO NOTHING""",
+                                   (epoch, node_id, fencing,
+                                    expires,
+                                    current.isoformat())).rowcount
+            if not changed:
+                raise ElectionRefusedError(
+                    "a concurrent campaigner took the lease; "
+                    "re-campaign")
+        else:
+            changed = db.execute(
+                """UPDATE coordinator_lease SET epoch=?,
+                holder_node_id=?, fencing_token=?, expires_at=?,
+                updated_at=? WHERE id=1 AND epoch=? AND
+                ifnull(holder_node_id, '')=ifnull(?, '') AND
+                ifnull(expires_at, '')=ifnull(?, '')""",
+                (epoch, node_id, fencing, expires,
+                 current.isoformat(), live_epoch,
+                 row["holder_node_id"], row["expires_at"])).rowcount
+            if not changed:
+                raise ElectionRefusedError(
+                    "a concurrent campaigner took the lease; "
+                    "re-campaign")
     return {"node_id": node_id, "epoch": epoch,
             "fencing_token": fencing, "mode": mode,
             "expires_at": expires}

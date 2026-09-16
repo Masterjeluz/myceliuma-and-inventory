@@ -21,11 +21,15 @@ def source_of(*names: str) -> str:
         (APP / name).read_text(encoding="utf-8") for name in names)
 
 
+OPERATOR_KEY = "op-key-dist-security-123"
+
+
 def make_client(tmp_path, monkeypatch):
     monkeypatch.setenv("MYCELIUM_DATABASE_PATH",
                        str(tmp_path / "sec.db"))
     monkeypatch.setenv("MYCELIUM_CHAT_DATABASE_PATH",
                        str(tmp_path / "sec-chat.db"))
+    monkeypatch.setenv("MYCELIUM_OPERATOR_KEY", OPERATOR_KEY)
     with TestClient(main_mod.app) as test_client:
         yield test_client
 
@@ -39,15 +43,21 @@ def test_unknown_node_rejected(tmp_path, monkeypatch):
             json={"available": True}).status_code == 404
         assert test_client.get(
             "/api/v1/nodes/node-ghost").status_code == 404
+        # Disable without operator key refuses first.
         assert test_client.post(
-            "/api/v1/nodes/node-ghost/disable").status_code == 404
+            "/api/v1/nodes/node-ghost/disable",
+            json={}).status_code == 403
+        assert test_client.post(
+            "/api/v1/nodes/node-ghost/disable",
+            json={"operator_key": OPERATOR_KEY}).status_code == 404
 
 
 def test_invalid_credential_rejected(tmp_path, monkeypatch):
     for test_client in make_client(tmp_path, monkeypatch):
         test_client.post("/api/v1/nodes/register", json={
             "node_id": "node-s1", "hostname": "h",
-            "capabilities": [], "node_token": "right-token-1"})
+            "capabilities": [],
+            "node_token": "right-token-123456"})
         assert test_client.post(
             "/api/v1/tasks/claim/node-s1",
             params={"node_token": "wrong-token"}).status_code == 403
@@ -58,14 +68,14 @@ def test_invalid_credential_rejected(tmp_path, monkeypatch):
         # Re-register rebinding requires the old credential.
         assert test_client.post("/api/v1/nodes/register", json={
             "node_id": "node-s1", "hostname": "h",
-            "capabilities": [], "node_token": "new-token-2"}
+            "capabilities": [], "node_token": "new-token-234567"}
         ).status_code == 403
 
 
 def test_node_cannot_claim_another_identity(tmp_path, monkeypatch):
     for test_client in make_client(tmp_path, monkeypatch):
-        for node_id, token in (("node-a", "token-a-123"),
-                               ("node-b", "token-b-123")):
+        for node_id, token in (("node-a", "token-a-123456789"),
+                                ("node-b", "token-b-123456789")):
             test_client.post("/api/v1/nodes/register", json={
                 "node_id": node_id, "hostname": "h",
                 "capabilities": ["exec:system_inventory"],
@@ -80,8 +90,8 @@ def test_node_cannot_claim_another_identity(tmp_path, monkeypatch):
         assert assigned["assigned_node_id"] in ("node-a", "node-b")
         other = "node-b" if assigned["assigned_node_id"] == \
             "node-a" else "node-a"
-        other_token = "token-b-123" if other == "node-b" else \
-            "token-a-123"
+        other_token = "token-b-123456789" if other == "node-b" else \
+            "token-a-123456789"
         # Wrong node, right own token: assignment pins ownership.
         assert test_client.post(
             f"/api/v1/tasks/claim/{other}",
@@ -93,7 +103,8 @@ def test_stale_node_cannot_claim(tmp_path, monkeypatch):
     for test_client in make_client(tmp_path, monkeypatch):
         test_client.post("/api/v1/nodes/register", json={
             "node_id": "node-old", "hostname": "h",
-            "capabilities": ["exec:system_inventory"]})
+            "capabilities": ["exec:system_inventory"],
+            "node_token": "stale-token-123456"})
         test_client.post("/api/v1/tasks", json={
             "kind": "system_inventory",
             "required_capabilities": ["exec:system_inventory"]})
@@ -102,20 +113,25 @@ def test_stale_node_cannot_claim(tmp_path, monkeypatch):
                 "UPDATE nodes SET last_seen=? WHERE node_id=?",
                 ("2020-01-01T00:00:00+00:00", "node-old"))
         assert test_client.post(
-            "/api/v1/tasks/claim/node-old").json() is None
+            "/api/v1/tasks/claim/node-old",
+            params={
+                "node_token": "stale-token-123456"}).json() is None
 
 
 def test_task_cannot_grant_capabilities(tmp_path, monkeypatch):
     for test_client in make_client(tmp_path, monkeypatch):
         test_client.post("/api/v1/nodes/register", json={
             "node_id": "node-plain", "hostname": "h",
-            "capabilities": []})
+            "capabilities": [],
+            "node_token": "plain-token-123456"})
         # A task demanding an unadvertised capability matches nothing.
         task = test_client.post("/api/v1/tasks", json={
             "kind": "system_inventory",
             "required_capabilities": ["printer.execute"]}).json()
         assert test_client.post(
-            "/api/v1/tasks/claim/node-plain").json() is None
+            "/api/v1/tasks/claim/node-plain",
+            params={"node_token": "plain-token-123456"}
+        ).json() is None
         preview = test_client.post("/api/v1/tasks/route", json={
             "requirements": {"required_capabilities": [
                 "printer.execute"]},
@@ -130,7 +146,9 @@ def test_task_cannot_grant_capabilities(tmp_path, monkeypatch):
                 "exec": "/bin/sh"}})
         assert evil.status_code == 201
         assert test_client.post(
-            "/api/v1/tasks/claim/node-plain").json() is None
+            "/api/v1/tasks/claim/node-plain",
+            params={"node_token": "plain-token-123456"}
+        ).json() is None
 
 
 def test_arbitrary_paths_and_commands_refused(tmp_path, monkeypatch):
@@ -146,7 +164,8 @@ def test_arbitrary_paths_and_commands_refused(tmp_path, monkeypatch):
                         {"executors": ["exec:../x"]},
                         {"models": [{"model_id": "http://x/y",
                                      "model_type": "llm"}]}):
-            body = {"node_id": "node-evil", "hostname": "h"}
+            body = {"node_id": "node-evil", "hostname": "h",
+                    "node_token": "evil-token-123456"}
             body.update(bad_reg)
             assert test_client.post(
                 "/api/v1/nodes/register",
@@ -181,13 +200,17 @@ def test_lease_ownership_preserved(tmp_path, monkeypatch):
         for node_id in ("node-o1", "node-o2"):
             test_client.post("/api/v1/nodes/register", json={
                 "node_id": node_id, "hostname": "h",
-                "capabilities": ["exec:system_inventory"]})
+                "capabilities": ["exec:system_inventory"],
+                "node_token": f"owner-token-{node_id}-123"})
         task = test_client.post("/api/v1/tasks", json={
             "kind": "system_inventory",
             "required_capabilities": [
                 "exec:system_inventory"]}).json()
         assert test_client.post(
-            "/api/v1/tasks/claim/node-o1").json()["id"] == task["id"]
+            "/api/v1/tasks/claim/node-o1",
+            params={
+                "node_token": "owner-token-node-o1-123"}
+        ).json()["id"] == task["id"]
         # Foreign completion is refused.
         assert test_client.post(
             f"/api/v1/tasks/{task['id']}/complete",
@@ -206,14 +229,18 @@ def test_retry_bounded_for_software_tasks(tmp_path, monkeypatch):
     for test_client in make_client(tmp_path, monkeypatch):
         test_client.post("/api/v1/nodes/register", json={
             "node_id": "node-r1", "hostname": "h",
-            "capabilities": ["exec:system_inventory"]})
+            "capabilities": ["exec:system_inventory"],
+            "node_token": "retry-token-123456"})
         task = test_client.post("/api/v1/tasks", json={
             "kind": "system_inventory",
             "required_capabilities": [
                 "exec:system_inventory"]}).json()
         for _ in range(MAX_ATTEMPTS):
             assert test_client.post(
-                "/api/v1/tasks/claim/node-r1").json() is not None
+                "/api/v1/tasks/claim/node-r1",
+                params={
+                    "node_token": "retry-token-123456"}
+            ).json() is not None
             with connection() as db:
                 db.execute(
                     "UPDATE tasks SET lease_until=? WHERE id=?",

@@ -39,7 +39,7 @@ def body(**overrides):
 
 @pytest.fixture()
 def client(tmp_path, monkeypatch):
-    os.environ["MYCELIUM_DATABASE_PATH"] = str(tmp_path / "approvals.db")
+    monkeypatch.setenv("MYCELIUM_DATABASE_PATH", str(tmp_path / "approvals.db"))
     with TestClient(main_mod.app) as test_client:
         yield test_client
 

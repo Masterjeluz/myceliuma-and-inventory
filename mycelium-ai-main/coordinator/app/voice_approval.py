@@ -11,10 +11,13 @@ approval resolves ONLY when ALL of these hold:
   matches by accident because binding comes first);
 - the target still exists in its pending state with an
   unchanged fingerprint/binding (rechecked live, never cached);
-- the kind is not physical: voice can never satisfy the
-  second explicit approval for physical execution
-  (printer.execute, desktop input); those stay on their
-  existing explicit channels.
+- the kind is not physical: voice can never satisfy
+  approval for physical execution (printer.execute,
+  robot.execute, drone.mission); those stay on their
+  existing explicit channels. Desktop input counts as
+  interface approval (option A): a spoken YES may resolve
+  a pending desktop action through this same flow, but
+  never a physical one.
 
 On success this layer returns the canonical "YES" for the
 caller to feed into the EXISTING decide path (decide_write /

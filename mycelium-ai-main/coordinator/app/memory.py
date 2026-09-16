@@ -209,10 +209,38 @@ def verify_memory(entry: MemoryEntry, verified_by: str,
 
 # -- store (chat DB, additive table) ------------------------------------
 
-def save_memory(entry: MemoryEntry) -> None:
+def save_memory(entry: MemoryEntry,
+                expected_revision: int | None = None) -> None:
+    """Persist a memory entry. With expected_revision set,
+    the write refuses when the stored revision moved
+    (optimistic concurrency): route-level checks cannot be
+    bypassed by a stale writer. Tombstoned rows refuse
+    revision writes; delete explicitly instead. The store
+    is capped at MAX_MEMORIES rows; beyond that the caller
+    runs retention first (fail-closed, never silent drop)."""
     from .database import chat_connection, dump, init_chat_database
     init_chat_database()
+    if expected_revision is not None:
+        with chat_connection() as db:
+            row = db.execute(
+                "SELECT revision, status FROM memories WHERE "
+                "memory_id=?", (entry.memory_id,)).fetchone()
+            if row is None or row["status"] != "active" or \
+                    int(row["revision"]) != int(expected_revision):
+                raise MemoryRefusedError(
+                    "memory revision moved; reload and retry "
+                    "explicitly")
     with chat_connection() as db:
+        row = db.execute(
+            "SELECT COUNT(*) AS n FROM memories WHERE "
+            "memory_id=?", (entry.memory_id,)).fetchone()
+        if row["n"] == 0:
+            total = db.execute(
+                "SELECT COUNT(*) AS n FROM memories").fetchone()
+            if total["n"] >= MAX_MEMORIES:
+                raise MemoryRefusedError(
+                    f"memory store holds {MAX_MEMORIES} rows; "
+                    "run retention before storing more")
         db.execute("""INSERT INTO memories
         (memory_id, memory_type, truth, title, content, data,
          source, provenance, confidence, importance,
@@ -296,19 +324,28 @@ def delete_memory(memory_id: str) -> bool:
 def list_memories(*, memory_type: str = "", truth: str = "",
                   project_ref: str = "",
                   include_deleted: bool = False,
+                  include_health: bool = False,
                   limit: int = 50) -> list[MemoryEntry]:
+    """List stored memories. Health is a separate scope:
+    health-type memories stay out unless include_health is
+    explicitly set (same rule as Live context)."""
     from .database import chat_connection, init_chat_database
     if memory_type and memory_type not in MEMORY_TYPES:
         raise MemoryRefusedError(
             f"Unknown memory type '{memory_type}'")
     if truth and truth not in TRUTH_TIERS:
         raise MemoryRefusedError(f"Unknown truth tier '{truth}'")
+    if memory_type == "health" and not include_health:
+        raise MemoryRefusedError(
+            "health memories need explicit health scope")
     init_chat_database()
     clauses = [] if include_deleted else ["status='active'"]
     params: list = []
     if memory_type:
         clauses.append("memory_type=?")
         params.append(memory_type)
+    elif not include_health:
+        clauses.append("memory_type != 'health'")
     if truth:
         clauses.append("truth=?")
         params.append(truth)
@@ -357,20 +394,38 @@ def retrieve_memories(query: str, *,
                       project_ref: str = "",
                       truth: str = "",
                       limit: int = 10,
-                      semantic: bool = False) -> list[dict]:
+                      semantic: bool = False,
+                      include_health: bool = False) -> list[dict]:
     """Bounded recall: lexical + recency + importance +
     project relevance. Optional semantic re-rank over the
     lexical shortlist via the existing embedding provider;
-    lexical stays the fallback (no second search engine)."""
+    lexical stays the fallback (no second search engine).
+    Health memories stay out unless include_health is set;
+    asking the health type without it refuses."""
     import time as _time
+    if not memory_types:
+        wanted = [entry for entry in MEMORY_TYPES
+                  if entry != "health" or include_health]
+    else:
+        wanted = list(memory_types)
+        if "health" in wanted and not include_health:
+            raise MemoryRefusedError(
+                "health memories need explicit health scope")
     candidates: list[MemoryEntry] = []
-    for memory_type in (memory_types or list(MEMORY_TYPES)):
-        try:
-            candidates.extend(list_memories(
-                memory_type=memory_type, truth=truth,
-                project_ref=project_ref, limit=60))
-        except MemoryRefusedError:
-            raise
+    if not memory_types and not truth and not project_ref:
+        # Fast path: one unfiltered query instead of a
+        # per-type fan-out. Type filtering happens below.
+        candidates.extend(list_memories(
+            include_health=include_health, limit=200))
+    else:
+        for memory_type in wanted:
+            try:
+                candidates.extend(list_memories(
+                    memory_type=memory_type, truth=truth,
+                    project_ref=project_ref,
+                    include_health=include_health, limit=60))
+            except MemoryRefusedError:
+                raise
     seen: set[str] = set()
     unique = [entry for entry in candidates
               if not (entry.memory_id in seen or
@@ -436,7 +491,8 @@ def _semantic_rerank(query: str, scored: list) -> list:
 
 def propose_consolidation(raw_texts: list[str], *,
                           project_ref: str = "",
-                          source: str = "consolidation") -> dict:
+                          source: str = "consolidation",
+                          include_health: bool = False) -> dict:
     """Raw texts → candidate memories + dedup + contradiction
     flags. Returns a proposal; stores nothing. Contradictions
     are preserved for human review, never auto-resolved."""
@@ -450,7 +506,9 @@ def propose_consolidation(raw_texts: list[str], *,
                  content_fingerprint(
                      entry.title + "\n" + entry.content,
                      entry.memory_type))
-                for entry in list_memories(limit=200)}
+                for entry in list_memories(limit=200,
+                                           include_health=
+                                           include_health)}
     candidates: list[dict] = []
     duplicates = 0
     for text in raw_texts[:50]:

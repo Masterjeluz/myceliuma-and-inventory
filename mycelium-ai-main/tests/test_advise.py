@@ -81,7 +81,7 @@ def advice_with_block(block: str) -> str:
 
 @pytest.fixture()
 def client(tmp_path, monkeypatch):
-    os.environ["MYCELIUM_DATABASE_PATH"] = str(tmp_path / "advise.db")
+    monkeypatch.setenv("MYCELIUM_DATABASE_PATH", str(tmp_path / "advise.db"))
     fake_reader = FakeReader()
     fake_advisor = FakeAdvisor()
     monkeypatch.setattr(main_mod, "InventoryReader", lambda *a, **k: fake_reader)

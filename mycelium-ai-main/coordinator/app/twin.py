@@ -99,9 +99,23 @@ def _row_to_link(row) -> TwinLink:
         updated_at=row["updated_at"])
 
 
-def save_link(link: TwinLink) -> None:
+def save_link(link: TwinLink,
+              expected_updated_at: str | None = None) -> None:
+    """Persist a twin link. With expected_updated_at set, a
+    moved row refuses (optimistic concurrency for future
+    callers); routes keep working unchanged."""
     from .database import chat_connection, dump, init_chat_database
     init_chat_database()
+    if expected_updated_at is not None:
+        with chat_connection() as db:
+            row = db.execute(
+                "SELECT updated_at FROM twin_links WHERE "
+                "link_id=?", (link.link_id,)).fetchone()
+            if row is None or row["updated_at"] != \
+                    expected_updated_at:
+                raise TwinRefusedError(
+                    "twin link moved; reload and retry "
+                    "explicitly")
     with chat_connection() as db:
         db.execute("""INSERT INTO twin_links
         (link_id, physical_ref, digital_ref, link_type,

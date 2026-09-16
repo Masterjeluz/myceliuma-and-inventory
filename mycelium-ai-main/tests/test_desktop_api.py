@@ -15,9 +15,9 @@ import coordinator.app.main as main_mod
 
 
 def client(tmp_path, monkeypatch):
-    os.environ["MYCELIUM_DATABASE_PATH"] = str(tmp_path / "desk.db")
-    os.environ["MYCELIUM_CHAT_DATABASE_PATH"] = str(
-        tmp_path / "desk-state.db")
+    monkeypatch.setenv("MYCELIUM_DATABASE_PATH", str(tmp_path / "desk.db"))
+    monkeypatch.setenv("MYCELIUM_CHAT_DATABASE_PATH", str(
+        tmp_path / "desk-state.db"))
     with TestClient(main_mod.app) as test_client:
         yield test_client
 
@@ -145,7 +145,8 @@ def test_agent_status_reports_desktop_nodes(tmp_path, monkeypatch):
     for test_client in client(tmp_path, monkeypatch):
         test_client.post("/api/v1/nodes/register", json={
             "node_id": "desk-01", "hostname": "pc",
-            "capabilities": ["agent:desktop", "desktop.screen.read"]})
+            "capabilities": ["agent:desktop", "desktop.screen.read"],
+            "node_token": "desk-token-123456"})
         status = test_client.get("/api/v1/agent/status").json()
         assert status["agents_online"] == 1
         assert status["desktop_nodes"][0]["node_id"] == "desk-01"

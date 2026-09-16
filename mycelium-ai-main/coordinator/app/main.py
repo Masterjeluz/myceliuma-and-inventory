@@ -51,6 +51,7 @@ from .failover import (
     current_epoch,
     release as failover_release,
     require_epoch,
+    require_writer_epoch,
     sync_status as failover_status,
 )
 from .live import (
@@ -313,6 +314,8 @@ from .nodes import (
     check_locality,
     check_models,
     check_node_id,
+    check_node_token_strength,
+    check_operator_key,
     check_resources,
     derive_status,
     hash_token,
@@ -330,7 +333,7 @@ from .routing import (
     requirements_from_payload,
     route_task,
 )
-from .schemas import AdviseRequest, AdviseResponse, AdvancedOpBody, CadDocumentBody, CadOpBody, CadPartBody, CampaignBody, CameraRegisterBody, CaptureCloseBody, CaptureOpenBody, ChatMissionBody, ChatRequest, ChatResponse, ClaimedTask, DecideApprovalBody, DesktopActionBody, DesktopClaimBody, DesktopDecisionBody, DesktopDispatchBody, DesktopResultBody,     DistEnvelopeBody, DroneCreateBody, DroneMissionBody,     FabGenerateBody, FabSliceBody, FamiliarCreateBody, FoodCreateBody, GarminImportBody, GitCommitBody, HealthMeasureBody, Heartbeat, InstagramImportBody,     InterfaceChatBody, InventoryWriteBody, JobRunBody, LiveContextBody, LiveProposeBody, LiveSessionBody, MealCreateBody, MealItemBody, MemoryConsolidateBody, MemoryCreateBody, MemoryRetrieveBody, MemoryVerifyBody, MissionApproveBody, MissionCreateBody, MissionStepBody, NodeRegistration, NotifyBody, PhoneCameraBody,     PlanBody, PlanToProposalBody, PipelinePlanBody, PrintCancelBody, PrintProposeBody, PrinterRegisterBody, PrinterSelectBody, PromptEditBody, ResearchAdvanceBody, ResearchClaimBody, ResearchRecordBody, ResearchSourceBody, RobotActionBody, RobotApproveBody, RobotCreateBody, RobotSafetyBody, RobotTelemetryBody, SessionOpenBody,     StreamStartBody, SuggestStepsBody, SkillAcceptBody, SkillAdvanceBody, SkillCreateBody, SkillDiscoverBody, SkillEvidenceBody, SpoolCreateBody, SyncApplyBody, TaskAssignBody, TaskCreate, TaskFromProposalBody, TaskResult, TaskRouteBody,     TemplateMissionBody, TransformBody, TwinLinkBody, VisionAnalyzeBody, VisionProposeBody, VoiceApprovalRequestBody, VoiceApproveBody, VoiceChatBody, VoiceSynthesizeBody, VoiceTranscribeBody, WriteDecisionBody
+from .schemas import AdviseRequest, AdviseResponse, AdvancedOpBody, CadDocumentBody, CadOpBody, CadPartBody, CampaignBody, CameraRegisterBody, CaptureCloseBody, CaptureOpenBody, ChatMissionBody, ChatRequest, ChatResponse, ClaimedTask, DecideApprovalBody, DesktopActionBody, DesktopClaimBody, DesktopDecisionBody, DesktopDispatchBody, DesktopResultBody,     DistEnvelopeBody, DroneCreateBody, DroneMissionApproveBody, DroneMissionBody,     FabGenerateBody, FabSliceBody, FamiliarCreateBody, FoodCreateBody, GarminImportBody, GitCommitBody, HealthMeasureBody, Heartbeat, InstagramImportBody,     InterfaceChatBody, InventoryWriteBody, JobRunBody, LiveContextBody, LiveProposeBody, LiveSessionBody, MealCreateBody, MealItemBody, MemoryConsolidateBody, MemoryCreateBody, MemoryRetrieveBody, MemoryVerifyBody,     MissionApproveBody, MissionCreateBody, MissionStepBody, NodeRegistration, NodeRotateBody, NotifyBody, OperatorBody, PhoneCameraBody,     PlanBody, PlanToProposalBody, PipelinePlanBody, PrintCancelBody, PrintProposeBody, PrinterRegisterBody, PrinterSelectBody, PromptEditBody, ResearchAdvanceBody, ResearchClaimBody, ResearchRecordBody, ResearchSourceBody, RobotActionBody, RobotApproveBody, RobotCreateBody, RobotSafetyBody, RobotTelemetryBody, SessionOpenBody,     StreamStartBody, SuggestStepsBody, SkillAcceptBody, SkillAdvanceBody, SkillCreateBody, SkillDiscoverBody, SkillEvidenceBody, SpoolCreateBody, SyncApplyBody, TaskAssignBody, TaskCreate, TaskFromProposalBody, TaskResult, TaskRouteBody,     TemplateMissionBody, TransformBody, TwinLinkBody, VisionAnalyzeBody, VisionProposeBody, VoiceApprovalRequestBody, VoiceApproveBody, VoiceChatBody, VoiceSynthesizeBody, VoiceTranscribeBody, WriteDecisionBody
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 logger = logging.getLogger("mycelium.coordinator")
@@ -384,10 +387,14 @@ def health() -> dict[str, str]:
 
 @app.post("/api/v1/nodes/register", status_code=201)
 def register_node(node: NodeRegistration) -> dict[str, str]:
-    """Register or refresh a node. Validates the full
-    advertisement; binds a token on first presentation and
-    verifies it afterwards; never returns or logs credentials;
-    a disabled node stays disabled (fail-closed)."""
+    """Register or refresh a node. New identities require a
+    non-trivial token (403 without): choosing a node_id alone
+    never creates authority. Token-bound identities verify on
+    every refresh. Legacy (tokenless) identities keep working
+    but frozen — only freshness updates, never advertisement
+    or authority changes — until operator rotation binds a
+    token. A disabled node stays disabled (fail-closed).
+    Never returns or logs credentials."""
     try:
         node_id = check_node_id(node.node_id)
         capabilities = check_capabilities(node.capabilities)
@@ -409,6 +416,18 @@ def register_node(node: NodeRegistration) -> dict[str, str]:
             (node_id,)).fetchone()
         stored_hash = (existing["auth_token_hash"]
                        if existing else None)
+        if existing is None and not node.node_token:
+            raise HTTPException(
+                status_code=403,
+                detail="new node identities require a "
+                       "node_token; choosing a node_id alone "
+                       "creates no authority")
+        if node.node_token:
+            try:
+                check_node_token_strength(node.node_token)
+            except NodeRefusedError as error:
+                raise HTTPException(status_code=422,
+                                    detail=str(error))
         try:
             auth_mode = authenticate(node_id, stored_hash,
                                      node.node_token)
@@ -417,11 +436,42 @@ def register_node(node: NodeRegistration) -> dict[str, str]:
                                 detail="node credential rejected")
         bound_hash = stored_hash
         if node.node_token and not stored_hash:
-            bound_hash = hash_token(node_id, node.node_token)
-            auth_mode = "token"
+            if existing is None:
+                bound_hash = hash_token(node_id,
+                                        node.node_token)
+                auth_mode = "token"
+            else:
+                # Binding a token to an already-seen identity
+                # is rotation: operator key required, otherwise
+                # anyone could claim a legacy node_id.
+                try:
+                    check_operator_key(node.operator_key)
+                except NodeAuthError:
+                    raise HTTPException(
+                        status_code=403,
+                        detail="token binding on an existing "
+                               "identity needs operator rotation")
+                bound_hash = hash_token(node_id,
+                                        node.node_token)
+                auth_mode = "token"
         status = "online"
         if existing is not None and existing["status"] == "disabled":
             status = "disabled"
+        if existing is not None and stored_hash is None \
+                and not node.node_token:
+            # Legacy freeze: freshness only. Advertisement,
+            # authority flags and credentials never change
+            # without a token or operator rotation.
+            db.execute(
+                "UPDATE nodes SET last_seen=?, status=?, "
+                "last_auth=? WHERE node_id=?",
+                (now(), status, auth_mode, node_id))
+            logger.info("node_heartbeat_legacy node_id=%s",
+                        node_id)
+            emit_event("node.online",
+                       f"Node {node_id} refreshed (legacy)",
+                       node_id=node_id)
+            return {"node_id": node_id, "status": "registered"}
         db.execute("""INSERT INTO nodes
         (node_id, hostname, tier, capabilities, cpu_cores, memory_mb,
          energy_source, last_seen, status, auth_token_hash,
@@ -472,6 +522,16 @@ def heartbeat(node_id: str, heartbeat_data: Heartbeat) -> Response:
     except NodeAuthError:
         raise HTTPException(status_code=403,
                             detail="node credential rejected")
+    if row["auth_token_hash"] is None:
+        # Legacy freeze: freshness only, never advertisement.
+        # Bind a token via operator rotation to refresh.
+        with connection() as db:
+            db.execute(
+                "UPDATE nodes SET last_seen=?, status=?, "
+                "last_auth=? WHERE node_id=?",
+                (now(), "online" if heartbeat_data.available
+                 else "busy", auth_mode, node_id))
+        return Response(status_code=204)
     updates: dict[str, object] = {
         "last_seen": now(),
         "status": "online" if heartbeat_data.available else "busy",
@@ -552,8 +612,58 @@ def get_node(node_id: str) -> dict:
     return _node_to_json(row)
 
 
+@app.post("/api/v1/nodes/{node_id}/rotate-token")
+def rotate_node_token(node_id: str,
+                      body: NodeRotateBody) -> dict:
+    """Bind or rotate a node token. Bound identities present
+    the current token; legacy identities need the operator
+    key (local env). Never returns the token or its hash."""
+    try:
+        new_token = check_node_token_strength(body.new_token)
+    except NodeRefusedError as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    with connection() as db:
+        row = db.execute(
+            "SELECT auth_token_hash FROM nodes WHERE node_id=?",
+            (node_id,)).fetchone()
+    if row is None:
+        raise HTTPException(404, "Node is not registered")
+    stored_hash = row["auth_token_hash"]
+    if stored_hash:
+        try:
+            authenticate(node_id, stored_hash,
+                         body.current_token)
+        except NodeAuthError:
+            raise HTTPException(
+                status_code=403,
+                detail="current token rejected; rotation refused")
+    else:
+        try:
+            check_operator_key(body.operator_key)
+        except NodeAuthError:
+            raise HTTPException(
+                status_code=403,
+                detail="binding a token to a legacy identity "
+                       "needs the operator key")
+    with connection() as db:
+        db.execute("UPDATE nodes SET auth_token_hash=?, "
+                   "last_auth=? WHERE node_id=?",
+                   (hash_token(node_id, new_token), "token",
+                    node_id))
+    logger.info("node_token_rotated node_id=%s", node_id)
+    return {"node_id": node_id, "bound": True}
+
+
 @app.post("/api/v1/nodes/{node_id}/disable")
-def disable_node(node_id: str) -> dict:
+def disable_node(node_id: str, body: OperatorBody) -> dict:
+    """Disable a node. Operator key required: an
+    unauthenticated caller cannot mutate node state."""
+    try:
+        check_operator_key(body.operator_key)
+    except NodeAuthError:
+        raise HTTPException(
+            status_code=403,
+            detail="operator authorization rejected")
     with connection() as db:
         changed = db.execute(
             "UPDATE nodes SET status='disabled' WHERE node_id=?",
@@ -565,7 +675,15 @@ def disable_node(node_id: str) -> dict:
 
 
 @app.post("/api/v1/nodes/{node_id}/enable")
-def enable_node(node_id: str) -> dict:
+def enable_node(node_id: str, body: OperatorBody) -> dict:
+    """Re-enable a node. Operator key required: disabled
+    stickiness cannot be cleared by the node itself."""
+    try:
+        check_operator_key(body.operator_key)
+    except NodeAuthError:
+        raise HTTPException(
+            status_code=403,
+            detail="operator authorization rejected")
     with connection() as db:
         changed = db.execute(
             "UPDATE nodes SET status='online', last_seen=? "
@@ -774,7 +892,9 @@ def _claim_task(node_id: str, now_str: str,
         except ValueError:
             node_executors = []
         capabilities = set(load(node["capabilities"]))
-        candidates = db.execute("SELECT * FROM tasks WHERE status='queued' ORDER BY priority DESC, id ASC").fetchall()
+        # Bounded hot path: the 500 most urgent queued tasks.
+        # EXPLAIN QUERY PLAN uses idx_tasks_status.
+        candidates = db.execute("SELECT * FROM tasks WHERE status='queued' ORDER BY priority DESC, id ASC LIMIT 500").fetchall()
         for task in candidates:
             if task["assigned_node_id"] not in (None, node_id):
                 continue
@@ -835,11 +955,20 @@ def _complete_task(task_id: int, result: TaskResult, completing_node_id: str | N
     """
     current = now_str or now()
     with connection() as db:
-        row = db.execute("SELECT status, assigned_node_id, lease_until FROM tasks WHERE id=?", (task_id,)).fetchone()
+        row = db.execute("SELECT status, assigned_node_id, lease_until, routing_decision FROM tasks WHERE id=?", (task_id,)).fetchone()
         if row is None or row["status"] != "assigned":
             raise HTTPException(404, "Assigned task not found")
         if completing_node_id is not None and row["assigned_node_id"] != completing_node_id:
             raise HTTPException(404, "Assigned task not found")
+        try:
+            stamped = load(row["routing_decision"] or "{}")
+            assigned_epoch = stamped.get("epoch", 0) if isinstance(stamped, dict) else 0
+        except ValueError:
+            assigned_epoch = 0
+        try:
+            require_writer_epoch(assigned_epoch, current)
+        except FencingError as error:
+            raise HTTPException(status_code=409, detail=str(error))
         try:
             lease_valid = row["lease_until"] is not None and _parse_time(row["lease_until"]) > _parse_time(current)
         except (ValueError, TypeError):
@@ -3308,9 +3437,17 @@ def voice_approval_open(body: VoiceApprovalRequestBody) -> dict:
             raise HTTPException(
                 status_code=409,
                 detail="Write proposal is not pending")
+        proposal = WriteProposal.model_validate(record["record"])
+        if proposal.mutation_type in ("printer.execute",
+                                      "robot.execute",
+                                      "drone.mission"):
+            raise HTTPException(
+                status_code=422,
+                detail=f"mutation '{proposal.mutation_type}' "
+                       "never resolves by voice; physical "
+                       "approval stays on its explicit channel")
         from .controlled_writes import write_fingerprint as _fp
-        fingerprint = _fp(
-            WriteProposal.model_validate(record["record"]))
+        fingerprint = _fp(proposal)
         if body.fingerprint and body.fingerprint != fingerprint:
             raise HTTPException(
                 status_code=422,
@@ -3519,7 +3656,18 @@ def _election_nodes() -> list[dict]:
 def coordinator_campaign(body: CampaignBody) -> dict:
     """Seek or renew the coordinator lease. Deterministic order,
     quorum or explicit degraded mode; a live foreign holder
-    refuses. Fail-closed on every doubt."""
+    refuses. Only token-bound identities may campaign: legacy
+    nodes bind a token through operator rotation first.
+    Fail-closed on every doubt."""
+    with connection() as db:
+        row = db.execute(
+            "SELECT auth_token_hash FROM nodes WHERE node_id=?",
+            (body.node_id,)).fetchone()
+    if row is None or not row["auth_token_hash"]:
+        raise HTTPException(
+            status_code=409,
+            detail="campaigning needs a token-bound identity; "
+                   "bind a token through operator rotation first")
     try:
         result = failover_campaign(body.node_id, _election_nodes)
     except ElectionRefusedError as error:
@@ -3733,7 +3881,9 @@ async def live_context(body: LiveContextBody) -> dict:
             sources["memory"] = _recall(
                 body.query, project_ref=str(
                     scope.get("project_id", "") or ""),
-                limit=8)
+                limit=8, include_health=bool(
+                    live_can(session, "health.read")
+                    and scope.get("include_health")))
         except Exception:
             pass
     if live_can(session, "health.read") and scope.get(
@@ -4197,12 +4347,15 @@ def memory_create(body: MemoryCreateBody) -> dict:
 @app.get("/api/v1/memory")
 def memory_list(memory_type: str = "", truth: str = "",
                 project_ref: str = "",
+                include_health: bool = False,
                 limit: int = 50) -> list[dict]:
     from .memory import MemoryRefusedError as _Refused
     from .memory import list_memories as _list
     try:
         entries = _list(memory_type=memory_type, truth=truth,
-                        project_ref=project_ref, limit=limit)
+                        project_ref=project_ref,
+                        include_health=include_health,
+                        limit=limit)
     except _Refused as error:
         raise HTTPException(status_code=422, detail=str(error))
     return [entry.model_dump(mode="json") for entry in entries]
@@ -4256,7 +4409,8 @@ def memory_retrieve(body: MemoryRetrieveBody) -> dict:
             body.query, memory_types=list(
                 body.memory_types or []),
             project_ref=body.project_ref, truth=body.truth,
-            limit=body.limit, semantic=body.semantic)
+            limit=body.limit, semantic=body.semantic,
+            include_health=body.include_health)
     except _Refused as error:
         raise HTTPException(status_code=422, detail=str(error))
     return {"results": results}
@@ -4315,7 +4469,12 @@ def health_measurements(metric: str = "", source: str = "",
                         since=since, limit=limit)
     except _Refused as error:
         raise HTTPException(status_code=422, detail=str(error))
-    return [entry.model_dump(mode="json") for entry in entries]
+    out = []
+    for entry in entries:
+        payload = entry.model_dump(mode="json")
+        payload["origin"] = entry.provenance.creator_id
+        out.append(payload)
+    return out
 
 
 @app.get("/api/v1/health/trends/{metric}")
@@ -4984,58 +5143,82 @@ def robot_safety(robot_id: str,
 @app.post("/api/v1/robots/{robot_id}/propose")
 def robot_propose(robot_id: str,
                   body: RobotActionBody) -> dict:
+    """One inert robot-execution proposal (mutation type
+    robot.execute). Approval runs through the generic
+    write-approval flow (exact YES + fingerprint +
+    staleness); execution itself stays HARDWARE_REQUIRED."""
     from .robots import RobotRefusedError as _Refused
-    from .robots import propose_action as _propose
+    from .robots import build_robot_proposal as _build
     try:
-        return _propose(robot_id, body.action,
-                        dict(body.params),
-                        simulation_note=body.simulation_note
-                        ).model_dump(mode="json")
-    except _Refused as error:
+        proposal = _build(robot_id, body.action,
+                          dict(body.params), body.actor,
+                          simulation_note=body.simulation_note)
+        _write_save(proposal, "proposed")
+    except (_Refused, ValueError) as error:
         raise HTTPException(status_code=422, detail=str(error))
+    return _write_to_json(_write_load(proposal.proposal_id))
 
 
 @app.post("/api/v1/robots/{robot_id}/approve")
 def robot_approve(robot_id: str,
                   body: RobotApproveBody) -> dict:
-    from .robots import RobotActionProposal as _Proposal
+    """Approve one stored robot proposal: exact YES only,
+    fingerprint/staleness/target bound by the generic flow,
+    plus a live recheck of safety state, capability and
+    idleness (never trusted from the client body)."""
     from .robots import RobotRefusedError as _Refused
-    from .robots import approve_action as _approve
+    from .robots import check_robot_state_for_approval as _check
+    from .robots import mark_robot_busy as _busy
+    record = _write_load(body.proposal_id)
+    if record is None:
+        raise HTTPException(404, "Proposal not found")
+    if record["status"] != "proposed":
+        raise HTTPException(
+            status_code=409,
+            detail=f"Proposal is {record['status']}; only "
+                   "proposed proposals decide")
+    proposal = WriteProposal.model_validate(record["record"])
+    if proposal.mutation_type != "robot.execute":
+        raise HTTPException(status_code=422, detail=
+                            "not a robot execution proposal")
     try:
-        proposal = _Proposal(
-            action_id=body.action_id, robot_id=robot_id,
-            action=body.action, params=dict(body.params),
-            physical=body.physical,
-            safety_state=body.safety_state,
-            simulation_note=body.simulation_note)
-        return _approve(
-            proposal,
-            body.approved_by).model_dump(mode="json")
-    except _Refused as error:
+        _check(robot_id, proposal)
+        request = request_write_approval(proposal)
+        approval = decide_write(request, proposal,
+                                body.response,
+                                decided_by=body.decided_by)
+    except (_Refused, ValueError) as error:
         raise HTTPException(status_code=422, detail=str(error))
-    except Exception as error:
-        raise HTTPException(status_code=422, detail=str(error))
+    status = "approved" if approval.approved else "rejected"
+    _write_save(proposal, status, approval=approval)
+    if approval.approved:
+        try:
+            _busy(robot_id)
+        except _Refused as error:
+            raise HTTPException(status_code=422,
+                                detail=str(error))
+    return _write_to_json(_write_load(body.proposal_id))
 
 
 @app.post("/api/v1/robots/{robot_id}/telemetry")
 def robot_telemetry(robot_id: str,
                     body: RobotTelemetryBody) -> dict:
-    """Record telemetry and, with an independent observation,
-    verify. Telemetry alone never verifies."""
+    """Record telemetry and, with a cited stored observation,
+    verify. Caller text alone never verifies."""
     from .robots import RobotRefusedError as _Refused
     from .robots import record_telemetry as _record
     from .robots import verify_action as _verify
     try:
         telemetry = _record(body.action_id, robot_id,
                             body.status, body.detail)
-        if not body.observation.strip():
+        if not body.observation_ref.strip():
             return {"telemetry": telemetry.model_dump(
                 mode="json"), "verification": None,
-                "note": "no independent observation supplied; "
+                "note": "no cited observation supplied; "
                         "not verified"}
         return {"telemetry": telemetry.model_dump(mode="json"),
-                "verification": _verify(telemetry,
-                                        body.observation)}
+                "verification": _verify(
+                    telemetry, body.observation_ref)}
     except _Refused as error:
         raise HTTPException(status_code=422, detail=str(error))
 
@@ -5067,21 +5250,55 @@ def drone_list() -> list[dict]:
 @app.post("/api/v1/drones/{drone_id}/mission")
 def drone_mission(drone_id: str,
                   body: DroneMissionBody) -> dict:
-    """Propose (and with approved_by, approve) a mission.
-    Autonomous needs geofence + altitude cap + human."""
+    """One inert drone-mission proposal (mutation type
+    drone.mission). Approval runs through the generic
+    write-approval flow (exact YES + fingerprint +
+    staleness); flight itself stays HARDWARE_REQUIRED."""
     from .drones import DroneRefusedError as _Refused
-    from .drones import approve_mission as _approve
-    from .drones import propose_mission as _propose
+    from .drones import build_drone_proposal as _build
     try:
-        mission = _propose(
+        proposal = _build(
             drone_id, body.kind, dict(body.params),
-            autonomous=body.autonomous, geofence=body.geofence,
+            body.actor, autonomous=body.autonomous,
+            geofence=body.geofence,
             max_altitude_m=body.max_altitude_m)
-        if body.approved_by.strip():
-            mission = _approve(mission, body.approved_by)
-    except _Refused as error:
+        _write_save(proposal, "proposed")
+    except (_Refused, ValueError) as error:
         raise HTTPException(status_code=422, detail=str(error))
-    return mission.model_dump(mode="json")
+    return _write_to_json(_write_load(proposal.proposal_id))
+
+
+@app.post("/api/v1/drones/{drone_id}/mission/approve")
+def drone_mission_approve(drone_id: str,
+                          body: DroneMissionApproveBody) -> dict:
+    """Approve one stored drone proposal: exact YES only,
+    fingerprint/staleness/target bound by the generic flow,
+    plus a live recheck of safety state and capability."""
+    from .drones import DroneRefusedError as _Refused
+    from .drones import check_drone_state_for_approval as _check
+    record = _write_load(body.proposal_id)
+    if record is None:
+        raise HTTPException(404, "Proposal not found")
+    if record["status"] != "proposed":
+        raise HTTPException(
+            status_code=409,
+            detail=f"Proposal is {record['status']}; only "
+                   "proposed proposals decide")
+    proposal = WriteProposal.model_validate(record["record"])
+    if proposal.mutation_type != "drone.mission":
+        raise HTTPException(status_code=422, detail=
+                            "not a drone mission proposal")
+    try:
+        _check(drone_id, proposal)
+        request = request_write_approval(proposal)
+        approval = decide_write(request, proposal,
+                                body.response,
+                                decided_by=body.decided_by)
+    except (_Refused, ValueError) as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    status = "approved" if approval.approved else "rejected"
+    _write_save(proposal, status, approval=approval)
+    return _write_to_json(_write_load(body.proposal_id))
 
 
 @app.post("/api/v1/familiars", status_code=201)
@@ -5197,6 +5414,21 @@ def job_cancel(run_id: str) -> dict:
     from .jobs import cancel_run as _cancel
     return {"run_id": run_id,
             "cancelled": _cancel(run_id)}
+
+
+# =============================================================================
+# MAINTENANCE (BIG #16, Fase 4). Operator-triggered retention over
+# log tables. dist_events, dist_conflicts and write_proposals
+# are never pruned (sync cursors, live conflicts, approval
+# lifecycle depend on them).
+# =============================================================================
+
+@app.post("/api/v1/maintenance/prune")
+def maintenance_prune() -> dict:
+    """Run deterministic retention passes. Returns per-table
+    removed counts plus the excluded tables."""
+    from .retention import run_retention as _run
+    return _run()
 
 
 @app.get("/workshop/graph", response_class=HTMLResponse)
@@ -5570,6 +5802,13 @@ async def _write_execute_record(record: dict) -> WriteResult:
     """Execute one stored, approved proposal and persist the result."""
     proposal = WriteProposal.model_validate(record["record"])
     approval = WriteApproval.model_validate(record["approval"])
+    if proposal.mutation_type in ("robot.execute",
+                                  "drone.mission"):
+        raise PrintRefusedError(
+            f"Mutation '{proposal.mutation_type}' has no "
+            "executor: physical-agent execution is "
+            "HARDWARE_REQUIRED and never runs from the "
+            "generic write path")
     if proposal.mutation_type == "git.commit":
         return execute_git_commit(proposal, approval)
     if proposal.mutation_type == "printer.execute":
@@ -5938,7 +6177,8 @@ def health_page() -> str:
         f"<tr><td>{escape(entry.metric)}</td>"
         f"<td>{escape(str(entry.value))}</td>"
         f"<td>{escape(entry.unit)}</td>"
-        f"<td>{escape(entry.source)}</td>"
+        f"<td>{escape(entry.source)}"
+        f"{' (MOCK: ' + escape(entry.provenance.creator_id) + ')' if 'mock' in entry.provenance.creator_id else ''}</td>"
         f"<td>{escape(entry.observed_at[:16])}</td></tr>"
         for entry in recent) or "<tr><td colspan='5'>—</td></tr>"
     return f"""<!doctype html><html><head><title>Health — Mycelium</title><style>
@@ -6338,15 +6578,19 @@ def cameras_page() -> str:
     for device in list_devices():
         latest = list_observations(device.device_id, limit=1)
         last = (f"{latest[0].observation_id} "
-                f"({latest[0].created_at})" if latest else "○ geen")
+                f"({latest[0].created_at})" if latest else "	 geen")
+        test_badge = ""
+        if latest and "test-only" in str(
+                latest[0].provenance.notes or ""):
+            test_badge = " <b>[TEST]</b>"
         rows.append(
             f"<li><b>{escape(device.name)}</b> "
-            f"({escape(device.device_id)}, {escape(device.source)}) — "
-            f"{escape(', '.join(device.kinds))} · "
+            f"({escape(device.device_id)}, {escape(device.source)}){test_badge} - "
+            f"{escape(', '.join(device.kinds))} � "
             f"<a href='/api/v1/cameras/{escape(device.device_id)}/availability'>"
-            "beschikbaarheid (JSON)</a> · "
+            "beschikbaarheid (JSON)</a> � "
             f"<a href='/api/v1/cameras/{escape(device.device_id)}/observations'>"
-            "observaties (JSON)</a> · laatste: "
+            "observaties (JSON)</a> � laatste: "
             f"{escape(last)}</li>")
     devices = "".join(rows)
     detected = detect_local_imaging_devices()
@@ -6385,6 +6629,23 @@ async def web_camera_register(request: Request) -> RedirectResponse:
     return RedirectResponse("/cameras", status_code=303)
 
 
+def _printer_is_simulated(printer_id: str) -> bool:
+    """True when the bound adapter reports simulated. Guards
+    the UI badge; never raises."""
+    try:
+        adapter = adapter_for_printer(printer_id)
+    except (ValueError, AttributeError):
+        return False
+    if adapter is None:
+        return False
+    try:
+        status = adapter.status(None)
+    except (ValueError, AttributeError, TypeError):
+        return getattr(adapter, "name", "") == "simulated-test"
+    return bool(isinstance(status, dict)
+                and status.get("simulated"))
+
+
 @app.get("/fabrication", response_class=HTMLResponse)
 def fabrication_page() -> str:
     runs = "".join(
@@ -6398,8 +6659,9 @@ def fabrication_page() -> str:
         for record in list_fabrications(20))
     printers = "".join(
         f"<li><b>{escape(device.name)}</b> "
-        f"({escape(device.printer_id)}) — "
-        f"{escape(', '.join(device.capabilities))}</li>"
+        f"({escape(device.printer_id)}) - "
+        f"{escape(', '.join(device.capabilities))}"
+        f"{' <b>[SIMULATED]</b>' if _printer_is_simulated(device.printer_id) else ''}</li>"
         for device in list_stored_printers())
     return f"""<!doctype html><html><head><title>Mycelium Fabrication</title><style>
     body{{font:16px system-ui;max-width:860px;margin:2rem auto;padding:0 1rem;color:#17352a;background:#f4f5ed}} h1{{color:#2f6b45}} nav a{{margin-right:1rem;color:#2f6b45}}

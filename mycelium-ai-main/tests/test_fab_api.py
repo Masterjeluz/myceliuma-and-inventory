@@ -84,6 +84,8 @@ def make_client(tmp_path, monkeypatch):
                        str(tmp_path / "f.db"))
     monkeypatch.setenv("MYCELIUM_CHAT_DATABASE_PATH",
                        str(tmp_path / "f-chat.db"))
+    monkeypatch.setenv("MYCELIUM_FABRICATION_DIR",
+                       str(tmp_path / "f-fab"))
     from coordinator.app.inventory_read import InventoryReader
     from coordinator.app.inventory_writes import InventoryWriter
     monkeypatch.setattr(main_mod, "_world_reader",

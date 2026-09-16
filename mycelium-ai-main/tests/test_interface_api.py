@@ -135,7 +135,8 @@ def test_capture_contracts(tmp_path, monkeypatch):
     for test_client in make_client(tmp_path, monkeypatch):
         test_client.post("/api/v1/nodes/register", json={
             "node_id": "node-phone9", "hostname": "phone",
-            "capabilities": ["phone.microphone.read"]})
+            "capabilities": ["phone.microphone.read"],
+            "node_token": "phone9-token-123456"})
         opened = test_client.post("/api/v1/voice/capture/open",
                                   json={"node_id": "node-phone9",
                                         "max_seconds": 30})
@@ -156,7 +157,8 @@ def test_capture_contracts(tmp_path, monkeypatch):
         # Node without the capability cannot open capture.
         test_client.post("/api/v1/nodes/register", json={
             "node_id": "node-plain9", "hostname": "h",
-            "capabilities": []})
+            "capabilities": [],
+            "node_token": "plain9-token-123456"})
         refused = test_client.post("/api/v1/voice/capture/open",
                                    json={"node_id": "node-plain9"})
         assert refused.status_code == 422
@@ -175,7 +177,8 @@ def test_events_and_notifications(tmp_path, monkeypatch):
     for test_client in make_client(tmp_path, monkeypatch):
         test_client.post("/api/v1/nodes/register", json={
             "node_id": "node-phone8", "hostname": "phone",
-            "capabilities": ["phone.notification.send"]})
+            "capabilities": ["phone.notification.send"],
+            "node_token": "phone8-token-123456"})
         created = test_client.post("/api/v1/notifications", json={
             "recipient_node_id": "node-phone8",
             "type": "approval_required",
@@ -213,7 +216,7 @@ def test_status_bounded_no_secrets(tmp_path, monkeypatch):
     for test_client in make_client(tmp_path, monkeypatch):
         test_client.post("/api/v1/nodes/register", json={
             "node_id": "node-st1", "hostname": "h",
-            "capabilities": [], "node_token": "tok-st-1"})
+            "capabilities": [], "node_token": "tok-st-123456789"})
         status = test_client.get("/api/v1/status").json()
         assert status["coordinator"] == "online"
         assert status["nodes"]["total"] == 1
@@ -304,7 +307,8 @@ def test_phone_camera_registration(tmp_path, monkeypatch):
         test_client.post("/api/v1/nodes/register", json={
             "node_id": "node-phone7", "hostname": "phone",
             "capabilities": ["phone.camera.snapshot",
-                             "phone.microphone.read"]})
+                             "phone.microphone.read"],
+            "node_token": "phone7-token-123456"})
         registered = test_client.post(
             "/api/v1/phone/node-phone7/camera",
             json={"node_id": "node-phone7",
@@ -313,7 +317,8 @@ def test_phone_camera_registration(tmp_path, monkeypatch):
         assert registered.json()["source"] == "phone"
         test_client.post("/api/v1/nodes/register", json={
             "node_id": "node-plain7", "hostname": "h",
-            "capabilities": []})
+            "capabilities": [],
+            "node_token": "plain7-token-123456"})
         refused = test_client.post(
             "/api/v1/phone/node-plain7/camera",
             json={"node_id": "node-plain7"})
@@ -328,7 +333,7 @@ def test_phone_auth_reuses_node_tokens(tmp_path, monkeypatch):
         test_client.post("/api/v1/nodes/register", json={
             "node_id": "node-phone6", "hostname": "phone",
             "capabilities": ["phone.notification.send"],
-            "node_token": "phone-token-6"})
+            "node_token": "phone-token-6123456"})
         assert test_client.post(
             "/api/v1/nodes/node-phone6/heartbeat",
             json={"available": True,
@@ -336,7 +341,8 @@ def test_phone_auth_reuses_node_tokens(tmp_path, monkeypatch):
         assert test_client.post(
             "/api/v1/nodes/node-phone6/heartbeat",
             json={"available": True,
-                  "node_token": "phone-token-6"}).status_code == 204
+                  "node_token": "phone-token-6123456"}
+        ).status_code == 204
 
 
 def test_route_annotations_resolve():
