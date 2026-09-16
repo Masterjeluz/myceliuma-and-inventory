@@ -136,7 +136,10 @@ def test_staged_task_never_claimable(isolated_db):
     stage_task(task)
     with connection() as db:
         db.execute(
-            """INSERT INTO nodes VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'online')""",
+            """INSERT INTO nodes
+            (node_id, hostname, tier, capabilities, cpu_cores,
+             memory_mb, energy_source, last_seen, status)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'online')""",
             ("node-9", "host", "worker", "[]", 2, 1024, "solar",
              "2026-01-01T00:00:00+00:00"))
     assert main_mod.claim_task("node-9") is None

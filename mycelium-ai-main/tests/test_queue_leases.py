@@ -162,7 +162,7 @@ def test_expired_lease_requeues_below_max(api):
     task_id = queue(api)
     _claim_task("worker-1", T0)
     summary = expire_leases(T0_LATE)
-    assert summary == {"requeued": 1, "failed": 0}
+    assert summary == {"requeued": 1, "failed": 0, "blocked": 0}
     stored = row(task_id)
     assert stored["status"] == "queued"
     assert stored["assigned_node_id"] is None
@@ -178,7 +178,7 @@ def test_expired_lease_fails_at_max(api):
         db.execute("UPDATE tasks SET status='assigned', assigned_node_id=?, assigned_at=?, lease_until=?, attempt_count=? WHERE id=?",
                    ("worker-1", T0, T0, MAX_ATTEMPTS, task_id))
     summary = expire_leases(T0_LATE)
-    assert summary == {"requeued": 0, "failed": 1}
+    assert summary == {"requeued": 0, "failed": 1, "blocked": 0}
     stored = row(task_id)
     assert stored["status"] == "failed"
     assert stored["assigned_node_id"] is None
@@ -237,8 +237,10 @@ def test_recovery_idempotent(api):
     register(api)
     task_id = queue(api)
     _claim_task("worker-1", T0)
-    assert expire_leases(T0_LATE) == {"requeued": 1, "failed": 0}
-    assert expire_leases(T0_LATE) == {"requeued": 0, "failed": 0}
+    assert expire_leases(T0_LATE) == {"requeued": 1, "failed": 0,
+                                        "blocked": 0}
+    assert expire_leases(T0_LATE) == {"requeued": 0, "failed": 0,
+                                      "blocked": 0}
     assert row(task_id)["status"] == "queued"
 
 

@@ -76,7 +76,8 @@ class DesktopAgent:
                  backend: DesktopBackend | None = None,
                  poll_seconds: float = DEFAULT_POLL_SECONDS,
                  max_steps: int = DEFAULT_MAX_STEPS,
-                 tier: str = "worker"):
+                 tier: str = "worker",
+                 node_token: str | None = None):
         self.base_url = base_url.rstrip("/")
         self.node_id = node_id
         self.capabilities = list(capabilities)
@@ -84,6 +85,9 @@ class DesktopAgent:
         self.poll_seconds = max(0.5, float(poll_seconds or 0))
         self.max_steps = clamp_max_steps(max_steps)
         self.tier = tier
+        token = node_token or os.environ.get("MYCELIUM_NODE_TOKEN",
+                                             "")
+        self.node_token = token.strip() or None
         self._stop = False
         self.steps_done = 0
         self._client = httpx.Client(
@@ -132,32 +136,38 @@ class DesktopAgent:
             memory = detected_memory_mb()
         except (ImportError, OSError):
             memory = 0
-        response = self._post("/api/v1/nodes/register", {
+        payload = {
             "node_id": self.node_id, "hostname": socket.gethostname(),
             "tier": self.tier, "capabilities": self.capabilities,
             "cpu_cores": os.cpu_count() or 1, "memory_mb": memory,
-            "energy_source": "unknown"})
+            "energy_source": "unknown"}
+        if self.node_token:
+            payload["node_token"] = self.node_token
+        response = self._post("/api/v1/nodes/register", payload)
         if response.status_code not in (200, 201):
             raise CoordinatorUnavailable(
                 f"register refused: HTTP {response.status_code}")
 
     def heartbeat(self) -> None:
+        payload: dict = {"available": True}
+        if self.node_token:
+            payload["node_token"] = self.node_token
         response = self._post(
-            f"/api/v1/nodes/{self.node_id}/heartbeat",
-            {"available": True})
+            f"/api/v1/nodes/{self.node_id}/heartbeat", payload)
         if response.status_code == 404:
             self.register()
             response = self._post(
-                f"/api/v1/nodes/{self.node_id}/heartbeat",
-                {"available": True})
+                f"/api/v1/nodes/{self.node_id}/heartbeat", payload)
         if response.status_code not in (200, 204):
             raise CoordinatorUnavailable(
                 f"heartbeat refused: HTTP {response.status_code}")
 
     def claim_next(self) -> dict | None:
         """One atomic claim: approved -> dispatched-to-me, or None."""
-        response = self._post("/api/v1/desktop/actions/next",
-                              {"node_id": self.node_id})
+        payload: dict = {"node_id": self.node_id}
+        if self.node_token:
+            payload["node_token"] = self.node_token
+        response = self._post("/api/v1/desktop/actions/next", payload)
         if response.status_code == 404:
             raise CoordinatorUnavailable("node unknown; re-registering")
         if response.status_code != 200:

@@ -15,10 +15,19 @@ class NodeRegistration(BaseModel):
     node_id: str = Field(min_length=3, max_length=80, pattern=r"^[a-zA-Z0-9._-]+$")
     hostname: str = Field(min_length=1, max_length=120)
     tier: NodeTier = "seed"
-    capabilities: list[str] = Field(default_factory=list, max_length=30)
+    capabilities: list[str] = Field(default_factory=list, max_length=50)
     cpu_cores: int = Field(default=1, ge=1, le=512)
     memory_mb: int = Field(default=0, ge=0)
     energy_source: str = Field(default="unknown", max_length=40)
+    display_name: str = Field(default="", max_length=120)
+    models: list[dict[str, Any]] = Field(default_factory=list,
+                                         max_length=20)
+    executors: list[str] = Field(default_factory=list, max_length=20)
+    resources: dict[str, Any] = Field(default_factory=dict)
+    locality_zone: str = Field(default="local_network", min_length=1,
+                               max_length=20)
+    node_token: str | None = Field(default=None, min_length=8,
+                                   max_length=256)
 
 
 class NodeResponse(NodeRegistration):
@@ -30,6 +39,14 @@ class Heartbeat(BaseModel):
     cpu_load_percent: float | None = Field(default=None, ge=0, le=100)
     free_memory_mb: int | None = Field(default=None, ge=0)
     available: bool = True
+    node_token: str | None = Field(default=None, min_length=8,
+                                   max_length=256)
+    capabilities: list[str] | None = Field(default=None,
+                                           max_length=50)
+    models: list[dict[str, Any]] | None = Field(default=None,
+                                                max_length=20)
+    executors: list[str] | None = Field(default=None, max_length=20)
+    resources: dict[str, Any] | None = None
 
 
 class TaskCreate(BaseModel):
@@ -38,6 +55,23 @@ class TaskCreate(BaseModel):
     required_capabilities: list[str] = Field(default_factory=list, max_length=20)
     preferred_tier: NodeTier | None = None
     priority: int = Field(default=0, ge=-10, le=10)
+    requirements: dict[str, Any] = Field(default_factory=dict)
+
+
+class TaskAssignBody(BaseModel):
+    """Explicit (re-)assignment of one queued task. node_id empty
+    means auto-route; a given node_id must prove eligible."""
+
+    node_id: str | None = Field(default=None, min_length=3,
+                                max_length=80)
+    policy: dict[str, Any] = Field(default_factory=dict)
+
+
+class TaskRouteBody(BaseModel):
+    """Dry-run routing: requirements + policy, no assignment."""
+
+    requirements: dict[str, Any] = Field(default_factory=dict)
+    policy: dict[str, Any] = Field(default_factory=dict)
 
 
 class ClaimedTask(BaseModel):
@@ -178,6 +212,8 @@ class DesktopClaimBody(BaseModel):
     """
 
     node_id: str = Field(min_length=3, max_length=80)
+    node_token: str | None = Field(default=None, min_length=8,
+                                   max_length=256)
 
 
 class DesktopDispatchBody(BaseModel):

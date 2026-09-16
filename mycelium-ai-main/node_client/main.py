@@ -80,23 +80,59 @@ def arguments() -> argparse.Namespace:
     parser.add_argument("--tier", choices=["seed", "worker", "core"], default="seed")
     parser.add_argument("--capability", action="append", default=[], help="Can be supplied more than once")
     parser.add_argument("--energy-source", default="unknown", help="For example solar, grid or battery")
+    parser.add_argument("--node-token", default=None,
+                        help="Node credential (or MYCELIUM_NODE_TOKEN); bound on first register, required afterwards")
+    parser.add_argument("--executor", action="append", default=[], help="Executor to advertise, exec:<kind>; can be supplied more than once")
+    parser.add_argument("--model", action="append", default=[], help="Model to advertise as model_id:type, e.g. model:sim-vlm:vlm; can be supplied more than once")
     parser.add_argument("--poll-seconds", type=float, default=10.0)
     return parser.parse_args()
 
 
+def node_token_from(config: argparse.Namespace) -> str | None:
+    token = config.node_token or os.environ.get("MYCELIUM_NODE_TOKEN", "")
+    return token.strip() or None
+
+
+def advertised_models(specs: list[str]) -> list[dict]:
+    """Parse --model model_id:type entries. Fail fast on bad input."""
+    models = []
+    for spec in specs or []:
+        if ":" not in spec:
+            raise ValueError(f"Model spec '{spec}' must be model_id:type")
+        model_id, _, model_type = spec.rpartition(":")
+        models.append({"model_id": model_id.strip(),
+                       "display_name": model_id.strip(),
+                       "model_type": model_type.strip() or "other",
+                       "capabilities": [],
+                       "provider": "local",
+                       "status": "available"})
+    return models
+
+
 async def run(config: argparse.Namespace) -> None:
     base_url = config.coordinator.rstrip("/") + "/api/v1"
+    token = node_token_from(config)
     registration = {"node_id": config.node_id, "hostname": socket.gethostname(), "tier": config.tier,
                     "capabilities": config.capability, "cpu_cores": os.cpu_count() or 1,
-                    "memory_mb": detected_memory_mb(), "energy_source": config.energy_source}
+                    "memory_mb": detected_memory_mb(), "energy_source": config.energy_source,
+                    "executors": config.executor, "models": advertised_models(config.model)}
+    if token:
+        registration["node_token"] = token
     async with httpx.AsyncClient(timeout=10) as client:
         response = await client.post(f"{base_url}/nodes/register", json=registration)
         response.raise_for_status()
         logger.info("registered %s on %s (%s)", config.node_id, platform.system(), config.tier)
         while True:
             try:
-                await client.post(f"{base_url}/nodes/{config.node_id}/heartbeat", json={"available": True})
-                response = await client.post(f"{base_url}/tasks/claim/{config.node_id}")
+                heartbeat = {"available": True}
+                if token:
+                    heartbeat["node_token"] = token
+                await client.post(f"{base_url}/nodes/{config.node_id}/heartbeat", json=heartbeat)
+                claim_url = f"{base_url}/tasks/claim/{config.node_id}"
+                if token:
+                    from urllib.parse import quote
+                    claim_url += f"?node_token={quote(token, safe='')}"
+                response = await client.post(claim_url)
                 response.raise_for_status()
                 task = response.json()
                 if task:

@@ -96,16 +96,29 @@ echte hardware/transporten niet.
 - Echte printertransport/vendorintegratie — FUTURE
 - Echte slicer-runtime — FUTURE
 
-## PHASE F — DISTRIBUTED MYCELIUM (FUTURE)
+## PHASE F — DISTRIBUTED MYCELIUM (PARTIAL als BIG #8)
 
-Het protocol is er (register/heartbeat/claim/leaset); schaal volgt.
+Zie `docs/distributed-architecture.md` en
+`docs/first-node-blueprint.md`. Protocol + veilige foundation
+bestaan; echte multi-machine-praktijk volgt.
 
+- Node-registratie, heartbeat, freshness (60s), leases (300s,
+  max 3 pogingen) — DONE (bestaand, hergebruikt)
+- Token-authenticatie (lokaal, bearer, legacy-compatibel) — DONE
+- Capability/model/executor-advertenties + resource/energy-hints — DONE
+- Deterministische routing met uitleg — DONE
+- Queue-plaatsing (assign als constraint, pull blijft) — DONE
+- Claim-revalidatie + fysieke no-reroute bij lease-verval — DONE
+- Desktop-agent als token-bewuste node — DONE
 - Meerdere nodes in de praktijk (huis, werkplaats, onderweg) — FUTURE
-- Capability-discovery en model-routing — FUTURE
-- Workload-verdeling en offline-weerbaarheid — FUTURE
+- Capability-discovery en model-routing — DONE als foundation
+- Workload-verdeling en offline-weerbaarheid — PARTIAL
+  (leases/retry/fysieke blokkering; echte verdeling volgt)
 - Energie-bewuste scheduling (metingen eerst, handmatige override
-  altijd, conform architectuur-v0.1) — FUTURE
-- API-tokens vóór nodes buiten het vertrouwde LAN — FUTURE
+  altijd, conform architectuur-v0.1) — PARTIAL (hints als
+  voorkeur, geen metingen, geen sturing)
+- API-tokens vóór nodes buiten het vertrouwde LAN — DONE
+  (per-node tokens; geen PKI, LAN-vertrouwen gedocumenteerd)
 
 ## PHASE G — HUMAN INTERFACE (FUTURE)
 

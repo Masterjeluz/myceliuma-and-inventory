@@ -54,6 +54,28 @@ def init_database() -> None:
         );
         """)
         _ensure_task_columns(db)
+        _ensure_node_columns(db)
+
+
+def _ensure_node_columns(db) -> None:
+    """Additive, idempotent migration for distributed nodes (BIG #8).
+
+    Auth hash, display name, model/executor advertisements,
+    resource hints and locality zone. All nullable/defaulted so
+    existing positional INSERTs (9 values) keep working.
+    """
+    existing = {row["name"] for row in db.execute("PRAGMA table_info(nodes)").fetchall()}
+    for column, ddl in (
+        ("auth_token_hash", "TEXT DEFAULT NULL"),
+        ("display_name", "TEXT DEFAULT ''"),
+        ("models", "TEXT DEFAULT '[]'"),
+        ("executors", "TEXT DEFAULT '[]'"),
+        ("resources", "TEXT DEFAULT '{}'"),
+        ("locality_zone", "TEXT DEFAULT 'local_network'"),
+        ("last_auth", "TEXT DEFAULT ''"),
+    ):
+        if column not in existing:
+            db.execute(f"ALTER TABLE nodes ADD COLUMN {column} {ddl}")
 
 
 def _ensure_task_columns(db) -> None:
@@ -69,6 +91,10 @@ def _ensure_task_columns(db) -> None:
         db.execute("ALTER TABLE tasks ADD COLUMN lease_until TEXT")
     if "attempt_count" not in existing:
         db.execute("ALTER TABLE tasks ADD COLUMN attempt_count INTEGER NOT NULL DEFAULT 0")
+    if "routing" not in existing:
+        db.execute("ALTER TABLE tasks ADD COLUMN routing TEXT DEFAULT '{}'")
+    if "routing_decision" not in existing:
+        db.execute("ALTER TABLE tasks ADD COLUMN routing_decision TEXT DEFAULT '{}'")
 
 
 CHAT_DATABASE_ENV_VAR = "MYCELIUM_CHAT_DATABASE_PATH"

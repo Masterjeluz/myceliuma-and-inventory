@@ -178,12 +178,34 @@ from .inventory_read import (
     InventoryUnavailable,
     SearchResponse,
 )
+from .nodes import (
+    NodeAuthError,
+    NodeRefusedError,
+    authenticate,
+    check_capabilities,
+    check_display_name,
+    check_executors,
+    check_locality,
+    check_models,
+    check_node_id,
+    check_resources,
+    derive_status,
+    hash_token,
+)
 from .ollama_advisor import (
     OllamaAdvisor,
     OllamaRefusedError,
     OllamaUnavailable,
 )
-from .schemas import AdviseRequest, AdviseResponse, CameraRegisterBody, ChatMissionBody, ChatRequest, ChatResponse, ClaimedTask, DecideApprovalBody, DesktopActionBody, DesktopClaimBody, DesktopDecisionBody, DesktopDispatchBody, DesktopResultBody, FabGenerateBody, FabSliceBody, GitCommitBody, Heartbeat, InventoryWriteBody, MissionApproveBody, MissionCreateBody, MissionStepBody, NodeRegistration, PlanBody, PlanToProposalBody, PrintCancelBody, PrintProposeBody, PrinterRegisterBody, StreamStartBody, SuggestStepsBody, TaskCreate, TaskFromProposalBody, TaskResult, TemplateMissionBody, VisionAnalyzeBody, VisionProposeBody, WriteDecisionBody
+from .routing import (
+    RouteDecision,
+    TaskRequirements,
+    check_policy,
+    check_requirements,
+    requirements_from_payload,
+    route_task,
+)
+from .schemas import AdviseRequest, AdviseResponse, CameraRegisterBody, ChatMissionBody, ChatRequest, ChatResponse, ClaimedTask, DecideApprovalBody, DesktopActionBody, DesktopClaimBody, DesktopDecisionBody, DesktopDispatchBody, DesktopResultBody, FabGenerateBody, FabSliceBody, GitCommitBody, Heartbeat, InventoryWriteBody, MissionApproveBody, MissionCreateBody, MissionStepBody, NodeRegistration, PlanBody, PlanToProposalBody, PrintCancelBody, PrintProposeBody, PrinterRegisterBody, StreamStartBody, SuggestStepsBody, TaskAssignBody, TaskCreate, TaskFromProposalBody, TaskResult, TaskRouteBody, TemplateMissionBody, VisionAnalyzeBody, VisionProposeBody, WriteDecisionBody
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 logger = logging.getLogger("mycelium.coordinator")
@@ -237,76 +259,410 @@ def health() -> dict[str, str]:
 
 @app.post("/api/v1/nodes/register", status_code=201)
 def register_node(node: NodeRegistration) -> dict[str, str]:
+    """Register or refresh a node. Validates the full
+    advertisement; binds a token on first presentation and
+    verifies it afterwards; never returns or logs credentials;
+    a disabled node stays disabled (fail-closed)."""
+    try:
+        node_id = check_node_id(node.node_id)
+        capabilities = check_capabilities(node.capabilities)
+        models = check_models(node.models)
+        executors = check_executors(node.executors)
+        resources = check_resources(node.resources)
+        locality_zone = check_locality(node.locality_zone)
+        display_name = check_display_name(node.display_name)
+    except NodeRefusedError as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    if node.energy_source not in ("grid", "solar", "battery",
+                                  "unknown"):
+        raise HTTPException(status_code=422,
+                            detail="energy_source unknown")
     with connection() as db:
-        db.execute("""INSERT INTO nodes VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'online')
-        ON CONFLICT(node_id) DO UPDATE SET hostname=excluded.hostname, tier=excluded.tier,
-        capabilities=excluded.capabilities, cpu_cores=excluded.cpu_cores, memory_mb=excluded.memory_mb,
-        energy_source=excluded.energy_source, last_seen=excluded.last_seen, status='online'""",
-        (node.node_id, node.hostname, node.tier, dump(node.capabilities), node.cpu_cores,
-         node.memory_mb, node.energy_source, now()))
-    logger.info("node_registered node_id=%s tier=%s", node.node_id, node.tier)
-    return {"node_id": node.node_id, "status": "registered"}
+        existing = db.execute(
+            "SELECT status, auth_token_hash FROM nodes WHERE node_id=?",
+            (node_id,)).fetchone()
+        stored_hash = (existing["auth_token_hash"]
+                       if existing else None)
+        try:
+            auth_mode = authenticate(node_id, stored_hash,
+                                     node.node_token)
+        except NodeAuthError:
+            raise HTTPException(status_code=403,
+                                detail="node credential rejected")
+        bound_hash = stored_hash
+        if node.node_token and not stored_hash:
+            bound_hash = hash_token(node_id, node.node_token)
+            auth_mode = "token"
+        status = "online"
+        if existing is not None and existing["status"] == "disabled":
+            status = "disabled"
+        db.execute("""INSERT INTO nodes
+        (node_id, hostname, tier, capabilities, cpu_cores, memory_mb,
+         energy_source, last_seen, status, auth_token_hash,
+         display_name, models, executors, resources, locality_zone,
+         last_auth)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(node_id) DO UPDATE SET hostname=excluded.hostname,
+        tier=excluded.tier, capabilities=excluded.capabilities,
+        cpu_cores=excluded.cpu_cores, memory_mb=excluded.memory_mb,
+        energy_source=excluded.energy_source,
+        last_seen=excluded.last_seen, status=excluded.status,
+        auth_token_hash=excluded.auth_token_hash,
+        display_name=excluded.display_name, models=excluded.models,
+        executors=excluded.executors, resources=excluded.resources,
+        locality_zone=excluded.locality_zone,
+        last_auth=excluded.last_auth""",
+            (node_id, node.hostname, node.tier,
+             dump(capabilities), node.cpu_cores, node.memory_mb,
+             node.energy_source, now(), status, bound_hash,
+             display_name, dump(models), dump(executors),
+             dump(resources), locality_zone, auth_mode))
+    logger.info("node_registered node_id=%s tier=%s auth=%s",
+                node_id, node.tier,
+                "token" if auth_mode == "token" else "legacy")
+    return {"node_id": node_id, "status": "registered"}
 
 
 @app.post("/api/v1/nodes/{node_id}/heartbeat", status_code=204)
 def heartbeat(node_id: str, heartbeat_data: Heartbeat) -> Response:
+    """Heartbeat with credential check and optional advertisement
+    refresh. Unknown nodes 404; bad credentials and disabled
+    nodes are refused; nothing secret is logged or returned."""
     with connection() as db:
-        found = db.execute("UPDATE nodes SET last_seen=?, status=? WHERE node_id=?",
-                           (now(), "online" if heartbeat_data.available else "busy", node_id)).rowcount
-    if not found:
+        row = db.execute(
+            "SELECT status, auth_token_hash FROM nodes WHERE node_id=?",
+            (node_id,)).fetchone()
+    if row is None:
         raise HTTPException(404, "Node is not registered")
+    if row["status"] == "disabled":
+        raise HTTPException(status_code=403, detail="node disabled")
+    try:
+        auth_mode = authenticate(node_id, row["auth_token_hash"],
+                                 heartbeat_data.node_token)
+    except NodeAuthError:
+        raise HTTPException(status_code=403,
+                            detail="node credential rejected")
+    updates: dict[str, object] = {
+        "last_seen": now(),
+        "status": "online" if heartbeat_data.available else "busy",
+        "last_auth": auth_mode,
+    }
+    try:
+        if heartbeat_data.capabilities is not None:
+            updates["capabilities"] = dump(check_capabilities(
+                heartbeat_data.capabilities))
+        if heartbeat_data.models is not None:
+            updates["models"] = dump(check_models(
+                heartbeat_data.models))
+        if heartbeat_data.executors is not None:
+            updates["executors"] = dump(check_executors(
+                heartbeat_data.executors))
+        if heartbeat_data.resources is not None:
+            updates["resources"] = dump(check_resources(
+                heartbeat_data.resources))
+    except NodeRefusedError as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    with connection() as db:
+        db.execute(
+            "UPDATE nodes SET last_seen=?, status=?, last_auth=?, "
+            "capabilities=COALESCE(?, capabilities), "
+            "models=COALESCE(?, models), "
+            "executors=COALESCE(?, executors), "
+            "resources=COALESCE(?, resources) WHERE node_id=?",
+            (updates["last_seen"], updates["status"],
+             updates["last_auth"], updates.get("capabilities"),
+             updates.get("models"), updates.get("executors"),
+             updates.get("resources"), node_id))
     return Response(status_code=204)
+
+
+NODE_PUBLIC_COLUMNS = (
+    "node_id, hostname, tier, capabilities, cpu_cores, memory_mb, "
+    "energy_source, last_seen, status, display_name, models, "
+    "executors, resources, locality_zone, last_auth"
+)
+
+
+def _node_to_json(row) -> dict:
+    record = dict(row)
+    for key in ("capabilities", "models", "executors", "resources"):
+        try:
+            record[key] = load(record.get(key) or (
+                "[]" if key != "resources" else "{}"))
+        except ValueError:
+            record[key] = [] if key != "resources" else {}
+    record["derived_status"] = derive_status(
+        record.get("status", "unknown"), record.get("last_seen", ""))
+    return record
 
 
 @app.get("/api/v1/nodes")
 def list_nodes() -> list[dict]:
     with connection() as db:
-        rows = db.execute("SELECT * FROM nodes ORDER BY last_seen DESC").fetchall()
-    return [{**dict(row), "capabilities": load(row["capabilities"])} for row in rows]
+        rows = db.execute(
+            f"SELECT {NODE_PUBLIC_COLUMNS} FROM nodes "
+            "ORDER BY last_seen DESC").fetchall()
+    return [_node_to_json(row) for row in rows]
+
+
+@app.get("/api/v1/nodes/{node_id}")
+def get_node(node_id: str) -> dict:
+    with connection() as db:
+        row = db.execute(
+            f"SELECT {NODE_PUBLIC_COLUMNS} FROM nodes WHERE node_id=?",
+            (node_id,)).fetchone()
+    if row is None:
+        raise HTTPException(404, "Node is not registered")
+    return _node_to_json(row)
+
+
+@app.post("/api/v1/nodes/{node_id}/disable")
+def disable_node(node_id: str) -> dict:
+    with connection() as db:
+        changed = db.execute(
+            "UPDATE nodes SET status='disabled' WHERE node_id=?",
+            (node_id,)).rowcount
+    if not changed:
+        raise HTTPException(404, "Node is not registered")
+    logger.info("node_disabled node_id=%s", node_id)
+    return {"node_id": node_id, "status": "disabled"}
+
+
+@app.post("/api/v1/nodes/{node_id}/enable")
+def enable_node(node_id: str) -> dict:
+    with connection() as db:
+        changed = db.execute(
+            "UPDATE nodes SET status='online', last_seen=? "
+            "WHERE node_id=?",
+            (now(), node_id)).rowcount
+    if not changed:
+        raise HTTPException(404, "Node is not registered")
+    logger.info("node_enabled node_id=%s", node_id)
+    return {"node_id": node_id, "status": "online"}
 
 
 @app.post("/api/v1/tasks", status_code=201)
 def create_task(task: TaskCreate) -> dict[str, object]:
+    """Create one queued task. Routing requirements come from the
+    explicit field and (validated, merged) the reserved payload
+    key; the payload never keeps a shadow copy afterwards."""
+    try:
+        requirements = check_requirements(task.requirements or {})
+        embedded = requirements_from_payload(task.payload)
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    merged = embedded.model_dump(mode="json")
+    explicit = requirements.model_dump(mode="json")
+    for key, value in explicit.items():
+        if value != TaskRequirements.model_fields[key].default:
+            merged[key] = value
+    try:
+        requirements = check_requirements(merged)
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    payload = dict(task.payload)
+    payload.pop("routing", None)
     with connection() as db:
-        cursor = db.execute("""INSERT INTO tasks (kind,payload,required_capabilities,preferred_tier,priority,status,created_at)
-        VALUES (?, ?, ?, ?, ?, 'queued', ?)""",
-        (task.kind, dump(task.payload), dump(task.required_capabilities), task.preferred_tier, task.priority, now()))
+        cursor = db.execute("""INSERT INTO tasks (kind,payload,required_capabilities,preferred_tier,priority,status,created_at,routing)
+        VALUES (?, ?, ?, ?, ?, 'queued', ?, ?)""",
+        (task.kind, dump(payload), dump(task.required_capabilities), task.preferred_tier, task.priority, now(),
+         dump(requirements.model_dump(mode="json"))))
     logger.info("task_created task_id=%s kind=%s", cursor.lastrowid, task.kind)
     return {"id": cursor.lastrowid, "status": "queued"}
 
 
+def _routing_candidates(now_str: str | None = None) -> list[dict]:
+    """Node rows projected to routing input. Never credentials."""
+    with connection() as db:
+        rows = db.execute(
+            f"SELECT {NODE_PUBLIC_COLUMNS}, auth_token_hash "
+            "FROM nodes").fetchall()
+    candidates = []
+    for row in rows:
+        record = _node_to_json(row)
+        stored = str(record.get("status", "unknown"))
+        derived = derive_status(stored, record.get("last_seen", ""),
+                                now_str)
+        last_auth = str(record.get("last_auth", ""))
+        has_token = bool(row["auth_token_hash"])
+        candidates.append({
+            "node_id": record["node_id"],
+            "capabilities": record["capabilities"],
+            "models": record["models"],
+            "executors": record["executors"],
+            "resources": record["resources"],
+            "locality_zone": record.get("locality_zone",
+                                        "local_network"),
+            "status": derived,
+            "fresh": derived in ("online", "busy"),
+            "has_token": has_token,
+            "last_auth": last_auth,
+            "authenticated": last_auth == "token",
+        })
+    return candidates
+
+
+def _decision_for(task_id: int, requirements, policy,
+                  only_node: str | None = None,
+                  now_str: str | None = None) -> RouteDecision:
+    try:
+        policy_checked = check_policy(policy or {})
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    candidates = _routing_candidates(now_str)
+    if only_node is not None:
+        candidates = [entry for entry in candidates
+                      if entry["node_id"] == only_node]
+        if not candidates:
+            raise HTTPException(404, "Node is not registered")
+    for entry in candidates:
+        # Legacy nodes (never bound a token) count as
+        # authenticated only when the policy does not require it.
+        if not entry["has_token"] and \
+                not policy_checked.require_authenticated:
+            entry["authenticated"] = True
+    return route_task(requirements, candidates, policy_checked,
+                      now_str)
+
+
+@app.post("/api/v1/tasks/route")
+def route_preview(body: TaskRouteBody) -> dict:
+    """Dry-run routing: requirements + policy in, decision out.
+    Nothing is assigned, queued or started here."""
+    try:
+        requirements = check_requirements(body.requirements or {})
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    decision = _decision_for(0, requirements, body.policy or {})
+    return decision.model_dump(mode="json")
+
+
+@app.post("/api/v1/tasks/{task_id}/assign")
+def assign_task(task_id: int, body: TaskAssignBody) -> dict:
+    """Explicit assignment of one queued task. Empty node_id
+    auto-routes; a given node must prove eligible. The node must
+    still pull/claim the task — assignment constrains, never
+    pushes executable work."""
+    with connection() as db:
+        row = db.execute("SELECT * FROM tasks WHERE id=?",
+                         (task_id,)).fetchone()
+    if row is None:
+        raise HTTPException(404, "Task not found")
+    if row["status"] != "queued":
+        raise HTTPException(
+            status_code=409,
+            detail=f"Task is {row['status']}; only queued tasks assign")
+    try:
+        stored = load(row["routing"] or "{}")
+        requirements = check_requirements(stored)
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    needed = set()
+    try:
+        needed = set(load(row["required_capabilities"]) or [])
+    except ValueError:
+        needed = set()
+    merged_caps = sorted({str(cap) for cap in
+                          list(requirements.required_capabilities)
+                          + [str(cap) for cap in needed]})
+    requirements = requirements.model_copy(
+        update={"required_capabilities": merged_caps})
+    decision = _decision_for(task_id, requirements,
+                             body.policy or {},
+                             only_node=body.node_id)
+    if decision.selected_node_id is None:
+        raise HTTPException(
+            status_code=422,
+            detail="; ".join(
+                reason for entry in decision.rejected
+                for reason in entry.reasons) or "no eligible node")
+    with connection() as db:
+        changed = db.execute(
+            "UPDATE tasks SET assigned_node_id=?, routing_decision=? "
+            "WHERE id=? AND status='queued'",
+            (decision.selected_node_id,
+             dump(decision.model_dump(mode="json")), task_id)).rowcount
+    if not changed:
+        raise HTTPException(status_code=409,
+                            detail="Task changed state; refusing")
+    logger.info("task_assigned task_id=%s node_id=%s", task_id,
+                decision.selected_node_id)
+    return {"id": task_id, "assigned_node_id":
+            decision.selected_node_id,
+            "routing": decision.model_dump(mode="json")}
+
+
 @app.post("/api/v1/tasks/claim/{node_id}", response_model=ClaimedTask | None)
-def claim_task(node_id: str) -> ClaimedTask | None:
-    return _claim_task(node_id, now())
+def claim_task(node_id: str, node_token: str | None = None) -> ClaimedTask | None:
+    return _claim_task(node_id, now(), node_token=node_token)
 
 
-def _claim_task(node_id: str, now_str: str) -> ClaimedTask | None:
+def _claim_task(node_id: str, now_str: str,
+                node_token: str | None = None) -> ClaimedTask | None:
     """Claim one queued task for a live node. Fail-closed on every doubt.
 
     On success the transition queued -> assigned is atomic and carries an
     assignment timestamp, a lease deadline and an incremented attempt count.
+    Pre-assigned tasks only go to their assignee; routing requirements
+    (model types, executor) revalidate against live advertisements;
+    token-bound nodes must present their credential.
     """
     with connection() as db:
-        node = db.execute("SELECT tier, capabilities, status, last_seen FROM nodes WHERE node_id=?", (node_id,)).fetchone()
+        node = db.execute(
+            "SELECT tier, capabilities, status, last_seen, models, "
+            "executors, auth_token_hash FROM nodes WHERE node_id=?",
+            (node_id,)).fetchone()
         if node is None:
             raise HTTPException(404, "Node is not registered")
+        try:
+            authenticate(node_id, node["auth_token_hash"], node_token)
+        except NodeAuthError:
+            raise HTTPException(status_code=403,
+                                detail="node credential rejected")
         if node["status"] != "online" or node_is_stale(node["last_seen"], now_str):
             return None
+        try:
+            node_models = load(node["models"] or "[]")
+        except ValueError:
+            node_models = []
+        try:
+            node_executors = load(node["executors"] or "[]")
+        except ValueError:
+            node_executors = []
         capabilities = set(load(node["capabilities"]))
         candidates = db.execute("SELECT * FROM tasks WHERE status='queued' ORDER BY priority DESC, id ASC").fetchall()
         for task in candidates:
+            if task["assigned_node_id"] not in (None, node_id):
+                continue
             needed = set(load(task["required_capabilities"]))
             tier_ok = task["preferred_tier"] is None or task["preferred_tier"] == node["tier"]
             attempts = task["attempt_count"] if "attempt_count" in task.keys() else 0
             if attempts is None:
                 attempts = 0
-            if tier_ok and needed.issubset(capabilities) and attempts < MAX_ATTEMPTS:
-                changed = db.execute("UPDATE tasks SET status='assigned', assigned_node_id=?, assigned_at=?, lease_until=?, attempt_count=? WHERE id=? AND status='queued'",
-                                      (node_id, now_str, _lease_until(now_str), attempts + 1, task["id"])).rowcount
-                if changed:
-                    logger.info("task_claimed task_id=%s node_id=%s attempt=%s", task["id"], node_id, attempts + 1)
-                    return ClaimedTask(id=task["id"], kind=task["kind"], payload=load(task["payload"]),
-                                       required_capabilities=list(needed))
+            if not (tier_ok and needed.issubset(capabilities) and attempts < MAX_ATTEMPTS):
+                continue
+            try:
+                stored = load(task["routing"] or "{}")
+                requirements = check_requirements(stored)
+            except ValueError:
+                continue
+            node_types = {str(entry.get("model_type", ""))
+                          for entry in node_models
+                          if isinstance(entry, dict)}
+            if any(kind not in node_types
+                   for kind in requirements.required_model_types):
+                continue
+            if requirements.required_executor and \
+                    requirements.required_executor not in {
+                        str(item).strip().lower()
+                        for item in node_executors}:
+                continue
+            changed = db.execute("UPDATE tasks SET status='assigned', assigned_node_id=?, assigned_at=?, lease_until=?, attempt_count=? WHERE id=? AND status='queued'",
+                                  (node_id, now_str, _lease_until(now_str), attempts + 1, task["id"])).rowcount
+            if changed:
+                logger.info("task_claimed task_id=%s node_id=%s attempt=%s", task["id"], node_id, attempts + 1)
+                return ClaimedTask(id=task["id"], kind=task["kind"], payload=load(task["payload"]),
+                                   required_capabilities=list(needed))
     return None
 
 
@@ -348,14 +704,15 @@ def expire_leases(now_str: str | None = None) -> dict[str, int]:
     """Recover assigned tasks whose lease expired. Atomic per task.
 
     Tasks below MAX_ATTEMPTS return to 'queued' with cleared assignment;
-    tasks at the limit fail. A task never jumps straight back to assigned.
-    Recovery of the same lease cannot happen twice: the second pass finds
-    no matching assigned row.
+    tasks at the limit fail. Physical tasks with uncertain execution
+    (at least one attempt ran somewhere) become 'blocked' instead of
+    requeueing: a printer start, click or other physical action is
+    never silently duplicated because a node disappeared.
     """
     current = now_str or now()
-    summary = {"requeued": 0, "failed": 0}
+    summary = {"requeued": 0, "failed": 0, "blocked": 0}
     with connection() as db:
-        rows = db.execute("SELECT id, lease_until, attempt_count FROM tasks WHERE status='assigned'").fetchall()
+        rows = db.execute("SELECT id, lease_until, attempt_count, routing FROM tasks WHERE status='assigned'").fetchall()
         for task in rows:
             try:
                 expired = task["lease_until"] is None or _parse_time(task["lease_until"]) <= _parse_time(current)
@@ -364,7 +721,19 @@ def expire_leases(now_str: str | None = None) -> dict[str, int]:
             if not expired:
                 continue
             attempts = task["attempt_count"] if task["attempt_count"] is not None else 0
-            if attempts < MAX_ATTEMPTS:
+            physical = False
+            try:
+                stored = load(task["routing"] or "{}")
+                physical = bool(check_requirements(stored).physical_action)
+            except ValueError:
+                physical = False
+            if physical and attempts > 0:
+                changed = db.execute("UPDATE tasks SET status='blocked', assigned_node_id=NULL, assigned_at=NULL, lease_until=NULL WHERE id=? AND status='assigned' AND (lease_until=? OR (lease_until IS NULL AND ? IS NULL))",
+                                      (task["id"], task["lease_until"], task["lease_until"])).rowcount
+                if changed:
+                    summary["blocked"] += 1
+                    logger.info("task_lease_expired task_id=%s blocked physical-uncertain", task["id"])
+            elif attempts < MAX_ATTEMPTS:
                 changed = db.execute("UPDATE tasks SET status='queued', assigned_node_id=NULL, assigned_at=NULL, lease_until=NULL WHERE id=? AND status='assigned' AND (lease_until=? OR (lease_until IS NULL AND ? IS NULL))",
                                       (task["id"], task["lease_until"], task["lease_until"])).rowcount
                 if changed:
@@ -379,12 +748,55 @@ def expire_leases(now_str: str | None = None) -> dict[str, int]:
     return summary
 
 
+@app.get("/api/v1/tasks/by-id/{task_id}")
+def get_task(task_id: int) -> dict:
+    """One task with requirements, assignment and routing
+    explanation. Read-only; chat and missions use this to
+    describe where work goes and why — never to bypass
+    routing (assignment stays on the explicit endpoint).
+    The by-id prefix avoids shadowing literal task paths."""
+    with connection() as db:
+        row = db.execute("SELECT * FROM tasks WHERE id=?",
+                         (task_id,)).fetchone()
+    if row is None:
+        raise HTTPException(404, "Task not found")
+    record = dict(row)
+    record["payload"] = load(row["payload"])
+    record["required_capabilities"] = load(
+        row["required_capabilities"])
+    record["result"] = load(row["result"]) if row["result"] else None
+    try:
+        record["routing"] = load(row["routing"] or "{}")
+    except ValueError:
+        record["routing"] = {}
+    try:
+        record["routing_decision"] = load(
+            row["routing_decision"] or "{}") or None
+    except ValueError:
+        record["routing_decision"] = None
+    return record
+
+
 @app.get("/api/v1/tasks")
 def list_tasks() -> list[dict]:
     with connection() as db:
         rows = db.execute("SELECT * FROM tasks ORDER BY id DESC LIMIT 100").fetchall()
-    return [{**dict(row), "payload": load(row["payload"]), "required_capabilities": load(row["required_capabilities"]),
-             "result": load(row["result"]) if row["result"] else None} for row in rows]
+    items = []
+    for row in rows:
+        record = dict(row)
+        record["payload"] = load(row["payload"])
+        record["required_capabilities"] = load(row["required_capabilities"])
+        record["result"] = load(row["result"]) if row["result"] else None
+        try:
+            record["routing"] = load(row["routing"] or "{}")
+        except ValueError:
+            record["routing"] = {}
+        try:
+            record["routing_decision"] = load(row["routing_decision"] or "{}") or None
+        except ValueError:
+            record["routing_decision"] = None
+        items.append(record)
+    return items
 
 
 # =============================================================================
@@ -1045,10 +1457,16 @@ def desktop_claim_next(body: DesktopClaimBody) -> dict | None:
     moment = now()
     with connection() as db:
         node = db.execute(
-            "SELECT capabilities, status, last_seen FROM nodes WHERE node_id=?",
+            "SELECT capabilities, status, last_seen, auth_token_hash FROM nodes WHERE node_id=?",
             (body.node_id,)).fetchone()
     if node is None:
         raise HTTPException(404, "Node is not registered")
+    try:
+        authenticate(body.node_id, node["auth_token_hash"],
+                     body.node_token)
+    except NodeAuthError:
+        raise HTTPException(status_code=403,
+                            detail="node credential rejected")
     if node["status"] != "online" or node_is_stale(node["last_seen"],
                                                    moment):
         return None
@@ -1081,10 +1499,10 @@ def desktop_claim_next(body: DesktopClaimBody) -> dict | None:
 def agent_status() -> dict:
     with connection() as db:
         nodes = db.execute(
-            "SELECT * FROM nodes ORDER BY last_seen DESC").fetchall()
-    desktops = [dict(row) for row in nodes
+            f"SELECT {NODE_PUBLIC_COLUMNS} FROM nodes ORDER BY last_seen DESC").fetchall()
+    desktops = [_node_to_json(row) for row in nodes
                 if any("desktop" in str(cap).lower()
-                       for cap in load(row["capabilities"]))]
+                       for cap in _node_to_json(row)["capabilities"])]
     waiting: list[dict] = []
     current: dict | None = None
     for row in _desktop_list(limit=10):
@@ -1099,8 +1517,9 @@ def agent_status() -> dict:
         "agents_online": len(desktops),
         "desktop_nodes": [
             {"node_id": node["node_id"], "hostname": node["hostname"],
-             "status": node["status"], "last_seen": node["last_seen"],
-             "capabilities": load(node["capabilities"])}
+             "status": node["derived_status"],
+             "last_seen": node["last_seen"],
+             "capabilities": node["capabilities"]}
             for node in desktops
         ],
         "waiting": waiting,
@@ -2729,8 +3148,22 @@ async def _run_write_step(mission, step) -> dict:
 @app.get("/", response_class=HTMLResponse)
 def dashboard() -> str:
     with connection() as db:
-        nodes = db.execute("SELECT node_id, hostname, tier, status, last_seen FROM nodes ORDER BY last_seen DESC").fetchall()
+        node_rows = db.execute(
+            f"SELECT {NODE_PUBLIC_COLUMNS} FROM nodes ORDER BY last_seen DESC").fetchall()
         tasks = db.execute("SELECT id, kind, status, assigned_node_id FROM tasks ORDER BY id DESC LIMIT 20").fetchall()
+    nodes = []
+    for row in node_rows:
+        record = _node_to_json(row)
+        nodes.append({
+            "node_id": record["node_id"],
+            "hostname": record.get("display_name") or record["hostname"],
+            "tier": record["tier"],
+            "status": record["derived_status"],
+            "last_seen": record["last_seen"],
+            "detail": (f"{len(record['capabilities'])} caps · "
+                       f"{len(record['models'])} modellen · "
+                       f"{len(record['executors'])} executors"),
+        })
     init_chat_database()
     with chat_connection() as chat_db:
         pending = chat_db.execute("SELECT COUNT(*) AS n FROM desktop_actions WHERE status='pending_approval'").fetchone()["n"]
@@ -2741,7 +3174,7 @@ def dashboard() -> str:
     <body>{_workspace_nav()}
     <h1>Mycelium AI</h1><p>Lokale coördinator · <code>v0.1.0</code> · redeneren hier, uitvoeren op de desktop-agent, wereldmodel in INVENTory</p>
     {f"<div class='warn'>⏳ <a href='/agents'>{pending} desktop-actie(s) wachten op goedkeuring</a></div>" if pending else ""}
-    <h2>Nodes</h2><table><tr><th>ID</th><th>Naam</th><th>Type</th><th>Status</th><th>Laatst gezien</th></tr>{rows(nodes, ['node_id','hostname','tier','status','last_seen'])}</table>
+    <h2>Nodes</h2><table><tr><th>ID</th><th>Naam</th><th>Type</th><th>Status</th><th>Laatst gezien</th><th>Capaciteit</th></tr>{rows(nodes, ['node_id','hostname','tier','status','last_seen','detail'])}</table>
     <h2>Taken</h2><table><tr><th>ID</th><th>Soort</th><th>Status</th><th>Node</th></tr>{rows(tasks, ['id','kind','status','assigned_node_id'])}</table></body></html>"""
 
 

@@ -22,6 +22,12 @@ persoonlijke computer-agent (verticale slice, live bewezen):
   via allow-list) → onafhankelijke verificatie (readback, geen
   model-mening); approval ≠ verificatie, zie
   `docs/controlled-writes-and-verification.md`
+- **Distributed nodes** (`/api/v1/nodes/*`, `/api/v1/tasks/route`,
+  `/api/v1/tasks/{id}/assign`): token-authenticatie, capability-/
+  model-/executor-advertenties, deterministische uitlegbare routing,
+  pull-only claims met lease-bescherming; fysieke taken blokkeren
+  bij lease-verval i.p.v. stil herrouteren, zie
+  `docs/distributed-architecture.md`
 - **Project-pakketten** (`/api/v1/project/package`): bounded,
   project-bewuste context zonder secrets of dumps
 - **Vision** (`/api/v1/cameras/*/ingest`, `/api/v1/vision/*`):
@@ -240,10 +246,11 @@ coordinator/     lokale API, taakqueue en dashboard
 coordinator/app/ missies, chat, providers, desktop-contracten, runtime
 coordinator/app/controlled_writes.py, inventory_writes.py,
                  verification.py, git_commit.py, project_package.py
+coordinator/app/nodes.py, routing.py, sim_nodes.py
 desktop_agent/   standalone lokale agent (poll, claim, voer uit, rapporteer)
-node_client/     lichte client voor seed/worker/core nodes (alleen read-only loop)
+node_client/     lichte client voor seed/worker/core nodes (pull-only, token-optie)
 docs/            architectuurstatus, roadmap, principes, oorsprong
-tests/           745 tests (pytest -v)
+tests/           784 tests (pytest -v)
 ```
 
 Zie `docs/ARCHITECTURE_STATUS.md` (wat het systeem is),
@@ -251,7 +258,7 @@ Zie `docs/ARCHITECTURE_STATUS.md` (wat het systeem is),
 `docs/controlled-writes-and-verification.md` (schrijven + bewijzen),
 `docs/first-node-blueprint.md` (eerste externe node),
 `docs/semantic-world-model.md`, `docs/camera-architecture.md` en
-`docs/ROADMAP.md` (wat volgt). Teststatus: **745 passed**.
+`docs/ROADMAP.md` (wat volgt). Teststatus: **784 passed**.
 
 ## Bijdragen
 

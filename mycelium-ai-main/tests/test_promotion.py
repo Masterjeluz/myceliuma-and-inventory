@@ -56,7 +56,10 @@ def register_node(node_id="node-7", capabilities=("ocr",)):
     from coordinator.app.database import connection, dump
     with connection() as db:
         db.execute(
-            """INSERT INTO nodes VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'online')""",
+            """INSERT INTO nodes
+            (node_id, hostname, tier, capabilities, cpu_cores,
+             memory_mb, energy_source, last_seen, status)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'online')""",
             (node_id, "host", "worker", dump(list(capabilities)), 2, 1024,
              "solar", "2026-01-01T00:00:00+00:00"))
 
