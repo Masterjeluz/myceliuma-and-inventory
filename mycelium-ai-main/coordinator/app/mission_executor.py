@@ -68,6 +68,7 @@ class ExecutorDeps:
     git_read: Callable[[str], dict]
     project_read: Callable[[], dict]
     default_steps: list[dict] = field(default_factory=list)
+    run_write: Callable[[Any, Any], Awaitable[dict]] | None = None
 
 
 class ExecutorError(RuntimeError):
@@ -297,6 +298,8 @@ class MissionExecutor:
             return await self._run_analysis(mission, step)
         if step.kind == "proposal":
             return self._run_proposal(mission, step)
+        if step.kind == "write":
+            return await self._run_write(mission, step)
         return self._block_step(
             mission, step, f"Onbekend stap-type '{step.kind}'")
 
@@ -511,6 +514,91 @@ class MissionExecutor:
         return mission
 
     # -- helpers --------------------------------------------------------
+
+    async def _run_write(self, mission: Mission,
+                         step: MissionStep) -> Mission:
+        """Execute one bound controlled-write step.
+
+        The executor never performs writes itself: it delegates to
+        the injected ``run_write`` capability (wired in main.py to
+        the approved-proposal store + executors). Without that
+        wiring the step BLOCKs — a write step without an approved,
+        revalidated proposal can never run.
+        """
+        proposal_id = str(step.parameters.get("proposal_id", ""))
+        if self.deps.run_write is None:
+            return self._block_step(
+                mission, step,
+                f"Schrijf-stap '{proposal_id}' geblokkeerd: geen "
+                "write-capability gekoppeld. Writes lopen alleen via "
+                "voorstel → exact YES → revalidatie → uitvoering → "
+                "verificatie.")
+        try:
+            outcome = await self.deps.run_write(mission, step)
+        except ExecutorError as error:
+            return self._block_step(mission, step, str(error))
+        except Exception as error:
+            return self._block_step(
+                mission, step, f"Write-uitvoering mislukt: {error}")
+        if not isinstance(outcome, dict):
+            return self._block_step(
+                mission, step, "Write-capability gaf onleesbaar "
+                "resultaat; scope gebroken")
+        status = str(outcome.get("status", "blocked"))
+        result_text = str(outcome.get("result_text", ""))[:4000]
+        verification = str(outcome.get("verification", ""))[:1000]
+        verified = outcome.get("verified") is True
+        if status == "completed" and verified:
+            mission = set_step(
+                mission, step.step_id, status="completed",
+                proposal_id=proposal_id,
+                result_text=f"{result_text}\nVerificatie: {verification}",
+                completed_at=_now())
+            save_mission(mission)
+            save_event(new_event(
+                mission.conversation_id, "verification_passed",
+                f"Stap {step.sequence + 1}: write {proposal_id} "
+                f"uitgevoerd en geverifieerd.",
+                mission_id=mission.mission_id, step_id=step.step_id,
+                metadata={"proposal_id": proposal_id}))
+            save_event(new_event(
+                mission.conversation_id, "step_completed",
+                f"Stap {step.sequence + 1} voltooid (controlled write).",
+                mission_id=mission.mission_id, step_id=step.step_id))
+            self.deps.post_message(
+                mission.conversation_id, "assistant",
+                f"✓ Stap {step.sequence + 1} voltooid: {step.description}\n"
+                f"Verificatie: {verification}", [])
+            return mission
+        if status == "completed":
+            shown = (verification or
+                     "niet geverifieerd — geen FACT-promotie")
+            mission = set_step(
+                mission, step.step_id, status="completed",
+                proposal_id=proposal_id,
+                result_text=f"{result_text}\nVerificatie NIET geslaagd "
+                            f"({shown}) — geen FACT-promotie.",
+                completed_at=_now())
+            save_mission(mission)
+            save_event(new_event(
+                mission.conversation_id, "verification_failed",
+                f"Stap {step.sequence + 1}: write {proposal_id} "
+                "uitgevoerd maar NIET geverifieerd.",
+                mission_id=mission.mission_id, step_id=step.step_id,
+                metadata={"proposal_id": proposal_id}))
+            save_event(new_event(
+                mission.conversation_id, "step_completed",
+                f"Stap {step.sequence + 1} voltooid (write, "
+                "niet geverifieerd).",
+                mission_id=mission.mission_id, step_id=step.step_id))
+            return mission
+        if status == "failed":
+            return self._fail_step(
+                mission, step,
+                f"Write {proposal_id} faalde: {result_text[:500]}")
+        return self._block_step(
+            mission, step,
+            f"Write {proposal_id} geblokkeerd: {result_text[:500]}")
 
     def _advance(self, mission: Mission, step: MissionStep) -> Mission:
         updated = mission.model_copy(

@@ -232,3 +232,34 @@ class CameraRegisterBody(BaseModel):
     kinds: list[str] = Field(min_length=1, max_length=4)
     source: str = Field(min_length=1, max_length=20)
     notes: str = Field(default="", max_length=500)
+
+
+class InventoryWriteBody(BaseModel):
+    """One inventory write proposal (BIG #5). Inert until approved."""
+
+    proposal_id: str | None = Field(default=None, min_length=3,
+                                    max_length=80)
+    mutation: str = Field(min_length=1, max_length=40)
+    entity_type: str = Field(default="", min_length=1, max_length=40)
+    entity_id: str = Field(default="", max_length=100)
+    fields: dict[str, Any] = Field(default_factory=dict)
+    actor: str = Field(default="mycelium", min_length=1, max_length=80)
+
+
+class GitCommitBody(BaseModel):
+    """One git-commit proposal (BIG #5). Inert until approved."""
+
+    proposal_id: str | None = Field(default=None, min_length=3,
+                                    max_length=80)
+    repository: str = Field(min_length=1, max_length=500)
+    branch: str = Field(min_length=1, max_length=120)
+    expected_head: str = Field(min_length=7, max_length=40)
+    message: str = Field(min_length=1, max_length=500)
+    files: list[str] = Field(min_length=1, max_length=20)
+    changeset_fingerprint: str = Field(min_length=64, max_length=64)
+    actor: str = Field(default="mycelium", min_length=1, max_length=80)
+
+
+class WriteDecisionBody(BaseModel):
+    response: str = Field(min_length=1, max_length=80)
+    decided_by: str = Field(default="human", min_length=1, max_length=80)

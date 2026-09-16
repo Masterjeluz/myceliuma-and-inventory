@@ -1,4 +1,4 @@
-# Architecture Status (september 2026, na BIG #3)
+# Architecture Status (september 2026, na BIG #5)
 
 Momentopname van wat het systeem IS. Voor flows, zie
 `chat-agent-architecture.md`; voor richting, zie `ROADMAP.md`.
@@ -35,9 +35,12 @@ Momentopname van wat het systeem IS. Voor flows, zie
    en alleen zoals beschreven (binding-bewijs vereist).
 7. **RESULT** — completed/failed/cancelled/blocked met timing, error
    en observatie-referentie. Nooit automatisch verified.
-8. **VERIFICATION** — aparte menselijke handeling die een resultaat
-   of feit als gecontroleerd markeert. Bestaat als provenance-veld,
-   nog niet als aparte flow (ROADMAP fase C).
+8. **VERIFICATION** — aparte, eersteklas stap (`verification.py`):
+   onafhankelijke readback (inventory/graph/git) met
+   passed/failed/inconclusive. Alleen passed telt als
+   geverifieerd; approval is toestemming, verificatie is waarheid.
+9. **WORLD MODEL UPDATE** — alleen na passed verificatie; anders
+   geen FACT-promotie.
 
 ## Componentkaart (code als bron)
 
@@ -66,6 +69,13 @@ Momentopname van wat het systeem IS. Voor flows, zie
 | Camera-abstractie | `cameras.py` | DONE (contract + detectie) |
 | Wereldgrafiek | `worldgraph.py` | DONE (projectie) |
 | Project-/git-context (read-only) | `project_context.py`, `git_context.py` | DONE |
+| Controlled writes (generiek) | `controlled_writes.py` | DONE |
+| INVENTory write-capability | `inventory_writes.py` | DONE (object/project/idea + relaties) |
+| Verification (eersteklas) | `verification.py` | DONE (readback, geen model-mening) |
+| Git-commit-capability | `git_commit.py` | DONE (allow-list, geen push) |
+| Project-pakketten | `project_package.py` | DONE (bounded, geen secrets) |
+| Write-stap in missies | `missions.py`, `mission_executor.py` | DONE |
+| Write/verify-API | `main.py` (`/writes`, `/project/package`) | DONE |
 | 3D-pijplijn | `pipeline3d.py` | PARTIAL (contracten) |
 | Standalone agent | `desktop_agent/` | DONE |
 | Node-client (read-only loop) | `node_client/` | DONE |
@@ -74,7 +84,10 @@ Momentopname van wat het systeem IS. Voor flows, zie
 
 ## Teststatus (gemeten, niet geschat)
 
-- Mycelium: **547 passed** (`pytest -v` in `mycelium-ai-main/`)
+- Mycelium: **629 passed** (`pytest -v` in `mycelium-ai-main/`)
+  (547 vóór BIG #5 + 82 nieuwe write/verification/git/package/
+  missie/security/API-tests; camera-ctypes geeft dezelfde
+  pre-existing access-violation-meldingen als vóór BIG #5)
 - INVENTory: **178 passed, 1 failed** — de faal is pre-existing:
   `test_real_inventory_db_untouched` pint de exacte byte-grootte van
   de gitignored lokale `data/inventory.db`; inhoud groeit bij normaal

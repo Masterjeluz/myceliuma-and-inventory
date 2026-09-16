@@ -20,6 +20,38 @@ from .agent_loop import (
     record_result as agent_record_result,
 )
 from .approval import ApprovalResult, decide as decide_approval, request_approval
+from .controlled_writes import (
+    WriteApproval,
+    WriteProposal,
+    WriteResult,
+    decide_write,
+    request_write_approval,
+    write_fingerprint,
+)
+from .git_commit import (
+    GitWriteFailedError,
+    GitWriteRefusedError,
+    execute_git_commit,
+    propose_git_commit,
+    verify_git_commit,
+)
+from .inventory_writes import (
+    InventoryWriteFailedError,
+    InventoryWriteRefusedError,
+    InventoryWriter,
+    execute_inventory_write,
+    propose_inventory_write,
+)
+from .project_package import (
+    assemble_project_package,
+    summarize_for_chat,
+)
+from .verification import (
+    VerificationRequest,
+    is_verified,
+    new_verification_request,
+    verify_inventory_write,
+)
 from .cameras import (
     CameraRefusedError,
     CameraUnavailable,
@@ -77,7 +109,7 @@ from .ollama_advisor import (
     OllamaRefusedError,
     OllamaUnavailable,
 )
-from .schemas import AdviseRequest, AdviseResponse, CameraRegisterBody, ChatMissionBody, ChatRequest, ChatResponse, ClaimedTask, DecideApprovalBody, DesktopActionBody, DesktopClaimBody, DesktopDecisionBody, DesktopDispatchBody, DesktopResultBody, Heartbeat, MissionApproveBody, MissionCreateBody, MissionStepBody, NodeRegistration, PlanBody, PlanToProposalBody, SuggestStepsBody, TaskCreate, TaskFromProposalBody, TaskResult, TemplateMissionBody
+from .schemas import AdviseRequest, AdviseResponse, CameraRegisterBody, ChatMissionBody, ChatRequest, ChatResponse, ClaimedTask, DecideApprovalBody, DesktopActionBody, DesktopClaimBody, DesktopDecisionBody, DesktopDispatchBody, DesktopResultBody, GitCommitBody, Heartbeat, InventoryWriteBody, MissionApproveBody, MissionCreateBody, MissionStepBody, NodeRegistration, PlanBody, PlanToProposalBody, SuggestStepsBody, TaskCreate, TaskFromProposalBody, TaskResult, TemplateMissionBody, WriteDecisionBody
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 logger = logging.getLogger("mycelium.coordinator")
@@ -1104,6 +1136,7 @@ def _executor() -> MissionExecutor:
         inventory_search=_inventory_search,
         git_read=_git_read,
         project_read=_project_read,
+        run_write=_run_write_step,
     ))
 
 
@@ -1228,6 +1261,24 @@ async def chat_mission(conversation_id: str,
     if row is None:
         raise HTTPException(404, "Conversation not found")
     records, _, _ = await _chat_world_context(body.goal)
+    try:
+        _active = default_context()
+        import os as _os
+        records = [{
+            "entity_type": "project-context",
+            "entity_id": _active.project_id,
+            "title": _active.name,
+            "snippet": f"Actief project {_active.name} "
+                       f"({_os.path.basename(_active.repository)}). "
+                       "Details staan in INVENTory; dit is context, "
+                       "geen toestemming.",
+            "provenance": {"source_type": "user-created",
+                           "human_verified": True},
+            "match_type": "project",
+            "score": 0.0,
+        }] + records
+    except ValueError:
+        pass
     try:
         mission = _executor().create(
             conversation_id, body.goal,
@@ -1432,6 +1483,372 @@ def task_from_proposal(body: TaskFromProposalBody) -> CoordinatorTask:
     logger.info("task_translated task_id=%s proposal_id=%s type=%s",
                 task.task_id, task.proposal_id, task.task_type)
     return task
+
+
+# =============================================================================
+# CONTROLLED WRITES + VERIFICATION (BIG #5) — proposal to verified change.
+# Flow: propose (inert) -> exact-YES approval (bound by fingerprint) ->
+# execute (revalidated, allow-listed mutation only) -> independent
+# verification (readback, never the result payload). Approval is
+# permission, verification is truth; neither implies the other.
+# The INVENTory read bridge above stays read-only; writes below use
+# the separate InventoryWriter capability. No SQL, no shell, no
+# arbitrary HTTP writes, no push/force anywhere in this section.
+# =============================================================================
+
+def _write_save(proposal: WriteProposal, status: str,
+                approval: WriteApproval | None = None,
+                result: WriteResult | None = None,
+                verification=None) -> None:
+    init_chat_database()
+    with chat_connection() as db:
+        db.execute(
+            """INSERT INTO write_proposals
+            (proposal_id, record, status, approval, result, verification,
+             created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(proposal_id) DO UPDATE SET record=excluded.record,
+            status=excluded.status, approval=excluded.approval,
+            result=excluded.result, verification=excluded.verification,
+            updated_at=excluded.updated_at""",
+            (proposal.proposal_id,
+             dump(proposal.model_dump(mode="json")), status,
+             dump(approval.model_dump(mode="json") if approval else {}),
+             dump(result.model_dump(mode="json") if result else {}),
+             dump(verification.model_dump(mode="json")
+                  if verification else {}),
+             proposal.created_at, now()))
+
+
+def _write_load(proposal_id: str) -> dict | None:
+    init_chat_database()
+    with chat_connection() as db:
+        row = db.execute(
+            "SELECT * FROM write_proposals WHERE proposal_id=?",
+            (proposal_id,)).fetchone()
+    if row is None:
+        return None
+    record = dict(row)
+    for key in ("record", "approval", "result", "verification"):
+        try:
+            record[key] = load(record[key]) if record[key] else {}
+        except ValueError:
+            record[key] = {}
+    return record
+
+
+def _write_to_json(record: dict) -> dict:
+    proposal = WriteProposal.model_validate(record["record"])
+    return {
+        "proposal": proposal.model_dump(mode="json"),
+        "fingerprint": write_fingerprint(proposal),
+        "status": record["status"],
+        "approval": record["approval"] or None,
+        "result": record["result"] or None,
+        "verification": record["verification"] or None,
+    }
+
+
+@app.post("/api/v1/writes/inventory", status_code=201)
+def write_propose_inventory(body: InventoryWriteBody) -> dict:
+    import secrets as _secrets
+    proposal_id = (body.proposal_id
+                   or f"wrt-{_secrets.token_hex(4)}")
+    try:
+        proposal = propose_inventory_write(
+            proposal_id, body.mutation, body.entity_type,
+            dict(body.fields), entity_id=body.entity_id,
+            actor=body.actor)
+    except InventoryWriteRefusedError as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    _write_save(proposal, "proposed")
+    logger.info("write_proposed proposal_id=%s type=%s",
+                proposal.proposal_id, proposal.mutation_type)
+    return _write_to_json(_write_load(proposal.proposal_id))
+
+
+@app.post("/api/v1/writes/git-commit", status_code=201)
+def write_propose_git(body: GitCommitBody) -> dict:
+    import secrets as _secrets
+    proposal_id = (body.proposal_id
+                   or f"wrt-{_secrets.token_hex(4)}")
+    try:
+        proposal = propose_git_commit(
+            proposal_id, body.repository, body.branch,
+            body.expected_head, body.message, list(body.files),
+            changeset_fingerprint=body.changeset_fingerprint,
+            actor=body.actor)
+    except GitWriteRefusedError as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    _write_save(proposal, "proposed")
+    logger.info("write_proposed proposal_id=%s type=git.commit",
+                proposal.proposal_id)
+    return _write_to_json(_write_load(proposal.proposal_id))
+
+
+@app.get("/api/v1/writes/{proposal_id}")
+def write_get(proposal_id: str) -> dict:
+    record = _write_load(proposal_id)
+    if record is None:
+        raise HTTPException(404, "Write proposal not found")
+    return _write_to_json(record)
+
+
+@app.post("/api/v1/writes/{proposal_id}/approve")
+def write_approve(proposal_id: str, body: WriteDecisionBody) -> dict:
+    record = _write_load(proposal_id)
+    if record is None:
+        raise HTTPException(404, "Write proposal not found")
+    if record["status"] != "proposed":
+        raise HTTPException(
+            status_code=409,
+            detail=f"Write is {record['status']}; only proposed writes decide")
+    proposal = WriteProposal.model_validate(record["record"])
+    request = request_write_approval(proposal)
+    try:
+        approval = decide_write(request, proposal, body.response,
+                                decided_by=body.decided_by)
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    status = "approved" if approval.approved else "rejected"
+    _write_save(proposal, status, approval=approval)
+    logger.info("write_decided proposal_id=%s decision=%s",
+                proposal_id, approval.decision)
+    return _write_to_json(_write_load(proposal_id))
+
+
+async def _write_execute_record(record: dict) -> WriteResult:
+    """Execute one stored, approved proposal and persist the result."""
+    proposal = WriteProposal.model_validate(record["record"])
+    approval = WriteApproval.model_validate(record["approval"])
+    if proposal.mutation_type == "git.commit":
+        return execute_git_commit(proposal, approval)
+    return await execute_inventory_write(
+        proposal, approval, reader=_world_reader(),
+        writer=InventoryWriter())
+
+
+@app.post("/api/v1/writes/{proposal_id}/execute")
+async def write_execute(proposal_id: str) -> dict:
+    record = _write_load(proposal_id)
+    if record is None:
+        raise HTTPException(404, "Write proposal not found")
+    if record["result"]:
+        return _write_to_json(record)
+    if record["status"] != "approved":
+        raise HTTPException(
+            status_code=409,
+            detail=f"Write is {record['status']}; only approved writes execute")
+    proposal = WriteProposal.model_validate(record["record"])
+    approval = WriteApproval.model_validate(record["approval"])
+    try:
+        result = await _write_execute_record(record)
+    except (InventoryWriteRefusedError, GitWriteRefusedError,
+            ValueError) as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    except (InventoryWriteFailedError, GitWriteFailedError) as error:
+        raise HTTPException(status_code=502, detail=str(error))
+    status = ("executed" if result.outcome == "executed"
+              else result.outcome)
+    _write_save(proposal, status, approval=approval, result=result)
+    logger.info("write_executed proposal_id=%s outcome=%s",
+                proposal_id, result.outcome)
+    return _write_to_json(_write_load(proposal_id))
+
+
+def _verification_request_for(proposal: WriteProposal,
+                              result: WriteResult):
+    if proposal.mutation_type == "inventory.create":
+        fields = proposal.payload.get("fields", {})
+        entity_type = proposal.payload.get("entity_type", "")
+        entity_id = str(result.after.get("entity_id", ""))
+        expected: dict = {"kind": "entity",
+                          "entity_type": entity_type,
+                          "entity_id": entity_id}
+        for key in ("name", "description", "quantity", "status"):
+            if key in fields:
+                expected[key] = fields[key]
+        return new_verification_request(
+            proposal.proposal_id, result.fingerprint,
+            "inventory.readback", expected)
+    if proposal.mutation_type == "inventory.update":
+        fields = proposal.payload.get("fields", {})
+        expected = {"kind": "entity",
+                    "entity_type": proposal.payload.get("entity_type", ""),
+                    "entity_id": proposal.payload.get("entity_id", "")}
+        for key in ("name", "description", "quantity", "status"):
+            if key in fields:
+                expected[key] = fields[key]
+        return new_verification_request(
+            proposal.proposal_id, result.fingerprint,
+            "inventory.readback", expected)
+    if proposal.mutation_type == "inventory.create_relationship":
+        fields = proposal.payload.get("fields", {})
+        return new_verification_request(
+            proposal.proposal_id, result.fingerprint,
+            "inventory.graph_readback",
+            {"kind": "relationship",
+             "from_id": fields.get("from_id", ""),
+             "predicate": fields.get("predicate", ""),
+             "to_id": fields.get("to_id", "")})
+    if proposal.mutation_type == "git.commit":
+        payload = proposal.payload
+        return new_verification_request(
+            proposal.proposal_id, result.fingerprint, "git.readback",
+            {"kind": "commit",
+             "repository": payload.get("repository", ""),
+             "branch": payload.get("branch", ""),
+             "parent": payload.get("expected_head", "")})
+    raise ValueError(
+        f"Mutation '{proposal.mutation_type}' has no verification path")
+
+
+@app.post("/api/v1/writes/{proposal_id}/verify")
+async def write_verify(proposal_id: str) -> dict:
+    record = _write_load(proposal_id)
+    if record is None:
+        raise HTTPException(404, "Write proposal not found")
+    if not record["result"]:
+        raise HTTPException(
+            status_code=409, detail="Write has no result yet; execute first")
+    if record["verification"]:
+        return _write_to_json(record)
+    proposal = WriteProposal.model_validate(record["record"])
+    result = WriteResult.model_validate(record["result"])
+    approval = WriteApproval.model_validate(record["approval"])
+    try:
+        request = _verification_request_for(proposal, result)
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    try:
+        if proposal.mutation_type == "git.commit":
+            verification = verify_git_commit(request, result)
+        else:
+            verification = await verify_inventory_write(
+                request, result, reader=_world_reader())
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    except InventoryWriteFailedError as error:
+        raise HTTPException(status_code=502, detail=str(error))
+    _write_save(proposal, record["status"], approval=approval,
+                result=result, verification=verification)
+    logger.info("write_verified proposal_id=%s outcome=%s",
+                proposal_id, verification.outcome)
+    return _write_to_json(_write_load(proposal_id))
+
+
+@app.get("/api/v1/project/package")
+async def project_package_route(q: str = "",
+                                conversation_id: str = "") -> dict:
+    """Bounded project-aware context: identity, related entities,
+    missions, events, git. Read-only; never file contents, never
+    secrets, never a permission."""
+    from .missions import list_events as _list_events
+    from .missions import list_missions as _list_missions
+    try:
+        project = default_context()
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    missions: list = []
+    events: list[dict] = []
+    if conversation_id:
+        try:
+            missions = _list_missions(conversation_id, limit=5)
+        except ValueError:
+            missions = []
+        try:
+            events = [event.model_dump(mode="json") for event in
+                      _list_events(conversation_id=conversation_id,
+                                   limit=10)]
+        except ValueError:
+            events = []
+    git: dict = {}
+    try:
+        root = _project_root(None)
+        git = git_status(root)
+        git["branch"] = git_branch(root)["branch"]
+    except (GitRefusedError, GitUnavailable, ValueError):
+        git = {}
+    try:
+        package = await assemble_project_package(
+            project, _world_reader(), query=q,
+            missions=missions, events=events, git=git)
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    package["summary"] = summarize_for_chat(package)
+    return package
+
+
+async def _run_write_step(mission, step) -> dict:
+    """Mission write-step capability: approved stored proposal ->
+    execute (once) -> verify. Anything unapproved, stale or
+    mismatched BLOCKs; the executor maps the dict to step state."""
+    proposal_id = str(step.parameters.get("proposal_id", ""))
+    record = _write_load(proposal_id)
+    if record is None:
+        raise ExecutorError(
+            f"Write '{proposal_id}' unknown; writes need a stored, "
+            "approved proposal")
+    if record["status"] not in ("approved", "executed", "failed",
+                                "blocked"):
+        return {"status": "blocked",
+                "result_text": f"Write '{proposal_id}' is "
+                               f"{record['status']}; explicit human "
+                               "approval required first.",
+                "verification": "no approval; no verification",
+                "verified": False}
+    proposal = WriteProposal.model_validate(record["record"])
+    try:
+        check_binding = proposal.proposal_id
+    except AttributeError as error:  # pragma: no cover - defensive
+        raise ExecutorError(f"Write binding broken: {error}") from error
+    if check_binding != proposal_id:
+        raise ExecutorError("Write binding mismatch; refusing")
+    if not record["result"]:
+        try:
+            result = await _write_execute_record(record)
+        except (InventoryWriteRefusedError, GitWriteRefusedError,
+                ValueError) as error:
+            raise ExecutorError(str(error)) from error
+        except (InventoryWriteFailedError,
+                GitWriteFailedError) as error:
+            raise ExecutorError(str(error)) from error
+        approval = WriteApproval.model_validate(record["approval"])
+        status = ("executed" if result.outcome == "executed"
+                  else result.outcome)
+        _write_save(proposal, status, approval=approval, result=result)
+        record = _write_load(proposal_id)
+        result = WriteResult.model_validate(record["result"])
+    else:
+        result = WriteResult.model_validate(record["result"])
+    if result.outcome != "executed":
+        return {"status": result.outcome,
+                "result_text": f"Write '{proposal_id}' "
+                               f"{result.outcome}: {result.error[:500]}",
+                "verification": "no execution; no verification",
+                "verified": False}
+    if not record["verification"]:
+        approval = WriteApproval.model_validate(record["approval"])
+        request = _verification_request_for(proposal, result)
+        if proposal.mutation_type == "git.commit":
+            verification = verify_git_commit(request, result)
+        else:
+            verification = await verify_inventory_write(
+                request, result, reader=_world_reader())
+        _write_save(proposal, record["status"], approval=approval,
+                    result=result, verification=verification)
+        record = _write_load(proposal_id)
+    verification_data = record["verification"] or {}
+    outcome = str(verification_data.get("outcome", "inconclusive"))
+    note = str(verification_data.get("note", ""))
+    verified = outcome == "passed"
+    return {"status": "completed",
+            "result_text": f"Write '{proposal_id}' {result.outcome}.",
+            "verification": f"{outcome}: {note}",
+            "verified": verified}
 
 
 @app.get("/", response_class=HTMLResponse)

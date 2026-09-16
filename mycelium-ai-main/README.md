@@ -17,6 +17,13 @@ persoonlijke computer-agent (verticale slice, live bewezen):
   lokaal Ollama/Qwen-advies; eerlijke fallback zonder model
 - **Missies** (`/missions`): plan met stappen, exact-YES-approval,
   stap-voor-stap-uitvoering, voortgang en gebeurtenissen terug in chat
+- **Controlled writes** (`/api/v1/writes/*`): voorstel → exact YES →
+  allow-list-mutatie (INVENTory object/project/idee/relatie, git-commit
+  via allow-list) → onafhankelijke verificatie (readback, geen
+  model-mening); approval ≠ verificatie, zie
+  `docs/controlled-writes-and-verification.md`
+- **Project-pakketten** (`/api/v1/project/package`): bounded,
+  project-bewuste context zonder secrets of dumps
 - **Desktop-agent** (`/agents`): standalone proces (outbound-only)
   dat goedgekeurde acties claimt, hervalideert en uitvoert via
   scherm/muis/toetsenbord — observe → act → observe, begrensd,
@@ -219,16 +226,20 @@ Zie [docs/architecture.md](docs/architecture.md) voor grenzen en vervolgkeuzes, 
 ```
 coordinator/     lokale API, taakqueue en dashboard
 coordinator/app/ missies, chat, providers, desktop-contracten, runtime
+coordinator/app/controlled_writes.py, inventory_writes.py,
+                 verification.py, git_commit.py, project_package.py
 desktop_agent/   standalone lokale agent (poll, claim, voer uit, rapporteer)
 node_client/     lichte client voor seed/worker/core nodes (alleen read-only loop)
 docs/            architectuurstatus, roadmap, principes, oorsprong
-tests/           515 tests (pytest -v)
+tests/           629 tests (pytest -v)
 ```
 
 Zie `docs/ARCHITECTURE_STATUS.md` (wat het systeem is),
 `docs/chat-agent-architecture.md` (hoe de keten loopt),
+`docs/controlled-writes-and-verification.md` (schrijven + bewijzen),
+`docs/first-node-blueprint.md` (eerste externe node),
 `docs/semantic-world-model.md`, `docs/camera-architecture.md` en
-`docs/ROADMAP.md` (wat volgt). Teststatus: **547 passed**.
+`docs/ROADMAP.md` (wat volgt). Teststatus: **629 passed**.
 
 ## Bijdragen
 

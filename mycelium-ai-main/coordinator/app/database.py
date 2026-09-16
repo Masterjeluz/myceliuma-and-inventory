@@ -179,6 +179,16 @@ def init_chat_database() -> None:
         );
         CREATE INDEX IF NOT EXISTS idx_cam_obs_device
             ON camera_observations(device_id, created_at);
+        CREATE TABLE IF NOT EXISTS write_proposals (
+            proposal_id TEXT PRIMARY KEY,
+            record TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'proposed',
+            approval TEXT NOT NULL DEFAULT '{}',
+            result TEXT NOT NULL DEFAULT '{}',
+            verification TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
         """)
 
 

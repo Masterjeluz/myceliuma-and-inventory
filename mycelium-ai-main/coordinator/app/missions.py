@@ -22,7 +22,10 @@ Step kinds (closed): readout (server-side read-only), desktop
 (one existing ComputerAction via the dact gate), analysis
 (provider advice, artifact only), proposal (AdapterProposal
 artifact, approval happens outside the mission through the
-existing gate — never automatic).
+existing gate — never automatic), write (one bound controlled
+write proposal: executes only with its own exact human YES plus
+fingerprint revalidation, then records result + independent
+verification — never automatic, never a bypass).
 
 Rules (tested, all fail-closed):
 
@@ -66,9 +69,10 @@ VALID_MISSION_STATUSES = frozenset({
 TERMINAL_MISSION_STATUSES = frozenset(
     {"completed", "failed", "cancelled", "blocked"})
 
-StepKind = Literal["readout", "desktop", "analysis", "proposal"]
+StepKind = Literal["readout", "desktop", "analysis", "proposal",
+                   "write"]
 VALID_STEP_KINDS = frozenset({"readout", "desktop", "analysis",
-                              "proposal"})
+                              "proposal", "write"})
 
 StepStatus = Literal[
     "pending", "waiting_approval", "dispatched", "completed",
@@ -91,6 +95,9 @@ VALID_EVENT_TYPES = frozenset({
     "mission_failed", "mission_blocked",
     "step_started", "step_completed", "step_failed", "step_blocked",
     "action_proposed", "action_result", "observation", "note",
+    "write_proposed", "write_approved", "write_executed",
+    "write_result", "verification_started", "verification_passed",
+    "verification_failed",
 })
 
 MAX_STEPS = 20
@@ -214,7 +221,19 @@ def _check_step_definition(index: int, data: dict) -> MissionStep:
             raise ValueError(
                 f"Step {index}: step-level approval exists only for "
                 "desktop steps through the action gate")
-        if kind == "readout":
+        if kind == "write":
+            proposal_id = parameters.get("proposal_id", "")
+            if (not isinstance(proposal_id, str)
+                    or not 3 <= len(proposal_id) <= 80):
+                raise ValueError(
+                    f"Step {index}: write steps bind to one write "
+                    "proposal_id (3..80 chars)")
+            unknown = set(parameters) - {"proposal_id"}
+            if unknown:
+                raise ValueError(
+                    f"Step {index}: write steps carry only proposal_id; "
+                    f"unexpected: {sorted(unknown)}")
+        elif kind == "readout":
             source = str(parameters.get("source", ""))
             if source not in READOUT_SOURCES:
                 raise ValueError(

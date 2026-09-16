@@ -40,23 +40,25 @@ Zie `docs/semantic-world-model.md` en `docs/camera-architecture.md`.
 - Camera-foundation (abstractie, read-only detectie, observatie-
   contract, Insta360-fase 1) — DONE (start van PHASE D)
 - Project-bewuste context (actief project als standaard-filter) —
-  NEXT (eerste stukje van BIG #5)
+  DONE (BIG #5: bounded pakketten + missie-context)
 - `docs/first-node-blueprint.md` herstellen (README linkt erheen,
-  bestand ontbreekt) — NEXT (klein)
-- Testbasis: 547 Mycelium-tests — DONE
+  bestand ontbreekt) — DONE (BIG #5)
+- Testbasis: 629 Mycelium-tests — DONE
 
-## PHASE C — CONTROLLED WRITES (FUTURE)
+## PHASE C — CONTROLLED WRITES (DONE als BIG #5)
 
-Schrijven mag, maar alleen via dezelfde poorten als lezen: voorstel,
-goedkeuring, uitvoering, verificatie.
+Zie `docs/controlled-writes-and-verification.md`.
 
 - INVENTory-schrijfvoorstellen (operator-keurt-goed, provenance
-  `ai-generated` → nooit automatisch `human_verified`) — FUTURE
+  `ai-generated` → nooit automatisch `human_verified`) — DONE
+  (object/project/idea + relaties; deletes en M3+-typen weigeren)
 - Git-voorstellen en commits via expliciete capability (push/merge
-  blijven verboden tot apart review) — FUTURE
-- Bestands-/projectwijzigingen via missie-stappen met diff-preview — FUTURE
-- Verificatie-stap als eersteklas burger (resultaat ≠ verified) — FUTURE
-- Sterkere audit-trail (wie/wat/waarom per mutatie, exporteerbaar) — FUTURE
+  blijven verboden) — DONE (allow-list, geen push)
+- Bestands-/projectwijzigingen via missie-stappen met diff-preview — PARTIAL
+  (write-stap + git-voorstel; file-inhoud schrijven volgt later)
+- Verificatie-stap als eersteklas burger (resultaat ≠ verified) — DONE
+- Sterkere audit-trail (wie/wat/waarom per mutatie, exporteerbaar) — PARTIAL
+  (before/after + write/result/verification-events; export volgt later)
 
 ## PHASE D — VISION (FUTURE)
 

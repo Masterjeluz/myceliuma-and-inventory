@@ -124,6 +124,13 @@ agent altijd stopbaar (cancel + rejected-default).
    missie/agent-overlay voor navigatie en toekomstige UI.
 9. Camera's (`/cameras`): registratie + read-only detectie;
    snapshots weigeren zonder capture-runtime (409).
+10. Controlled writes (BIG #5): chat/missies dragen project-
+    identiteit als context; writes lopen via
+    `/api/v1/writes/*` (voorstel → exact YES → uitvoering →
+    onafhankelijke verificatie). Missie-`write`-stappen binden
+    aan exact één goedgekeurd voorstel; zonder gekoppelde
+    capability BLOCKt de stap. Project-pakketten via
+    `/api/v1/project/package` (bounded, geen secrets).
 
 Autonomie geldt uitsluitend binnen de goedgekeurde stappen; een
 actie zonder geldige binding wordt genegeerd (fail-closed).
@@ -134,6 +141,8 @@ Stap-voor-stap autonomie mét tussen-goedkeuring per desktop-input
 bestaat al; wat ontbreekt is selectieve aandacht: semantische
 INVENTory-retrieval naast de huidige substring-bridge (zodat "wat
 kan ik maken met mijn onderdelen" echt redeneert over voorraad),
-plus missie-sjablonen per projecttype. Daarna pas: gecontroleerde
-schrijf-paden (INVENTory-voorstellen via bestaande provenance-regel,
-git-commits via expliciete capability).
+   plus missie-sjablonen per projecttype. Daarna: gecontroleerde
+   schrijf-paden — DONE in BIG #5
+   (`docs/controlled-writes-and-verification.md`): INVENTory-
+   voorstellen via bestaande provenance-regel, git-commits via
+   expliciete capability, verificatie als eersteklas stap.
