@@ -171,6 +171,9 @@ def test_idempotency_duplicate_and_conflict(tmp_path,
         assert first["outcome"] == "accepted"
         again = post_event(client, envelope(), key=key).json()
         assert again["outcome"] == "duplicate"
+        # Repeated duplicates never collide with each other.
+        third = post_event(client, envelope(), key=key).json()
+        assert third["outcome"] == "duplicate"
         changed = envelope(payload={"title": "n8n note",
                                     "content": "CHANGED"})
         conflict = post_event(client, changed, key=key).json()

@@ -1,4 +1,4 @@
-# Architecture Status (september 2026, na BIG #17)
+# Architecture Status (september 2026, na BIG #18)
 
 Momentopname van wat het systeem IS. Voor flows, zie
 `chat-agent-architecture.md`; voor richting, zie `ROADMAP.md`.
@@ -123,8 +123,8 @@ Momentopname van wat het systeem IS. Voor flows, zie
 
 ## Teststatus (gemeten, niet geschat)
 
-- Mycelium: **931 passed** (`pytest -v` in `mycelium-ai-main/`)
-  (920 voor BIG #17 + 11 nieuwe n8n-plane-tests;
+- Mycelium: **935 passed** (`pytest -v` in `mycelium-ai-main/`)
+  (931 voor BIG #18 + 4 nieuwe workflow-artifact-tests;
   camera-ctypes geeft dezelfde pre-existing
   access-violation-meldingen als altijd)
 - INVENTory: **179 passed, 1 failed** (ongewijzigd schema) — de faal is pre-existing:

@@ -232,7 +232,8 @@ gehard als voorwaarde voor elke echte LIVE-integratie.
   perf-sanity — DONE
 - Testbasis: 920 Mycelium-tests — DONE
 
-## PHASE K — INTEGRATION PLANE (DONE als BIG #17)
+## PHASE K — INTEGRATION PLANE (DONE als BIG #17,
+e2e bewezen als BIG #18)
 
 Zie `docs/n8n-integration.md`. n8n als externe
 automation-laag rondom Mycelium — nooit de coordinator.
@@ -249,7 +250,11 @@ automation-laag rondom Mycelium — nooit de coordinator.
 - Secret boundary (credentials blijven in n8n) — DONE
 - Garmin readiness (UNAVAILABLE + requirements, mock
   behouden) — DONE
-- Testbasis: 931 Mycelium-tests — DONE
+- Testbasis: 935 Mycelium-tests — DONE
+- Echte lokale e2e (23 checks over live HTTP: trigger,
+  outbox, idempotency, provenance, mock-Garmin, auth,
+  failure-leg) + committed workflow-artifacts — DONE
+  als BIG #18
 - Echte n8n-workflows, echte Garmin-OAuth, live externe
   integraties — FUTURE (pas met officiële toegang)
 

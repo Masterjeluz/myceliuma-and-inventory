@@ -1,9 +1,60 @@
 # n8n Integration Plane (BIG #17) — IMPLEMENTED
 
+Proven end to end locally in BIG #18 (23-check live
+harness over real HTTP against uvicorn + committed
+workflow artifacts; no n8n binary was installable on
+that machine — 0 bytes disk free, Docker daemon down —
+so execution semantics were verified request-for-request
+with the exact payloads the workflows send).
+
 n8n is the external automation plane around Mycelium:
 schedules, external APIs, webhooks, transforms,
 notifications, transport retries. It is never the
 coordinator and holds no Mycelium authority.
+
+## Local install/start (localhost only)
+
+1. Free ~2 GB disk. Scoped install outside the repo
+   (never global, never into the project):
+   `mkdir n8n-local && cd n8n-local && npm init -y &&`
+   `npm install n8n --no-audit --no-fund`.
+2. Start Mycelium first (tmp DBs for tests, real DBs
+   for real runs):
+   `python -m uvicorn coordinator.app.main:app --host`
+   `127.0.0.1 --port 8000` (from `mycelium-ai-main/`).
+3. Issue an integration key (operator key from local
+   env): `POST 127.0.0.1:8000/api/v1/integrations/`
+   `generic/keys {"operator_key": "..."}` — store the
+   returned key in n8n, never in git.
+4. Start n8n disposable: `N8N_USER_FOLDER=<tempdir>`
+   `N8N_HOST=127.0.0.1 N8N_PORT=5678`
+   `N8N_BLOCK_ENV_ACCESS_IN_NODE=false`
+   `MYCELIUM_N8N_KEY=<issued key> n8n start`.
+   No tunnel, no public exposure, no real credentials.
+5. Import: `n8n import:workflow
+   --input=n8n/workflow-a-schedule-morning-report.json`
+   (same for workflow-b). Execute once manually before
+   activating any schedule.
+6. Stop: Ctrl-C both processes; the temp user folder
+   and temp DBs are disposable. Nothing persists in
+   the repo (workflows carry no secrets).
+
+## Workflows (committed artifacts in `n8n/`)
+
+- Workflow A (`workflow-a-schedule-morning-report.json`):
+  daily 07:00 schedule → trigger `morning_report` with a
+  date-stable run_key (re-runs idempotent).
+- Workflow B (`workflow-b-outbox-notify.json`): every 5
+  minutes poll outbox → local log node as the test
+  notification (no external messaging, no credentials)
+  → ack loop (SplitInBatches, one by one). Empty outbox
+  ends at the IF node.
+- Both use `$env.MYCELIUM_N8N_KEY` for the
+  `X-Integration-Key` header and talk to
+  `http://127.0.0.1:8000` only. `tests/test_n8n_`
+  `workflows.py` pins these properties (parseable,
+  linked, localhost-only, secret-free, known jobs/
+  labels only).
 
 ## Architecture boundary
 

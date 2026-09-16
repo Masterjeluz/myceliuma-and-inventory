@@ -322,17 +322,28 @@ def _like_escape(text: str) -> str:
 
 
 def _record(status: str, envelope: IntegrationEnvelope,
-            detail: str = "", key_suffix: str = "") -> dict:
+            detail: str = "") -> dict:
+    """Append one ledger row. The first (received) row keeps
+    the bare idempotency key under the UNIQUE index; every
+    follow-up outcome carries a per-attempt suffix so
+    repeated duplicates never collide with each other."""
     from sqlite3 import IntegrityError
 
     from .database import chat_connection, init_chat_database
     init_chat_database()
+    event_id = generate_integration_id()
+    key = envelope.idempotency_key
+    if status != "received":
+        # Per-attempt suffix from the random tail of the new
+        # event id (never the timestamp head: same-millisecond
+        # attempts must not collide with each other).
+        key = f"{key}#{status}-{event_id[-8:]}"
     record = {
-        "event_id": generate_integration_id(),
+        "event_id": event_id,
         "integration_id": envelope.integration_id,
         "source": envelope.source,
         "external_event_id": envelope.external_event_id,
-        "idempotency_key": envelope.idempotency_key + key_suffix,
+        "idempotency_key": key,
         "event_type": envelope.event_type,
         "payload_hash": envelope.payload_hash,
         "status": status,
@@ -376,18 +387,14 @@ def ingest_envelope(raw: dict) -> dict:
                     "record": _record(
                         "duplicate", envelope,
                         f"already processed as "
-                        f"{prior['event_id']}",
-                        key_suffix=f"#duplicate-"
-                                   f"{prior['event_id'][:8]}")}
+                        f"{prior['event_id']}")}
         return {"outcome": "conflict",
                 "record": _record(
                     "conflict", envelope,
                     f"same idempotency key as "
                     f"{prior['event_id']} with a different "
                     f"payload; kept side by side, never "
-                    f"overwritten",
-                    key_suffix=f"#conflict-"
-                               f"{prior['event_id'][:8]}")}
+                    f"overwritten")}
     try:
         record = _record("received", envelope)
     except IntegrationRefusedError:
@@ -402,13 +409,9 @@ def ingest_envelope(raw: dict) -> dict:
     try:
         applied = _apply_to_domain(envelope)
     except (IntegrationRefusedError, ValueError) as error:
-        record = _record("rejected", envelope, str(error),
-                         key_suffix=f"#rejected-"
-                                    f"{record['event_id'][:8]}")
+        record = _record("rejected", envelope, str(error))
         return {"outcome": "rejected", "record": record}
-    accepted = _record("accepted", envelope, str(applied),
-                       key_suffix=f"#accepted-"
-                                  f"{record['event_id'][:8]}")
+    accepted = _record("accepted", envelope, str(applied))
     accepted["applied"] = applied
     return {"outcome": "accepted", "record": accepted}
 

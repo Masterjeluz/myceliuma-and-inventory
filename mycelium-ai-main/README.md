@@ -255,7 +255,7 @@ coordinator/app/nodes.py, routing.py, sim_nodes.py
 desktop_agent/   standalone lokale agent (poll, claim, voer uit, rapporteer)
 node_client/     lichte client voor seed/worker/core nodes (pull-only, token-optie)
 docs/            architectuurstatus, roadmap, principes, oorsprong
-tests/           931 tests (pytest -v)
+tests/           935 tests (pytest -v)
 ```
 
 Zie `docs/ARCHITECTURE_STATUS.md` (wat het systeem is),
@@ -271,7 +271,7 @@ Zie `docs/ARCHITECTURE_STATUS.md` (wat het systeem is),
 `docs/advanced-workshop.md`, `docs/cad.md`, `docs/fabrication.md`,
 `docs/robots.md`, `docs/drones.md`, `docs/digital-twin.md`,
 `docs/stabilization.md`, `docs/n8n-integration.md` en
-`docs/ROADMAP.md` (wat volgt). Teststatus: **931 passed**.
+`docs/ROADMAP.md` (wat volgt). Teststatus: **935 passed**.
 
 ## Bijdragen
 
