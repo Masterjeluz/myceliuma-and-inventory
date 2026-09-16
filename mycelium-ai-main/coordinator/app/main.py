@@ -5,7 +5,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from html import escape
 
-from fastapi import FastAPI, HTTPException, Request, Response
+from fastapi import FastAPI, Header, HTTPException, Request, Response
 from fastapi.responses import HTMLResponse, RedirectResponse
 
 from .adapter_contracts import AdapterProposal
@@ -333,7 +333,7 @@ from .routing import (
     requirements_from_payload,
     route_task,
 )
-from .schemas import AdviseRequest, AdviseResponse, AdvancedOpBody, CadDocumentBody, CadOpBody, CadPartBody, CampaignBody, CameraRegisterBody, CaptureCloseBody, CaptureOpenBody, ChatMissionBody, ChatRequest, ChatResponse, ClaimedTask, DecideApprovalBody, DesktopActionBody, DesktopClaimBody, DesktopDecisionBody, DesktopDispatchBody, DesktopResultBody,     DistEnvelopeBody, DroneCreateBody, DroneMissionApproveBody, DroneMissionBody,     FabGenerateBody, FabSliceBody, FamiliarCreateBody, FoodCreateBody, GarminImportBody, GitCommitBody, HealthMeasureBody, Heartbeat, InstagramImportBody,     InterfaceChatBody, InventoryWriteBody, JobRunBody, LiveContextBody, LiveProposeBody, LiveSessionBody, MealCreateBody, MealItemBody, MemoryConsolidateBody, MemoryCreateBody, MemoryRetrieveBody, MemoryVerifyBody,     MissionApproveBody, MissionCreateBody, MissionStepBody, NodeRegistration, NodeRotateBody, NotifyBody, OperatorBody, PhoneCameraBody,     PlanBody, PlanToProposalBody, PipelinePlanBody, PrintCancelBody, PrintProposeBody, PrinterRegisterBody, PrinterSelectBody, PromptEditBody, ResearchAdvanceBody, ResearchClaimBody, ResearchRecordBody, ResearchSourceBody, RobotActionBody, RobotApproveBody, RobotCreateBody, RobotSafetyBody, RobotTelemetryBody, SessionOpenBody,     StreamStartBody, SuggestStepsBody, SkillAcceptBody, SkillAdvanceBody, SkillCreateBody, SkillDiscoverBody, SkillEvidenceBody, SpoolCreateBody, SyncApplyBody, TaskAssignBody, TaskCreate, TaskFromProposalBody, TaskResult, TaskRouteBody,     TemplateMissionBody, TransformBody, TwinLinkBody, VisionAnalyzeBody, VisionProposeBody, VoiceApprovalRequestBody, VoiceApproveBody, VoiceChatBody, VoiceSynthesizeBody, VoiceTranscribeBody, WriteDecisionBody
+from .schemas import AdviseRequest, AdviseResponse, AdvancedOpBody, CadDocumentBody, CadOpBody, CadPartBody, CampaignBody, CameraRegisterBody, CaptureCloseBody, CaptureOpenBody, ChatMissionBody, ChatRequest, ChatResponse, ClaimedTask, DecideApprovalBody, DesktopActionBody, DesktopClaimBody, DesktopDecisionBody, DesktopDispatchBody, DesktopResultBody,     DistEnvelopeBody, DroneCreateBody, DroneMissionApproveBody, DroneMissionBody,     FabGenerateBody, FabSliceBody, FamiliarCreateBody, FoodCreateBody, GarminImportBody, GitCommitBody, HealthMeasureBody, Heartbeat, InstagramImportBody,     InterfaceChatBody, IntegrationEnvelopeBody, IntegrationKeyBody, IntegrationTriggerBody, InventoryWriteBody, JobRunBody, LiveContextBody, LiveProposeBody, LiveSessionBody, MealCreateBody, MealItemBody, MemoryConsolidateBody, MemoryCreateBody, MemoryRetrieveBody, MemoryVerifyBody,     MissionApproveBody, MissionCreateBody, MissionStepBody, NodeRegistration, NodeRotateBody,     NotifyBody, OperatorBody, OutboxAckBody, OutboxEnqueueBody, PhoneCameraBody,     PlanBody, PlanToProposalBody, PipelinePlanBody, PrintCancelBody, PrintProposeBody, PrinterRegisterBody, PrinterSelectBody, PromptEditBody, ResearchAdvanceBody, ResearchClaimBody, ResearchRecordBody, ResearchSourceBody, RobotActionBody, RobotApproveBody, RobotCreateBody, RobotSafetyBody, RobotTelemetryBody, SessionOpenBody,     StreamStartBody, SuggestStepsBody, SkillAcceptBody, SkillAdvanceBody, SkillCreateBody, SkillDiscoverBody, SkillEvidenceBody, SpoolCreateBody, SyncApplyBody, TaskAssignBody, TaskCreate, TaskFromProposalBody, TaskResult, TaskRouteBody,     TemplateMissionBody, TransformBody, TwinLinkBody, VisionAnalyzeBody, VisionProposeBody, VoiceApprovalRequestBody, VoiceApproveBody, VoiceChatBody, VoiceSynthesizeBody, VoiceTranscribeBody, WriteDecisionBody
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 logger = logging.getLogger("mycelium.coordinator")
@@ -4704,6 +4704,264 @@ def instagram_ingest(body: InstagramImportBody) -> dict:
             "duplicates": len(sources) - stored,
             "sources": [entry.model_dump(mode="json")
                         for entry in sources]}
+
+
+# =============================================================================
+# n8n INTEGRATION PLANE (BIG #17). External automation around
+# Mycelium — never the coordinator. Webhooks are observations,
+# never facts/approvals/execution. Mycelium never calls n8n;
+# delivery flows through a poll-model outbox with allow-listed
+# labels. Secrets never cross: n8n holds all external
+# credentials in its own store.
+# =============================================================================
+
+@app.get("/api/v1/integrations")
+def integrations_list() -> list[dict]:
+    """Public registry: sources, capabilities, statuses and
+    mock/live honesty. No secrets, no keys."""
+    from .n8n import list_specs as _list
+    return _list()
+
+
+@app.post("/api/v1/integrations/{integration_id}/keys",
+          status_code=201)
+def integration_issue_key(integration_id: str,
+                          body: IntegrationKeyBody) -> dict:
+    """Operator issues (or rotates) an integration bearer key.
+    Plaintext returns exactly once; only the hash is stored."""
+    from .n8n import IntegrationRefusedError as _Refused
+    from .n8n import issue_integration_key as _issue
+    try:
+        check_operator_key(body.operator_key)
+    except NodeAuthError:
+        raise HTTPException(
+            status_code=403,
+            detail="operator authorization rejected")
+    try:
+        token = _issue(integration_id,
+                       list(body.capabilities or []))
+    except _Refused as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    return {"integration_id": integration_id,
+            "key": token,
+            "warning": "store this key in n8n now; it is never "
+                       "shown again"}
+
+
+@app.post("/api/v1/integrations/events", status_code=201)
+def integrations_ingest(body: IntegrationEnvelopeBody,
+                        x_integration_key: str | None = Header(
+                            default=None)) -> dict:
+    """n8n webhook boundary: authenticated, capability-gated,
+    bounded, idempotent. A webhook is an observation/input —
+    never fact, never approval, never execution."""
+    from .n8n import IntegrationAuthError as _AuthRefused
+    from .n8n import IntegrationRefusedError as _Refused
+    from .n8n import ingest_envelope as _ingest
+    from .n8n import require_capability as _require
+    if not x_integration_key:
+        raise HTTPException(status_code=401,
+                            detail="integration key required")
+    try:
+        _require(body.integration_id, x_integration_key,
+                 "integration:ingest")
+    except _AuthRefused:
+        raise HTTPException(status_code=403,
+                            detail="integration credential "
+                                   "rejected")
+    try:
+        result = _ingest(body.model_dump(mode="json"))
+    except _Refused as error:
+        emit_event("integration.rejected",
+                   f"Integration {body.integration_id} "
+                   f"envelope refused",
+                   payload={"integration_id":
+                            body.integration_id,
+                            "external_event_id":
+                            body.external_event_id})
+        raise HTTPException(status_code=422, detail=str(error))
+    emit_event(f"integration.{result['outcome']}",
+               f"Integration {body.integration_id} "
+               f"{result['outcome']}: "
+               f"{body.external_event_id}",
+               payload={"integration_id": body.integration_id,
+                        "external_event_id":
+                        body.external_event_id})
+    return result
+
+
+@app.get("/api/v1/integrations/events")
+def integrations_events(
+        integration_id: str = "", status: str = "",
+        limit: int = 50,
+        x_integration_key: str | None = Header(default=None),
+        operator_key: str = "") -> list[dict]:
+    """Ingestion ledger: received/accepted/duplicate/
+    conflict/rejected/failed. Integration key with status
+    capability, or the operator key — never public."""
+    from .n8n import IntegrationAuthError as _AuthRefused
+    from .n8n import IntegrationRefusedError as _Refused
+    from .n8n import list_ingested as _list
+    from .n8n import require_capability as _require
+    allowed = False
+    if x_integration_key and integration_id:
+        try:
+            _require(integration_id, x_integration_key,
+                     "integration:status")
+            allowed = True
+        except _AuthRefused:
+            pass
+    if not allowed:
+        try:
+            check_operator_key(operator_key)
+            allowed = True
+        except NodeAuthError:
+            pass
+    if not allowed:
+        raise HTTPException(status_code=403,
+                            detail="integration credential "
+                                   "rejected")
+    try:
+        return _list(integration_id=integration_id,
+                     status=status, limit=limit)
+    except _Refused as error:
+        raise HTTPException(status_code=422, detail=str(error))
+
+
+@app.post("/api/v1/integrations/trigger", status_code=201)
+def integrations_trigger(
+        body: IntegrationTriggerBody,
+        x_integration_key: str | None = Header(default=None)
+        ) -> dict:
+    """n8n scheduler trigger: runs one KNOWN job by name.
+    n8n says which registered job runs — never what code
+    runs. Bounded, idempotent, recorded by jobs.run_job."""
+    from .n8n import IntegrationAuthError as _AuthRefused
+    from .n8n import IntegrationRefusedError as _Refused
+    from .n8n import require_capability as _require
+    from .n8n import trigger_job as _trigger
+    if not x_integration_key:
+        raise HTTPException(status_code=401,
+                            detail="integration key required")
+    try:
+        _require(body.integration_id, x_integration_key,
+                 "integration:trigger")
+    except _AuthRefused:
+        raise HTTPException(status_code=403,
+                            detail="integration credential "
+                                   "rejected")
+    try:
+        return _trigger(body.job_name, dict(body.params or {}),
+                        run_key=body.run_key)
+    except _Refused as error:
+        raise HTTPException(status_code=422, detail=str(error))
+
+
+@app.post("/api/v1/integrations/outbox", status_code=201)
+def integrations_outbox_enqueue(
+        body: OutboxEnqueueBody) -> dict:
+    """Queue one delivery label for n8n to poll. Operator
+    only; labels allow-listed per integration spec. No URLs,
+    no secrets, no callbacks — n8n decides the external how."""
+    from .n8n import IntegrationRefusedError as _Refused
+    from .n8n import enqueue_delivery as _enqueue
+    try:
+        check_operator_key(body.operator_key)
+    except NodeAuthError:
+        raise HTTPException(
+            status_code=403,
+            detail="operator authorization rejected")
+    try:
+        return _enqueue(body.target_label,
+                        dict(body.payload or {}),
+                        created_by="operator")
+    except _Refused as error:
+        raise HTTPException(status_code=422, detail=str(error))
+
+
+@app.get("/api/v1/integrations/outbox")
+def integrations_outbox_list(
+        status: str = "pending", limit: int = 50,
+        integration_id: str = "",
+        x_integration_key: str | None = Header(default=None)
+        ) -> list[dict]:
+    """n8n polls pending deliveries here, delivers externally,
+    then acks. Trigger capability required."""
+    from .n8n import IntegrationAuthError as _AuthRefused
+    from .n8n import IntegrationRefusedError as _Refused
+    from .n8n import list_outbox as _list
+    from .n8n import require_capability as _require
+    if not x_integration_key or not integration_id:
+        raise HTTPException(status_code=401,
+                            detail="integration key and id "
+                                   "required")
+    try:
+        _require(integration_id, x_integration_key,
+                 "integration:trigger")
+    except _AuthRefused:
+        raise HTTPException(status_code=403,
+                            detail="integration credential "
+                                   "rejected")
+    try:
+        return _list(status=status, limit=limit)
+    except _Refused as error:
+        raise HTTPException(status_code=422, detail=str(error))
+
+
+@app.post("/api/v1/integrations/outbox/{outbox_id}/ack")
+def integrations_outbox_ack(
+        outbox_id: str, body: OutboxAckBody,
+        x_integration_key: str | None = Header(default=None)
+        ) -> dict:
+    from .n8n import IntegrationAuthError as _AuthRefused
+    from .n8n import IntegrationRefusedError as _Refused
+    from .n8n import ack_outbox as _ack
+    from .n8n import require_capability as _require
+    if not x_integration_key:
+        raise HTTPException(status_code=401,
+                            detail="integration key required")
+    try:
+        _require(body.integration_id, x_integration_key,
+                 "integration:trigger")
+    except _AuthRefused:
+        raise HTTPException(status_code=403,
+                            detail="integration credential "
+                                   "rejected")
+    try:
+        return _ack(outbox_id, body.integration_id,
+                    failed=body.failed)
+    except _Refused as error:
+        raise HTTPException(status_code=404, detail=str(error))
+
+
+@app.get("/api/v1/integrations/garmin/readiness")
+def integrations_garmin_readiness() -> dict:
+    """Garmin readiness: UNAVAILABLE until official
+    credentials plus a reviewed live transport exist.
+    States exactly what is missing; mock stays for tests."""
+    from .n8n import get_spec as _spec
+    spec = _spec("garmin")
+    return {
+        "integration_id": "garmin",
+        "state": spec["status"],
+        "mock": spec["mock"],
+        "requirements": [
+            "user-owned official Garmin API access "
+            "(Garmin Health API with OAuth client credentials)",
+            "operator consent + data scope selection",
+            "reviewed live transport (loopback service, "
+            "bounded fetch, no scraping, no private APIs)",
+            "n8n credential entry holding the OAuth secret "
+            "(never in Mycelium)",
+            "mapping review for new Garmin sample types",
+        ],
+        "ready_path": "n8n → Garmin integration → "
+                      "POST /api/v1/integrations/events "
+                      "(health.measurements) → existing import "
+                      "pipeline",
+        "mock_path": "MockGarminProvider for tests and "
+                     "development; always labelled MOCK",
+    }
 
 
 @app.post("/api/v1/skills", status_code=201)

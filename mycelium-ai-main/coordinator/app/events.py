@@ -53,6 +53,11 @@ VALID_EVENT_TYPES = frozenset({
     "voice.transcribed",
     "print.started",
     "print.completed",
+    "integration.received",
+    "integration.accepted",
+    "integration.duplicate",
+    "integration.conflict",
+    "integration.rejected",
 })
 
 VALID_SEVERITIES = frozenset({"info", "approval_required",

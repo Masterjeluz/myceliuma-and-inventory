@@ -562,7 +562,44 @@ def init_chat_database() -> None:
             started_at TEXT NOT NULL,
             finished_at TEXT NOT NULL DEFAULT ''
         );
-            """)
+        CREATE TABLE IF NOT EXISTS integration_identities (
+            integration_id TEXT PRIMARY KEY,
+            key_hash TEXT NOT NULL DEFAULT '',
+            capabilities TEXT NOT NULL DEFAULT '[]',
+            enabled INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS integration_events (
+            event_id TEXT PRIMARY KEY,
+            integration_id TEXT NOT NULL DEFAULT '',
+            source TEXT NOT NULL DEFAULT '',
+            external_event_id TEXT NOT NULL DEFAULT '',
+            idempotency_key TEXT NOT NULL DEFAULT '',
+            event_type TEXT NOT NULL DEFAULT '',
+            payload_hash TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL DEFAULT 'received',
+            detail TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS
+            idx_integration_idem
+            ON integration_events(integration_id,
+                                  idempotency_key);
+        CREATE INDEX IF NOT EXISTS idx_integration_status
+            ON integration_events(integration_id, status);
+        CREATE TABLE IF NOT EXISTS integration_outbox (
+            outbox_id TEXT PRIMARY KEY,
+            target_label TEXT NOT NULL DEFAULT '',
+            payload TEXT NOT NULL DEFAULT '{}',
+            status TEXT NOT NULL DEFAULT 'pending',
+            created_by TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL,
+            acked_at TEXT NOT NULL DEFAULT '',
+            acked_by TEXT NOT NULL DEFAULT ''
+        );
+        CREATE INDEX IF NOT EXISTS idx_outbox_status
+            ON integration_outbox(status, created_at);
+        """)
 
 
 def dump(value: object) -> str:

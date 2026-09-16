@@ -899,3 +899,47 @@ class JobRunBody(BaseModel):
     job_name: str = Field(min_length=1, max_length=40)
     params: dict[str, Any] = Field(default_factory=dict)
     run_key: str = Field(default="", max_length=80)
+
+
+class IntegrationKeyBody(BaseModel):
+    """Issue (or rotate) an integration bearer key. Operator
+    only; the plaintext returns exactly once."""
+
+    operator_key: str = Field(default="", max_length=256)
+    capabilities: list[str] = Field(default_factory=list,
+                                    max_length=10)
+
+
+class IntegrationEnvelopeBody(BaseModel):
+    """One inbound n8n envelope. Observation/input only:
+    never fact, never approval, never execution."""
+
+    integration_id: str = Field(min_length=1, max_length=80)
+    source: str = Field(min_length=1, max_length=40)
+    external_event_id: str = Field(min_length=1, max_length=200)
+    event_type: str = Field(min_length=1, max_length=40)
+    occurred_at: str = Field(min_length=1, max_length=80)
+    received_at: str = Field(default="", max_length=80)
+    payload: dict[str, Any] = Field(default_factory=dict)
+    payload_hash: str = Field(default="", max_length=80)
+    provenance: dict[str, Any] = Field(default_factory=dict)
+    schema_version: str = Field(default="1", max_length=10)
+    idempotency_key: str = Field(min_length=1, max_length=200)
+
+
+class IntegrationTriggerBody(BaseModel):
+    integration_id: str = Field(min_length=1, max_length=80)
+    job_name: str = Field(min_length=1, max_length=40)
+    params: dict[str, Any] = Field(default_factory=dict)
+    run_key: str = Field(default="", max_length=80)
+
+
+class OutboxEnqueueBody(BaseModel):
+    target_label: str = Field(min_length=1, max_length=40)
+    payload: dict[str, Any] = Field(default_factory=dict)
+    operator_key: str = Field(default="", max_length=256)
+
+
+class OutboxAckBody(BaseModel):
+    integration_id: str = Field(min_length=1, max_length=80)
+    failed: bool = False

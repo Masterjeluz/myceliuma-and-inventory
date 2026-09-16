@@ -232,6 +232,27 @@ gehard als voorwaarde voor elke echte LIVE-integratie.
   perf-sanity — DONE
 - Testbasis: 920 Mycelium-tests — DONE
 
+## PHASE K — INTEGRATION PLANE (DONE als BIG #17)
+
+Zie `docs/n8n-integration.md`. n8n als externe
+automation-laag rondom Mycelium — nooit de coordinator.
+
+- Integration contract (envelop, validatie, provenance) — DONE
+- Eigen integration-auth (bearer keys, hash-only,
+  capabilities, operator-uitgifte) — DONE
+- Idempotente ingestie (UNIQUE-ledger, duplicate/conflict,
+  race-convergentie) — DONE
+- Webhook-boundary (observation-only, bounded, getest) — DONE
+- Outbox poll-model (allow-listed labels, geen callbacks,
+  geen URL-forwarding) — DONE
+- Scheduler-trigger (alleen bekende jobs) — DONE
+- Secret boundary (credentials blijven in n8n) — DONE
+- Garmin readiness (UNAVAILABLE + requirements, mock
+  behouden) — DONE
+- Testbasis: 931 Mycelium-tests — DONE
+- Echte n8n-workflows, echte Garmin-OAuth, live externe
+  integraties — FUTURE (pas met officiële toegang)
+
 ## Expliciet niet op de kaart
 
 Autonome ongelimiteerde computerbediening, credential-automatisering,
