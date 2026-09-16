@@ -70,6 +70,9 @@ class ExecutorDeps:
     default_steps: list[dict] = field(default_factory=list)
     run_write: Callable[[Any, Any], Awaitable[dict]] | None = None
     observe_camera: Callable[[Any, Any], Awaitable[dict]] | None = None
+    fabricate_runner: Callable[[Any, Any], Awaitable[dict]] | None = None
+    slice_runner: Callable[[Any, Any], Awaitable[dict]] | None = None
+    print_runner: Callable[[Any, Any], Awaitable[dict]] | None = None
 
 
 class ExecutorError(RuntimeError):
@@ -303,6 +306,16 @@ class MissionExecutor:
             return await self._run_write(mission, step)
         if step.kind == "camera_observe":
             return await self._run_camera_observe(mission, step)
+        if step.kind == "fabricate":
+            return await self._run_delegated(
+                mission, step, "fabricate_runner",
+                "fabricage-stap")
+        if step.kind == "slice":
+            return await self._run_delegated(
+                mission, step, "slice_runner", "slice-stap")
+        if step.kind == "physical_print":
+            return await self._run_delegated(
+                mission, step, "print_runner", "print-stap")
         return self._block_step(
             mission, step, f"Onbekend stap-type '{step.kind}'")
 
@@ -662,6 +675,80 @@ class MissionExecutor:
         return self._block_step(
             mission, step,
             f"Observatie via {device_id} geblokkeerd: {detail[:500]}")
+
+    async def _run_delegated(self, mission: Mission,
+                             step: MissionStep, dep_name: str,
+                             label: str) -> Mission:
+        """Run a fabricate/slice/physical_print step through its
+        injected capability. Without wiring the step BLOCKs; the
+        executor never generates, slices or prints itself. Outcome
+        dict: {status, result_text, verification, verified}."""
+        runner = getattr(self.deps, dep_name, None)
+        if runner is None:
+            return self._block_step(
+                mission, step,
+                f"{label} geblokkeerd: geen capability gekoppeld. "
+                "Uitvoering loopt alleen via expliciete, "
+                "geconfigureerde runners.")
+        try:
+            outcome = await runner(mission, step)
+        except ExecutorError as error:
+            return self._block_step(mission, step, str(error))
+        except Exception as error:
+            return self._block_step(
+                mission, step, f"{label} mislukt: {error}")
+        if not isinstance(outcome, dict):
+            return self._block_step(
+                mission, step, f"{label} gaf onleesbaar resultaat; "
+                "scope gebroken")
+        status = str(outcome.get("status", "blocked"))
+        result_text = str(outcome.get("result_text", ""))[:4000]
+        verification = str(outcome.get("verification", ""))[:1000]
+        verified = outcome.get("verified") is True
+        if status == "completed" and verified:
+            mission = set_step(
+                mission, step.step_id, status="completed",
+                result_text=f"{result_text}\nVerificatie: "
+                            f"{verification}",
+                completed_at=_now())
+            save_mission(mission)
+            save_event(new_event(
+                mission.conversation_id, "verification_passed",
+                f"Stap {step.sequence + 1}: {label} voltooid en "
+                "geverifieerd.",
+                mission_id=mission.mission_id, step_id=step.step_id))
+            save_event(new_event(
+                mission.conversation_id, "step_completed",
+                f"Stap {step.sequence + 1} voltooid ({step.kind}).",
+                mission_id=mission.mission_id, step_id=step.step_id))
+            return mission
+        if status == "completed":
+            shown = (verification or
+                     "niet geverifieerd — geen FACT-promotie")
+            mission = set_step(
+                mission, step.step_id, status="completed",
+                result_text=f"{result_text}\nVerificatie NIET "
+                            f"geslaagd ({shown}) — geen FACT-promotie.",
+                completed_at=_now())
+            save_mission(mission)
+            save_event(new_event(
+                mission.conversation_id, "verification_failed",
+                f"Stap {step.sequence + 1}: {label} uitgevoerd "
+                "maar NIET geverifieerd.",
+                mission_id=mission.mission_id, step_id=step.step_id))
+            save_event(new_event(
+                mission.conversation_id, "step_completed",
+                f"Stap {step.sequence + 1} voltooid ({step.kind}, "
+                "niet geverifieerd).",
+                mission_id=mission.mission_id, step_id=step.step_id))
+            return mission
+        if status == "failed":
+            return self._fail_step(
+                mission, step,
+                f"{label} faalde: {result_text[:500]}")
+        return self._block_step(
+            mission, step,
+            f"{label} geblokkeerd: {result_text[:500]}")
 
     def _advance(self, mission: Mission, step: MissionStep) -> Mission:
         updated = mission.model_copy(

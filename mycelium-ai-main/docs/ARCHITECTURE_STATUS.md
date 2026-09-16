@@ -1,4 +1,4 @@
-# Architecture Status (september 2026, na BIG #6)
+# Architecture Status (september 2026, na BIG #7)
 
 Momentopname van wat het systeem IS. Voor flows, zie
 `chat-agent-architecture.md`; voor richting, zie `ROADMAP.md`.
@@ -72,6 +72,11 @@ Momentopname van wat het systeem IS. Voor flows, zie
 | Vision→proposal→verificatie | `vision_flow.py` | DONE (geen uitvoeringspad) |
 | File controlled writes | `inventory_writes.py` | DONE (file create/update; object/project/idea/relatie intact) |
 | Camera-missiestap | `missions.py`, `mission_executor.py` | DONE (`camera_observe`) |
+| 3D-generatie + mesh-validatie | `mesh3d.py` | DONE (test-kubus, STL/OBJ, geen CAD-deps) |
+| Slicer + G-code-safety | `slicer3d.py` | DONE (test-slicer, geen safe_to_execute) |
+| Printer-devices + executie | `printer3d.py`, `fab_flow.py` | DONE (simulated/unavailable, fysieke YES) |
+| Print-verificatie (twee helften) | `fab_flow.py`, `verification.py` | DONE (telemetrie + camera) |
+| Fabricage-missiestappen | `missions.py`, `mission_executor.py` | DONE (fabricate/slice/physical_print) |
 | Wereldgrafiek | `worldgraph.py` | DONE (projectie) |
 | Project-/git-context (read-only) | `project_context.py`, `git_context.py` | DONE |
 | Controlled writes (generiek) | `controlled_writes.py` | DONE |
@@ -89,8 +94,8 @@ Momentopname van wat het systeem IS. Voor flows, zie
 
 ## Teststatus (gemeten, niet geschat)
 
-- Mycelium: **696 passed** (`pytest -v` in `mycelium-ai-main/`)
-  (629 vóór BIG #6 + 67 nieuwe vision-tests; camera-ctypes geeft
+- Mycelium: **745 passed** (`pytest -v` in `mycelium-ai-main/`)
+  (696 vóór BIG #7 + 49 nieuwe fabricage-tests; camera-ctypes geeft
   dezelfde pre-existing access-violation-meldingen als altijd)
 - INVENTory: **178 passed, 1 failed** — de faal is pre-existing:
   `test_real_inventory_db_untouched` pint de exacte byte-grootte van

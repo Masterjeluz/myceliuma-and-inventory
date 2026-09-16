@@ -44,11 +44,16 @@ REJECT_TEXT = "NO"
 
 #: Closed set of mutation types. Domains add executors for these;
 #: nothing outside this set can be proposed, approved or executed.
+#: ``printer.execute`` (BIG #7) reuses the exact-YES/fingerprint/
+#: staleness machinery for physical execution: it is a second,
+#: explicit approval on top of any mission/plan approval — a plan
+#: YES never means "start the machine".
 VALID_MUTATION_TYPES = frozenset({
     "inventory.create",
     "inventory.update",
     "inventory.create_relationship",
     "git.commit",
+    "printer.execute",
 })
 
 MUTATION_CAPABILITIES = {
@@ -56,6 +61,7 @@ MUTATION_CAPABILITIES = {
     "inventory.update": "inventory.write.update",
     "inventory.create_relationship": "inventory.write.relate",
     "git.commit": "git.write.commit",
+    "printer.execute": "printer.execute",
 }
 
 #: A proposal authorizes execution for at most one hour afterwards.

@@ -40,6 +40,9 @@ VALID_METHODS = frozenset({
     "inventory.readback",
     "inventory.graph_readback",
     "git.readback",
+    "camera.readback",
+    "print.telemetry_readback",
+    "print.camera_readback",
 })
 
 

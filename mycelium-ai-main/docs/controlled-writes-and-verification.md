@@ -142,6 +142,21 @@ apart vision-schrijfpad. File-media registreert via
 (`camera.readback`) bevestigt het capture-record, nooit de
 afgebeelde identiteit. Zie `docs/vision-architecture.md`.
 
+## Fysieke keten (BIG #7)
+
+Print-voorstellen (`POST /api/v1/prints/propose`,
+mutatietype `printer.execute`, capability `printer.execute`)
+landen in dezelfde store en volgen dezelfde approve/execute/
+verify-routes — met één verschil: de YES hier is de TWEEDE,
+expliciete fysieke approval (missie/plan-YES start de machine
+nooit). Uitvoering eist binding + fingerprint + ongewijzigde
+G-code-hash + safety ≠ unsafe + allow-list-profile + adapter
+met `printer.start`. Bestaande `/verify` dekt telemetrie
+(methode `print.telemetry_readback`);
+`/writes/{id}/verify-print` combineert met camera
+(methode `print.camera_readback`) — verified alleen als beide
+passen. Zie `docs/3d-architecture.md`.
+
 ## Security-regels (getest in `test_write_security.py`)
 
 Geen shell/RCE · geen SQL · geen directe DB-writes (alleen

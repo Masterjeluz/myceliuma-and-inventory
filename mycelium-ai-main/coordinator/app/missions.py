@@ -28,7 +28,13 @@ fingerprint revalidation, then records result + independent
 verification — never automatic, never a bypass), camera_observe
 (one bound camera device: captures through the injected observe
 capability into a stored observation; metadata result only,
-never pixels, never an automatic write).
+never pixels, never an automatic write), fabricate (one bounded
+test-geometry generation + validation through the injected
+fabricate capability; artifact metadata only), slice (one
+bounded slicing run through the injected slice capability;
+G-code metadata only), physical_print (one bound print
+proposal: executes only with its own exact human YES plus
+full revalidation — mission YES never starts the machine).
 
 Rules (tested, all fail-closed):
 
@@ -73,9 +79,11 @@ TERMINAL_MISSION_STATUSES = frozenset(
     {"completed", "failed", "cancelled", "blocked"})
 
 StepKind = Literal["readout", "desktop", "analysis", "proposal",
-                   "write", "camera_observe"]
+                   "write", "camera_observe", "fabricate", "slice",
+                   "physical_print"]
 VALID_STEP_KINDS = frozenset({"readout", "desktop", "analysis",
-                              "proposal", "write", "camera_observe"})
+                              "proposal", "write", "camera_observe",
+                              "fabricate", "slice", "physical_print"})
 
 StepStatus = Literal[
     "pending", "waiting_approval", "dispatched", "completed",
@@ -101,6 +109,8 @@ VALID_EVENT_TYPES = frozenset({
     "write_proposed", "write_approved", "write_executed",
     "write_result", "verification_started", "verification_passed",
     "verification_failed", "camera_observed", "vision_analyzed",
+    "print_started", "print_completed", "print_failed",
+    "print_cancelled",
 })
 
 MAX_STEPS = 20
@@ -248,6 +258,52 @@ def _check_step_definition(index: int, data: dict) -> MissionStep:
                 raise ValueError(
                     f"Step {index}: camera_observe steps carry only "
                     f"device_id; unexpected: {sorted(unknown)}")
+        elif kind == "fabricate":
+            description = parameters.get("description", "")
+            if (not isinstance(description, str)
+                    or not description.strip()
+                    or len(description) > 500):
+                raise ValueError(
+                    f"Step {index}: fabricate steps need a description "
+                    "(1..500 chars)")
+            method = str(parameters.get("method",
+                                        "procedural-test"))
+            if method != "procedural-test":
+                raise ValueError(
+                    f"Step {index}: unknown fabrication method "
+                    f"'{method}'")
+            unknown = set(parameters) - {"description", "method"}
+            if unknown:
+                raise ValueError(
+                    f"Step {index}: fabricate steps carry only "
+                    f"description/method; unexpected: {sorted(unknown)}")
+        elif kind == "slice":
+            for field in ("artifact_ref", "profile", "printer_id"):
+                value = parameters.get(field, "")
+                if (not isinstance(value, str) or not value.strip()
+                        or len(value) > 200):
+                    raise ValueError(
+                        f"Step {index}: slice steps need '{field}' "
+                        "(non-empty text)")
+            unknown = set(parameters) - {"artifact_ref", "profile",
+                                         "printer_id"}
+            if unknown:
+                raise ValueError(
+                    f"Step {index}: slice steps carry only "
+                    f"artifact_ref/profile/printer_id; unexpected: "
+                    f"{sorted(unknown)}")
+        elif kind == "physical_print":
+            proposal_id = parameters.get("proposal_id", "")
+            if (not isinstance(proposal_id, str)
+                    or not 3 <= len(proposal_id) <= 80):
+                raise ValueError(
+                    f"Step {index}: physical_print steps bind to one "
+                    "print proposal_id (3..80 chars)")
+            unknown = set(parameters) - {"proposal_id"}
+            if unknown:
+                raise ValueError(
+                    f"Step {index}: physical_print steps carry only "
+                    f"proposal_id; unexpected: {sorted(unknown)}")
         elif kind == "readout":
             source = str(parameters.get("source", ""))
             if source not in READOUT_SOURCES:

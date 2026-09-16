@@ -292,3 +292,55 @@ class StreamStartBody(BaseModel):
     device_id: str = Field(min_length=3, max_length=80)
     max_frames: int = Field(default=100, ge=1, le=10000)
     max_seconds: int = Field(default=300, ge=1, le=3600)
+
+
+class FabGenerateBody(BaseModel):
+    """One bounded 3D generation run (BIG #7). Test-only geometry."""
+
+    description: str = Field(min_length=1, max_length=500)
+    generator: str = Field(default="procedural-test", min_length=1,
+                           max_length=40)
+    source_object_id: str = Field(default="", max_length=100)
+    source_idea_id: str = Field(default="", max_length=100)
+
+
+class FabSliceBody(BaseModel):
+    """One bounded slicing run over a validated mesh (BIG #7)."""
+
+    artifact_ref: str = Field(min_length=1, max_length=200)
+    profile: str = Field(min_length=1, max_length=40)
+    printer_id: str = Field(min_length=3, max_length=80)
+    slicer: str = Field(default="test-slicer", min_length=1,
+                        max_length=40)
+
+
+class PrinterRegisterBody(BaseModel):
+    """One printer device registration (BIG #7). Execution
+    authority stays with the coordinator; no motion here."""
+
+    printer_id: str | None = Field(default=None, min_length=3,
+                                   max_length=80)
+    name: str = Field(min_length=1, max_length=120)
+    capabilities: list[str] = Field(default_factory=list,
+                                    max_length=10)
+    inventory_hardware_id: str = Field(default="", max_length=100)
+    notes: str = Field(default="", max_length=500)
+
+
+class PrintProposeBody(BaseModel):
+    """One inert physical-execution proposal (BIG #7). The second,
+    explicit approval: mission YES never starts the machine."""
+
+    proposal_id: str | None = Field(default=None, min_length=3,
+                                    max_length=80)
+    job_id: str | None = Field(default=None, min_length=3,
+                               max_length=80)
+    printer_id: str = Field(min_length=3, max_length=80)
+    gcode_ref: str = Field(min_length=1, max_length=200)
+    gcode_sha256: str = Field(min_length=64, max_length=64)
+    profile: str = Field(min_length=1, max_length=40)
+    actor: str = Field(default="mycelium", min_length=1, max_length=80)
+
+
+class PrintCancelBody(BaseModel):
+    job_id: str = Field(min_length=3, max_length=80)

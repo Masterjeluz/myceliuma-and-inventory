@@ -58,7 +58,8 @@ def _inventory_edge(edge) -> dict:
 async def build_world_graph(reader, entity_id: str, depth: int = 1, *,
                             include_missions: bool = False,
                             agent_nodes: list[dict] | None = None,
-                            observations: list[dict] | None = None
+                            observations: list[dict] | None = None,
+                            fabrication: list[dict] | None = None
                             ) -> dict:
     """Project inventory graph + optional Mycelium overlay."""
     if isinstance(depth, bool) or depth not in GRAPH_DEPTHS:
@@ -80,6 +81,8 @@ async def build_world_graph(reader, entity_id: str, depth: int = 1, *,
         _overlay_missions(nodes, edges)
     if observations:
         _overlay_observations(nodes, edges, observations)
+    if fabrication:
+        _overlay_fabrication(nodes, edges, fabrication)
     for agent in (agent_nodes or [])[:50]:
         node_id = str(agent.get("node_id", ""))
         if not node_id or node_id in nodes:
@@ -131,6 +134,14 @@ def _overlay_missions(nodes: dict, edges: list) -> None:
 
 
 MAX_OBSERVATION_NODES = 20
+MAX_FABRICATION_NODES = 20
+
+#: Fabrication edge predicates. Closed: only derivation and
+#: execution links the flow actually records.
+FABRICATION_PREDICATES = frozenset({
+    "derived_from", "sliced_to", "executed_as", "produced",
+    "observed_by",
+})
 
 
 def _overlay_observations(nodes: dict, edges: list,
@@ -192,6 +203,55 @@ def _overlay_observations(nodes: dict, edges: list,
                 "to": describes,
                 "provenance": {"source_type": "ai-generated",
                                "creator_id": "vision-flow",
+                               "human_verified": False},
+            })
+        if len(nodes) >= MAX_NODES:
+            return
+
+
+def _overlay_fabrication(nodes: dict, edges: list,
+                         artifacts: list[dict]) -> None:
+    """Fabrication chain as Mycelium-owned overlay nodes.
+
+    Artifact nodes (mesh/gcode files, print jobs, physical
+    instances) link with closed predicates (derived_from,
+    sliced_to, executed_as, produced, observed_by). Links only
+    attach to nodes already present or added here — never a
+    graph dump, never a second truth store.
+    """
+    for item in list(artifacts or [])[:MAX_FABRICATION_NODES]:
+        if not isinstance(item, dict):
+            continue
+        node_id = str(item.get("id", ""))
+        kind = str(item.get("kind", "artifact"))
+        if not node_id or node_id in nodes:
+            continue
+        nodes[node_id] = {
+            "id": node_id,
+            "type": kind,
+            "label": str(item.get("label", node_id))[:120],
+            "source": "mycelium",
+            "metadata": {
+                "status": str(item.get("status", ""))[:40],
+                "sha256": str(item.get("sha256", ""))[:64],
+            },
+        }
+        for link in list(item.get("links", []))[:10]:
+            if not isinstance(link, dict):
+                continue
+            predicate = str(link.get("predicate", ""))
+            target = str(link.get("to", ""))
+            if (predicate not in FABRICATION_PREDICATES
+                    or not target or target not in nodes):
+                continue
+            if len(edges) >= MAX_EDGES:
+                return
+            edges.append({
+                "from": node_id,
+                "predicate": predicate,
+                "to": target,
+                "provenance": {"source_type": "ai-generated",
+                               "creator_id": "fabrication-flow",
                                "human_verified": False},
             })
         if len(nodes) >= MAX_NODES:

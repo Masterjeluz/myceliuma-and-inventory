@@ -28,6 +28,32 @@ from .controlled_writes import (
     request_write_approval,
     write_fingerprint,
 )
+from .fab_flow import (
+    FabricationRecord,
+    PrintFailedError,
+    PrintRefusedError,
+    execute_print,
+    list_fabrications,
+    load_fabrication,
+    new_fabrication,
+    new_telemetry_request,
+    print_verdict,
+    propose_print,
+    record_event,
+    save_fabrication,
+    verify_print_camera,
+    verify_print_telemetry,
+)
+from .mesh3d import (
+    MeshRefusedError,
+    MeshUnavailable,
+    assess_printability,
+    check_artifact_ref,
+    file_payload_for_mesh,
+    get_generator,
+    read_artifact_bytes,
+    validate_mesh,
+)
 from .git_commit import (
     GitWriteFailedError,
     GitWriteRefusedError,
@@ -45,6 +71,28 @@ from .inventory_writes import (
 from .project_package import (
     assemble_project_package,
     summarize_for_chat,
+)
+from .printer3d import (
+    PrinterRefusedError as PrinterDeviceRefusedError,
+    PrinterUnavailable,
+    adapter_capabilities as printer_capabilities,
+    adapter_for_printer,
+    get_printer,
+    list_printers,
+    list_stored_printers,
+    load_printer,
+    new_job,
+    new_printer,
+    register_printer,
+    save_printer,
+)
+from .slicer3d import (
+    SlicerRefusedError,
+    SlicerUnavailable,
+    check_slicer_request,
+    file_payload_for_gcode,
+    get_slicer,
+    validate_gcode,
 )
 from .verification import (
     VerificationRequest,
@@ -135,7 +183,7 @@ from .ollama_advisor import (
     OllamaRefusedError,
     OllamaUnavailable,
 )
-from .schemas import AdviseRequest, AdviseResponse, CameraRegisterBody, ChatMissionBody, ChatRequest, ChatResponse, ClaimedTask, DecideApprovalBody, DesktopActionBody, DesktopClaimBody, DesktopDecisionBody, DesktopDispatchBody, DesktopResultBody, GitCommitBody, Heartbeat, InventoryWriteBody, MissionApproveBody, MissionCreateBody, MissionStepBody, NodeRegistration, PlanBody, PlanToProposalBody, StreamStartBody, SuggestStepsBody, TaskCreate, TaskFromProposalBody, TaskResult, TemplateMissionBody, VisionAnalyzeBody, VisionProposeBody, WriteDecisionBody
+from .schemas import AdviseRequest, AdviseResponse, CameraRegisterBody, ChatMissionBody, ChatRequest, ChatResponse, ClaimedTask, DecideApprovalBody, DesktopActionBody, DesktopClaimBody, DesktopDecisionBody, DesktopDispatchBody, DesktopResultBody, FabGenerateBody, FabSliceBody, GitCommitBody, Heartbeat, InventoryWriteBody, MissionApproveBody, MissionCreateBody, MissionStepBody, NodeRegistration, PlanBody, PlanToProposalBody, PrintCancelBody, PrintProposeBody, PrinterRegisterBody, StreamStartBody, SuggestStepsBody, TaskCreate, TaskFromProposalBody, TaskResult, TemplateMissionBody, VisionAnalyzeBody, VisionProposeBody, WriteDecisionBody
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 logger = logging.getLogger("mycelium.coordinator")
@@ -1185,6 +1233,129 @@ def _executor() -> MissionExecutor:
         except HTTPException:
             return None
 
+    async def _fabricate_runner(mission, step) -> dict:
+        description = str(step.parameters.get("description", ""))
+        method = str(step.parameters.get("method",
+                                        "procedural-test"))
+        try:
+            generator = get_generator(method)
+        except MeshRefusedError as error:
+            raise ExecutorError(str(error)) from error
+        try:
+            generated = generator.generate(description, {})
+        except MeshUnavailable as error:
+            raise ExecutorError(str(error)) from error
+        report = validate_mesh(generated.artifact_ref)
+        assessment = assess_printability(report)
+        fabrication = new_fabrication()
+        fabrication = fabrication.model_copy(update={
+            "mesh_ref": generated.artifact_ref,
+            "mesh_sha256": generated.sha256,
+            "mesh_validation": report.verdict,
+            "status": "mesh_validated"})
+        fabrication = record_event(
+            fabrication, "mission_generate",
+            f"missie {mission.mission_id}: {generated.artifact_ref} "
+            f"({report.verdict})")
+        save_fabrication(fabrication)
+        return {"status": "completed",
+                "result_text": (
+                    f"Mesh {generated.artifact_ref} "
+                    f"({report.verdict}, {report.faces} faces, "
+                    f"printability {assessment.verdict}; "
+                    "metadata alleen, geen release)."),
+                "verification": (f"validatie: {report.verdict}; "
+                                 "generatie is nooit verificatie"),
+                "verified": False}
+
+    async def _slice_runner(mission, step) -> dict:
+        try:
+            request = check_slicer_request(
+                str(step.parameters.get("artifact_ref", "")),
+                str(step.parameters.get("profile", "")),
+                str(step.parameters.get("printer_id", "")))
+        except (SlicerRefusedError, MeshRefusedError,
+                ValueError) as error:
+            raise ExecutorError(str(error)) from error
+        try:
+            slicer = get_slicer("test-slicer")
+        except SlicerRefusedError as error:
+            raise ExecutorError(str(error)) from error
+        try:
+            result = slicer.slice(request)
+        except SlicerUnavailable as error:
+            raise ExecutorError(str(error)) from error
+        safety = validate_gcode(result.gcode_ref)
+        return {"status": "completed",
+                "result_text": (
+                    f"G-code {result.gcode_ref} "
+                    f"({result.line_count} regels, safety "
+                    f"{safety.verdict}; test-artefact, geen release)."),
+                "verification": (f"safety: {safety.verdict}; "
+                                 "assessment is geen toestemming"),
+                "verified": False}
+
+    async def _print_runner(mission, step) -> dict:
+        from .missions import new_event as _new_event
+        from .missions import save_event as _save_event
+        proposal_id = str(step.parameters.get("proposal_id", ""))
+        record = _write_load(proposal_id)
+        if record is None:
+            raise ExecutorError(
+                f"Print '{proposal_id}' unknown; physical steps need "
+                "a stored, approved print proposal")
+        if record["status"] != "approved" or not record["approval"]:
+            return {"status": "blocked",
+                    "result_text": (
+                        f"Print '{proposal_id}' is {record['status']}; "
+                        "expliciete fysieke YES vereist — missie-"
+                        "goedkeuring start de machine nooit."),
+                    "verification": "no approval; no verification",
+                    "verified": False}
+        _save_event(_new_event(
+            mission.conversation_id, "print_started",
+            f"Print {proposal_id} gestart na fysieke approval.",
+            mission_id=mission.mission_id, step_id=step.step_id,
+            metadata={"proposal_id": proposal_id}))
+        try:
+            result = await _write_execute_record(record)
+        except (PrintRefusedError, PrinterDeviceRefusedError,
+                ValueError) as error:
+            raise ExecutorError(str(error)) from error
+        proposal = WriteProposal.model_validate(record["record"])
+        approval = WriteApproval.model_validate(record["approval"])
+        status = ("executed" if result.outcome == "executed"
+                  else result.outcome)
+        _write_save(proposal, status, approval=approval,
+                    result=result)
+        if result.outcome != "executed":
+            _save_event(_new_event(
+                mission.conversation_id, "print_failed",
+                f"Print {proposal_id} {result.outcome}: "
+                f"{result.error[:300]}",
+                mission_id=mission.mission_id, step_id=step.step_id,
+                metadata={"proposal_id": proposal_id}))
+            return {"status": result.outcome,
+                    "result_text": (
+                        f"Print '{proposal_id}' {result.outcome}: "
+                        f"{result.error[:500]}"),
+                    "verification": "no execution; no verification",
+                    "verified": False}
+        _save_event(_new_event(
+            mission.conversation_id, "print_completed",
+            f"Print {proposal_id} uitgevoerd (telemetrie); "
+            "fysieke verificatie nog open.",
+            mission_id=mission.mission_id, step_id=step.step_id,
+            metadata={"proposal_id": proposal_id}))
+        return {"status": "completed",
+                "result_text": (
+                    f"Print '{proposal_id}' uitgevoerd "
+                    f"(job {result.after.get('print_result', {}).get('job_id', '?')}); "
+                    "telemetrie alleen — camera-verificatie nog open."),
+                "verification": ("telemetrie ≠ verificatie; "
+                                 "niet geverifieerd"),
+                "verified": False}
+
     def _post_message(conversation_id: str, role: str, content: str,
                       sources: list) -> str:
         message = new_message(conversation_id, role, content,
@@ -1205,6 +1376,9 @@ def _executor() -> MissionExecutor:
         project_read=_project_read,
         run_write=_run_write_step,
         observe_camera=_observe_camera,
+        fabricate_runner=_fabricate_runner,
+        slice_runner=_slice_runner,
+        print_runner=_print_runner,
     ))
 
 
@@ -1759,13 +1933,365 @@ def streams_list() -> list[dict]:
 
 
 # =============================================================================
+# FABRICATION — 3D + SLICING + PHYSICAL EXECUTION (BIG #7).
+# Digital object to physical object through the same gates as
+# everything else: proposal -> exact-YES approval (physical
+# approval is a second, explicit YES) -> revalidated execution
+# -> telemetry result -> observation -> two-half verification.
+# No motion without the physical YES; telemetry never verifies
+# the object; software cancel is documented as NOT e-stop.
+# =============================================================================
+
+def _fab_record_or_404(fabrication_id: str) -> FabricationRecord:
+    record = load_fabrication(fabrication_id)
+    if record is None:
+        raise HTTPException(404, "Fabrication not found")
+    return record
+
+
+@app.post("/api/v1/fab/generate", status_code=201)
+def fab_generate(body: FabGenerateBody) -> dict:
+    """Bounded 3D generation: deterministic test geometry only,
+    validated immediately, printability assessed, all recorded.
+    The bytes are never valid/printable/safe by themselves."""
+    try:
+        fabrication = new_fabrication(
+            source_object_id=body.source_object_id,
+            source_idea_id=body.source_idea_id)
+    except PrintRefusedError as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    try:
+        generator = get_generator(body.generator)
+    except MeshRefusedError as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    try:
+        generated = generator.generate(body.description, {})
+    except MeshUnavailable as error:
+        raise HTTPException(status_code=409, detail=str(error))
+    report = validate_mesh(generated.artifact_ref)
+    assessment = assess_printability(report)
+    fabrication = fabrication.model_copy(update={
+        "mesh_ref": generated.artifact_ref,
+        "mesh_sha256": generated.sha256,
+        "mesh_validation": report.verdict,
+        "status": "mesh_validated" if report.verdict == "valid"
+                  else "mesh_" + report.verdict})
+    fabrication = record_event(
+        fabrication, "generated",
+        f"{generated.generator} -> {generated.artifact_ref} "
+        f"({report.verdict}, {report.faces} faces)")
+    save_fabrication(fabrication)
+    logger.info("fab_generated fabrication_id=%s verdict=%s",
+                fabrication.fabrication_id, report.verdict)
+    return {"fabrication": fabrication.model_dump(mode="json"),
+            "generation": generated.model_dump(mode="json"),
+            "validation": report.model_dump(mode="json"),
+            "printability": assessment.model_dump(mode="json")}
+
+
+@app.post("/api/v1/fab/validate")
+def fab_validate(artifact_ref: str) -> dict:
+    """Validate one mesh artifact. No generation, no motion."""
+    try:
+        report = validate_mesh(artifact_ref)
+    except (MeshRefusedError, ValueError) as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    return report.model_dump(mode="json")
+
+
+@app.post("/api/v1/fab/assess")
+def fab_assess(mesh_ref: str = "", description: str = "") -> dict:
+    """Project-aware printability advice: inspect (mesh or idea),
+    assess, propose the next step. Never prints, never slices."""
+    if mesh_ref:
+        try:
+            report = validate_mesh(mesh_ref)
+        except (MeshRefusedError, ValueError) as error:
+            raise HTTPException(status_code=422, detail=str(error))
+        assessment = assess_printability(report)
+        next_step = ("slice with an allow-listed profile, then "
+                     "safety assessment, then physical proposal"
+                     if assessment.verdict == "printable"
+                     else "fix the mesh concerns first; no slicing")
+        return {"assessment": assessment.model_dump(mode="json"),
+                "validation": report.model_dump(mode="json"),
+                "next_step": next_step}
+    if not description.strip():
+        raise HTTPException(
+            status_code=422,
+            detail="Assess needs a mesh_ref or a description")
+    return {"assessment": None, "validation": None,
+            "next_step": ("no mesh yet: generate test geometry via "
+                          "/api/v1/fab/generate, validate it, then "
+                          "assess again")}
+
+
+@app.post("/api/v1/fab/slice", status_code=201)
+def fab_slice(body: FabSliceBody) -> dict:
+    """Bounded slicing run: test slicer or explicit unavailable,
+    G-code validated for safety immediately. The artifact is
+    never production G-code unless a reviewed runtime made it."""
+    try:
+        request = check_slicer_request(
+            body.artifact_ref, body.profile, body.printer_id)
+    except (SlicerRefusedError, MeshRefusedError,
+            ValueError) as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    try:
+        slicer = get_slicer(body.slicer)
+    except SlicerRefusedError as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    try:
+        result = slicer.slice(request)
+    except SlicerUnavailable as error:
+        raise HTTPException(status_code=409, detail=str(error))
+    safety = validate_gcode(result.gcode_ref)
+    logger.info("fab_sliced gcode=%s safety=%s", result.gcode_ref,
+                safety.verdict)
+    return {"slice": result.model_dump(mode="json"),
+            "safety": safety.model_dump(mode="json")}
+
+
+@app.post("/api/v1/printers/register", status_code=201)
+def printer_register(body: PrinterRegisterBody) -> dict:
+    """Register one printer device. Execution authority, no motion:
+    capabilities are allow-listed, the INVENTory twin is an
+    optional hw_ link, and no adapter means unavailable."""
+    import secrets as _secrets
+    printer_id = (body.printer_id or f"prt-{_secrets.token_hex(4)}")
+    try:
+        device = new_printer(
+            printer_id, body.name, list(body.capabilities),
+            inventory_hardware_id=body.inventory_hardware_id,
+            notes=body.notes)
+    except PrinterDeviceRefusedError as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    save_printer(device)
+    logger.info("printer_registered printer_id=%s caps=%s",
+                printer_id, ",".join(device.capabilities))
+    return device.model_dump(mode="json")
+
+
+@app.get("/api/v1/printers")
+def printers_list() -> list[dict]:
+    return [device.model_dump(mode="json")
+            for device in list_stored_printers()]
+
+
+@app.get("/api/v1/printers/{printer_id}")
+def printer_get(printer_id: str) -> dict:
+    device = load_printer(printer_id)
+    if device is None:
+        raise HTTPException(404, "Printer not found")
+    adapter = adapter_for_printer(printer_id)
+    return {**device.model_dump(mode="json"),
+            "adapter": getattr(adapter, "name", None),
+            "adapter_capabilities": (
+                printer_capabilities(adapter)
+                if adapter is not None else []),
+            "estop_note": ("software cancel/stop is a state "
+                            "transition only, not a physical "
+                            "emergency stop")}
+
+
+@app.post("/api/v1/prints/propose", status_code=201)
+def print_propose(body: PrintProposeBody) -> dict:
+    """One INERT physical-execution proposal. Requires a recorded
+    safety assessment that is not unsafe; mission/plan approval
+    never substitutes for the exact YES on this proposal."""
+    import secrets as _secrets
+    import hashlib as _hashlib
+    device = load_printer(body.printer_id)
+    if device is None:
+        raise HTTPException(404, "Printer not found")
+    try:
+        reference = check_artifact_ref(body.gcode_ref)
+    except (MeshRefusedError, ValueError) as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    try:
+        data = read_artifact_bytes(reference)
+    except (MeshRefusedError, ValueError) as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    if _hashlib.sha256(data).hexdigest() != body.gcode_sha256.lower():
+        raise HTTPException(
+            status_code=422,
+            detail="gcode_sha256 does not match the stored artifact; "
+                   "refusing")
+    safety = validate_gcode(reference)
+    job_id = body.job_id or f"pjob-{_secrets.token_hex(4)}"
+    try:
+        from .slicer3d import check_profile
+        check_profile(body.profile)
+        job = new_job(job_id, body.printer_id, reference,
+                      body.gcode_sha256.lower(), body.profile,
+                      body.actor)
+        proposal = propose_print(
+            body.proposal_id or f"wrt-{_secrets.token_hex(4)}",
+            job, safety_verdict=safety.verdict, actor=body.actor)
+    except (PrintRefusedError, PrinterDeviceRefusedError,
+            SlicerRefusedError, ValueError) as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    _write_save(proposal, "proposed")
+    logger.info("print_proposed proposal_id=%s job_id=%s safety=%s",
+                proposal.proposal_id, job_id, safety.verdict)
+    return {**_write_to_json(_write_load(proposal.proposal_id)),
+            "safety": safety.model_dump(mode="json")}
+
+
+@app.post("/api/v1/prints/cancel")
+def print_cancel(body: PrintCancelBody) -> dict:
+    """Cancel a print job: adapter-level cancel where possible,
+    plus proposal withdrawal before execution. Software cancel is
+    a state transition, never a physical emergency stop."""
+    found = None
+    for printer in list_stored_printers():
+        adapter = adapter_for_printer(printer.printer_id)
+        if adapter is None or not hasattr(adapter,
+                                           "request_cancel"):
+            continue
+        try:
+            adapter.request_cancel(body.job_id)
+            found = printer.printer_id
+        except (PrinterUnavailable, ValueError):
+            continue
+    return {"job_id": body.job_id, "cancel_requested": found,
+            "cancelled_at_adapter": found,
+            "estop_note": ("software cancel is not a physical "
+                            "emergency stop")}
+
+
+@app.post("/api/v1/writes/{proposal_id}/verify-print")
+async def write_verify_print(proposal_id: str,
+                             observation_id: str = "") -> dict:
+    """Combined print verification: telemetry half (bound G-code
+    completed) AND camera half (observation confirms the object).
+    Verified only if BOTH halves pass; needs an observation id."""
+    record = _write_load(proposal_id)
+    if record is None:
+        raise HTTPException(404, "Write proposal not found")
+    if not record["result"]:
+        raise HTTPException(
+            status_code=409, detail="Write has no result yet; execute first")
+    if not observation_id:
+        raise HTTPException(
+            status_code=422,
+            detail="Print verification needs an observation_id")
+    proposal = WriteProposal.model_validate(record["record"])
+    result = WriteResult.model_validate(record["result"])
+    if proposal.mutation_type != "printer.execute":
+        raise HTTPException(
+            status_code=422,
+            detail="Print verification needs a printer.execute result")
+    observation = _observation_load(observation_id)
+    if observation is None:
+        raise HTTPException(404, "Observation not found")
+    try:
+        telemetry_request = _verification_request_for(proposal,
+                                                      result)
+        telemetry = verify_print_telemetry(telemetry_request,
+                                           result)
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    import os as _os
+    from .cameras import camera_dir
+    media_ok = bool(
+        observation.media_ref
+        and _os.path.isfile(_os.path.join(
+            camera_dir(), observation.media_ref)))
+    camera_request = VerificationRequest(
+        verification_id=telemetry_request.verification_id,
+        proposal_id=proposal.proposal_id,
+        result_fingerprint=result.fingerprint,
+        method="print.camera_readback",
+        expected={"kind": "print-observation",
+                  "observation_id": observation.observation_id,
+                  "device_id": observation.device_id,
+                  "media_ref": observation.media_ref,
+                  "media_exists": media_ok})
+    camera = verify_print_camera(camera_request, observation)
+    verdict = print_verdict(telemetry, camera)
+    combined = camera.model_copy(update={
+        "method": "print.camera_readback",
+        "observed": {"telemetry": telemetry.model_dump(mode="json"),
+                     "camera": camera.model_dump(mode="json"),
+                     "verdict": verdict},
+        "outcome": ("passed" if verdict == "verified" else
+                    camera.outcome
+                    if camera.outcome in ("failed", "inconclusive")
+                    else "failed"),
+        "note": (f"telemetry={telemetry.outcome}, "
+                 f"camera={camera.outcome}; final: {verdict}"),
+    })
+    approval = WriteApproval.model_validate(record["approval"])
+    _write_save(proposal, record["status"], approval=approval,
+                result=result, verification=combined)
+    logger.info("print_verified proposal_id=%s verdict=%s",
+                proposal_id, verdict)
+    return _write_to_json(_write_load(proposal_id))
+
+
+@app.get("/api/v1/fabrication/records")
+def fabrication_records(limit: int = 20) -> list[dict]:
+    return [record.model_dump(mode="json")
+            for record in list_fabrications(limit)]
+
+
+def _fabrication_overlay(fabrication_id: str) -> list[dict]:
+    """Project one fabrication chain as graph overlay nodes."""
+    record = load_fabrication(fabrication_id)
+    if record is None:
+        raise ValueError(
+            f"Fabrication '{fabrication_id}' not found")
+    data = record.model_dump(mode="json")
+    nodes: list[dict] = []
+    if data.get("mesh_sha256"):
+        nodes.append({"id": f"mesh:{data['fabrication_id']}",
+                      "kind": "artifact",
+                      "label": f"mesh {data.get('mesh_ref', '?')}",
+                      "status": data.get("mesh_validation", ""),
+                      "sha256": data["mesh_sha256"],
+                      "links": ([{"predicate": "derived_from",
+                                  "to": data["source_object_id"]}]
+                                if data.get("source_object_id") else [])})
+    if data.get("gcode_sha256"):
+        nodes.append({"id": f"gcode:{data['fabrication_id']}",
+                      "kind": "artifact",
+                      "label": f"gcode {data.get('gcode_ref', '?')}",
+                      "status": data.get("gcode_safety", ""),
+                      "sha256": data["gcode_sha256"],
+                      "links": [{"predicate": "sliced_to",
+                                 "to": f"mesh:{data['fabrication_id']}"}]})
+    if data.get("job_id"):
+        job_links = (([{"predicate": "executed_as",
+                        "to": f"gcode:{data['fabrication_id']}"}]
+                      if data.get("gcode_sha256") else [])
+                     + ([{"predicate": "observed_by",
+                          "to": data["observation_id"]}]
+                        if data.get("observation_id") else []))
+        nodes.append({"id": f"job:{data['job_id']}",
+                      "kind": "print_job",
+                      "label": f"print {data['job_id']}",
+                      "status": data.get("status", ""),
+                      "links": job_links})
+    if data.get("observation_id"):
+        nodes.append({"id": data["observation_id"],
+                      "kind": "observation",
+                      "label": f"observatie {data['observation_id']}",
+                      "status": "",
+                      "links": []})
+    return nodes
+
+
+# =============================================================================
 # WORLD GRAPH (BIG #4) — uniform projection, no new source of truth.
 # =============================================================================
 
 @app.get("/api/v1/graph")
 async def world_graph_unified(entity_id: str, depth: int = 1,
                               include_missions: bool = False,
-                              include_observations: bool = False) -> dict:
+                              include_observations: bool = False,
+                              include_fabrication: bool = False,
+                              fabrication_id: str = "") -> dict:
     try:
         with connection() as db:
             agent_rows = db.execute(
@@ -1776,10 +2302,12 @@ async def world_graph_unified(entity_id: str, depth: int = 1,
         observations = ([obs.model_dump(mode="json")
                          for obs in _recent_observations(20)]
                         if include_observations else None)
+        fabrication = (_fabrication_overlay(fabrication_id)
+                       if include_fabrication else None)
         graph = await build_world_graph(
             _world_reader(), entity_id, depth,
             include_missions=include_missions, agent_nodes=agents,
-            observations=observations)
+            observations=observations, fabrication=fabrication)
     except ValueError as error:
         raise HTTPException(status_code=422, detail=str(error))
     except InventoryRefusedError as error:
@@ -1953,6 +2481,19 @@ async def _write_execute_record(record: dict) -> WriteResult:
     approval = WriteApproval.model_validate(record["approval"])
     if proposal.mutation_type == "git.commit":
         return execute_git_commit(proposal, approval)
+    if proposal.mutation_type == "printer.execute":
+        payload = proposal.payload
+        device = load_printer(
+            payload.get("printer_id", ""))
+        if device is None:
+            raise PrintRefusedError(
+                f"Printer '{payload.get('printer_id', '')}' "
+                "unknown; refusing motion")
+        return execute_print(
+            proposal, approval, device=device,
+            adapter=adapter_for_printer(device.printer_id),
+            safety_verdict=str(payload.get("safety_verdict",
+                                           "inconclusive")))
     return await execute_inventory_write(
         proposal, approval, reader=_world_reader(),
         writer=InventoryWriter())
@@ -2029,6 +2570,11 @@ def _verification_request_for(proposal: WriteProposal,
              "repository": payload.get("repository", ""),
              "branch": payload.get("branch", ""),
              "parent": payload.get("expected_head", "")})
+    if proposal.mutation_type == "printer.execute":
+        payload = proposal.payload
+        return new_telemetry_request(
+            proposal.proposal_id, result.fingerprint,
+            str(payload.get("gcode_sha256", "")))
     raise ValueError(
         f"Mutation '{proposal.mutation_type}' has no verification path")
 
@@ -2053,6 +2599,8 @@ async def write_verify(proposal_id: str) -> dict:
     try:
         if proposal.mutation_type == "git.commit":
             verification = verify_git_commit(request, result)
+        elif proposal.mutation_type == "printer.execute":
+            verification = verify_print_telemetry(request, result)
         else:
             verification = await verify_inventory_write(
                 request, result, reader=_world_reader())
@@ -2208,6 +2756,7 @@ async def _form_fields(request: Request) -> dict[str, str]:
 def _workspace_nav() -> str:    return ("""<nav><a href="/">Mycelium</a><a href="/chat">Chat</a>"""
             """<a href="/agents">Agents</a><a href="/missions">Plans</a>"""
             """<a href="/cameras">Cameras</a>"""
+            """<a href="/fabrication">Fabrication</a>"""
             """<a href="http://127.0.0.1:8080" target="_blank">INVENTory</a>"""
             """<a href="/api/v1/agent/status">Agent-status (JSON)</a></nav>""")
 
@@ -2535,6 +3084,33 @@ async def web_camera_register(request: Request) -> RedirectResponse:
         return RedirectResponse("/cameras", status_code=303)
     save_device(device)
     return RedirectResponse("/cameras", status_code=303)
+
+
+@app.get("/fabrication", response_class=HTMLResponse)
+def fabrication_page() -> str:
+    runs = "".join(
+        f"<li><b>{escape(record.fabrication_id)}</b> — "
+        f"{escape(record.status)} · mesh "
+        f"{escape(record.mesh_ref or '○')} "
+        f"({escape(record.mesh_validation or '?')}) · gcode "
+        f"{escape(record.gcode_ref or '○')} "
+        f"({escape(record.gcode_safety or '?')}) · job "
+        f"{escape(record.job_id or '○')}</li>"
+        for record in list_fabrications(20))
+    printers = "".join(
+        f"<li><b>{escape(device.name)}</b> "
+        f"({escape(device.printer_id)}) — "
+        f"{escape(', '.join(device.capabilities))}</li>"
+        for device in list_stored_printers())
+    return f"""<!doctype html><html><head><title>Mycelium Fabrication</title><style>
+    body{{font:16px system-ui;max-width:860px;margin:2rem auto;padding:0 1rem;color:#17352a;background:#f4f5ed}} h1{{color:#2f6b45}} nav a{{margin-right:1rem;color:#2f6b45}}
+    .panel{{background:white;border:1px solid #dde5dc;padding:1rem;border-radius:6px;margin-bottom:1rem}}</style></head>
+    <body>{_workspace_nav()}<h1>Fabrication</h1>
+    <div class="panel"><p>Digitaal → fysiek via voorstel → <b>exact YES (fysieke approval)</b> →
+    uitvoering → observatie → verificatie. Telemetrie verifieert nooit het object; een software-cancel is
+    geen fysieke e-stop. Details: <code>docs/3d-architecture.md</code>.</p></div>
+    <h2>Runs</h2><ul>{runs or "<li>○ geen runs</li>"}</ul>
+    <h2>Printers</h2><ul>{printers or "<li>○ geen printers</li>"}</ul></body></html>"""
 
 
 @app.post("/web/desktop/{action_id}/decision")

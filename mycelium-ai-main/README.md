@@ -30,6 +30,12 @@ persoonlijke computer-agent (verticale slice, live bewezen):
   verificatie; observatie ≠ feit, zie
   `docs/vision-architecture.md` (Insta360: foundation zonder
   gegokte SDK, echte capture expliciet unavailable)
+- **Fabrication** (`/api/v1/fab/*`, `/api/v1/prints/*`):
+  object → test-mesh → validatie → File → test-slice →
+  G-code-safety → File → fysieke YES → gesimuleerde uitvoering
+  → telemetrie + camera-verificatie; geen `safe_to_execute`
+  nergens, software-cancel ≠ e-stop, zie
+  `docs/3d-architecture.md` (geen echte printertransporten)
 - **Desktop-agent** (`/agents`): standalone proces (outbound-only)
   dat goedgekeurde acties claimt, hervalideert en uitvoert via
   scherm/muis/toetsenbord — observe → act → observe, begrensd,
@@ -237,7 +243,7 @@ coordinator/app/controlled_writes.py, inventory_writes.py,
 desktop_agent/   standalone lokale agent (poll, claim, voer uit, rapporteer)
 node_client/     lichte client voor seed/worker/core nodes (alleen read-only loop)
 docs/            architectuurstatus, roadmap, principes, oorsprong
-tests/           696 tests (pytest -v)
+tests/           745 tests (pytest -v)
 ```
 
 Zie `docs/ARCHITECTURE_STATUS.md` (wat het systeem is),
@@ -245,7 +251,7 @@ Zie `docs/ARCHITECTURE_STATUS.md` (wat het systeem is),
 `docs/controlled-writes-and-verification.md` (schrijven + bewijzen),
 `docs/first-node-blueprint.md` (eerste externe node),
 `docs/semantic-world-model.md`, `docs/camera-architecture.md` en
-`docs/ROADMAP.md` (wat volgt). Teststatus: **696 passed**.
+`docs/ROADMAP.md` (wat volgt). Teststatus: **745 passed**.
 
 ## Bijdragen
 

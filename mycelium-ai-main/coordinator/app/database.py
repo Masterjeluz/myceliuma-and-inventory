@@ -187,6 +187,20 @@ def init_chat_database() -> None:
         );
         CREATE INDEX IF NOT EXISTS idx_vision_obs
             ON vision_analyses(observation_id, created_at);
+        CREATE TABLE IF NOT EXISTS printer_devices (
+            printer_id TEXT PRIMARY KEY,
+            record TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS fabrications (
+            fabrication_id TEXT PRIMARY KEY,
+            record TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'started',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_fab_status
+            ON fabrications(status, created_at);
         CREATE TABLE IF NOT EXISTS write_proposals (
             proposal_id TEXT PRIMARY KEY,
             record TEXT NOT NULL,

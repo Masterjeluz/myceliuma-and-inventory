@@ -76,15 +76,25 @@ Zie `docs/vision-architecture.md` en `docs/camera-architecture.md`.
   (foundation zonder gegokte SDK; expliciet unavailable)
 - Live-stream-transport naar lokale consumer — FUTURE (alleen lifecycle)
 
-## PHASE E — CREATION / 3D (FUTURE)
+## PHASE E — CREATION / 3D (PARTIAL als BIG #7)
 
-Alleen contracten bestaan (`pipeline3d.py`); uitvoering komt pas met
-een menselijke hand aan elke fysieke grens.
+Zie `docs/3d-architecture.md`. Contracten + test-pipeline bestaan;
+echte hardware/transporten niet.
 
-- Object → 3D-haalbaarheid → CAD/mesh (lokaal) — FUTURE
-- Slicer/G-code als preview-only, nooit directe printeraansturing — FUTURE
-- Menselijke goedkeuring vóór elk fysiek artefact — FUTURE
-- Fysieke verificatie-terugkoppeling naar INVENTory — FUTURE
+- Object → 3D-haalbaarheid → CAD/mesh (lokaal) — DONE
+  (deterministische test-kubus, STL/OBJ-validatie, printability-
+  advies; geen CAD-kernel, geen downloads)
+- Slicer/G-code als preview-only, nooit directe printeraansturing — DONE
+  (test-slicer met never-for-printers-markering, G-code-safety-
+  assessment; productie-slicer vereist reviewed runtime)
+- Fysieke executie via dubbele approval (plan-YES + fysieke YES),
+  simulated/unavailable adapters, cancel-grens (geen e-stop-claim) — DONE
+- Menselijke goedkeuring vóór elk fysiek artefact — DONE
+  (printer.execute-voorstel + fingerprint + safety + revalidatie)
+- Fysieke verificatie-terugkoppeling naar INVENTory — DONE
+  (telemetrie + camera, beide vereist; INVENTory-update via BIG #5)
+- Echte printertransport/vendorintegratie — FUTURE
+- Echte slicer-runtime — FUTURE
 
 ## PHASE F — DISTRIBUTED MYCELIUM (FUTURE)
 
