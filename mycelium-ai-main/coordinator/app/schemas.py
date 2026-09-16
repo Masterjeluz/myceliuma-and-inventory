@@ -549,3 +549,332 @@ class TransformBody(BaseModel):
     params: dict[str, Any] = Field(default_factory=dict)
     persist: bool = False
     max_tris: int = Field(default=5000, ge=1, le=5000)
+
+
+class MemoryCreateBody(BaseModel):
+    """Store one memory entry. AI callers land on
+    ai_inference/ai_suggestion; fact tiers need human
+    provenance."""
+
+    memory_type: str = Field(min_length=1, max_length=20)
+    title: str = Field(min_length=1, max_length=200)
+    truth: str = Field(default="ai_suggestion", min_length=1,
+                       max_length=20)
+    content: str = Field(default="", max_length=4000)
+    data: dict[str, Any] = Field(default_factory=dict)
+    source: str = Field(default="", max_length=200)
+    provenance: dict[str, Any] = Field(default_factory=dict)
+    confidence: float = Field(default=0.5, ge=0.0, le=1.0)
+    importance: float = Field(default=0.5, ge=0.0, le=1.0)
+    project_ref: str = Field(default="", max_length=100)
+    entity_refs: list[str] = Field(default_factory=list,
+                                   max_length=20)
+    event_refs: list[str] = Field(default_factory=list,
+                                  max_length=20)
+    derived_from: list[str] = Field(default_factory=list,
+                                    max_length=20)
+    expiry: str = Field(default="", max_length=80)
+    observed_at: str = Field(default="", max_length=80)
+
+
+class MemoryVerifyBody(BaseModel):
+    verified_by: str = Field(min_length=1, max_length=80)
+    confidence: float = Field(default=0.9, ge=0.0, le=1.0)
+
+
+class MemoryRetrieveBody(BaseModel):
+    query: str = Field(default="", max_length=500)
+    memory_types: list[str] = Field(default_factory=list,
+                                    max_length=10)
+    project_ref: str = Field(default="", max_length=100)
+    truth: str = Field(default="", max_length=20)
+    limit: int = Field(default=10, ge=1, le=50)
+    semantic: bool = False
+
+
+class MemoryConsolidateBody(BaseModel):
+    raw_texts: list[str] = Field(min_length=1, max_length=50)
+    project_ref: str = Field(default="", max_length=100)
+    source: str = Field(default="consolidation", min_length=1,
+                        max_length=200)
+
+
+class HealthMeasureBody(BaseModel):
+    """Log one health measurement. Source is explicit."""
+
+    metric: str = Field(min_length=1, max_length=40)
+    value: float
+    source: str = Field(default="manual", min_length=1,
+                        max_length=20)
+    observed_at: str = Field(default="", max_length=80)
+    provenance: dict[str, Any] = Field(default_factory=dict)
+
+
+class FoodCreateBody(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
+    nutrients: dict[str, float] = Field(default_factory=dict)
+    vegan_status: str = Field(default="unknown", min_length=1,
+                              max_length=20)
+    vegan_evidence: str = Field(default="", max_length=500)
+    source: str = Field(default="manual", min_length=1,
+                        max_length=20)
+    provenance: dict[str, Any] = Field(default_factory=dict)
+
+
+class MealItemBody(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
+    food_id: str = Field(default="", max_length=80)
+    portion_g: float = Field(default=100.0, gt=0, le=5000)
+    nutrients: dict[str, float] = Field(default_factory=dict)
+    vegan_status: str = Field(default="unknown", min_length=1,
+                              max_length=20)
+
+
+class MealCreateBody(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
+    items: list[MealItemBody] = Field(min_length=1,
+                                      max_length=30)
+    source: str = Field(default="manual", min_length=1,
+                        max_length=20)
+    observed_at: str = Field(default="", max_length=80)
+    provenance: dict[str, Any] = Field(default_factory=dict)
+
+
+class GarminImportBody(BaseModel):
+    provider: str = Field(default="mock", min_length=1,
+                          max_length=20)
+    since: str = Field(default="", max_length=80)
+    cursor: int = Field(default=0, ge=0)
+    limit: int = Field(default=50, ge=1, le=100)
+
+
+class ResearchSourceBody(BaseModel):
+    source_type: str = Field(min_length=1, max_length=20)
+    title: str = Field(min_length=1, max_length=300)
+    content: str = Field(default="", max_length=20000)
+    external_id: str = Field(default="", max_length=200)
+    reference: str = Field(default="", max_length=500)
+    author: str = Field(default="", max_length=200)
+    topics: list[str] = Field(default_factory=list,
+                              max_length=20)
+    entities: list[str] = Field(default_factory=list,
+                                max_length=20)
+    published_at: str = Field(default="", max_length=80)
+    provenance: dict[str, Any] = Field(default_factory=dict)
+
+
+class ResearchAdvanceBody(BaseModel):
+    to_stage: str = Field(min_length=1, max_length=20)
+    approved_by: str = Field(default="", max_length=80)
+
+
+class ResearchClaimBody(BaseModel):
+    claim: str = Field(min_length=1, max_length=1000)
+    source_ids: list[str] = Field(min_length=1, max_length=10)
+    evidence: str = Field(default="", max_length=2000)
+    confidence: float = Field(default=0.5, ge=0.0, le=1.0)
+    interpretation: str = Field(default="", max_length=1000)
+
+
+class ResearchRecordBody(BaseModel):
+    question: str = Field(min_length=1, max_length=1000)
+    claims: list[ResearchClaimBody] = Field(min_length=1,
+                                            max_length=30)
+    synthesis: str = Field(default="", max_length=5000)
+    provenance: dict[str, Any] = Field(default_factory=dict)
+
+
+class InstagramImportBody(BaseModel):
+    export: dict[str, Any]
+    collection: str = Field(default="", max_length=100)
+
+
+class SkillCreateBody(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
+    category: str = Field(default="", max_length=80)
+    description: str = Field(default="", max_length=1000)
+    prerequisites: list[str] = Field(default_factory=list,
+                                     max_length=20)
+    related_skills: list[str] = Field(default_factory=list,
+                                      max_length=20)
+    stage: str = Field(default="discovered", min_length=1,
+                       max_length=20)
+    proficiency: str = Field(default="unknown", min_length=1,
+                             max_length=20)
+    project_refs: list[str] = Field(default_factory=list,
+                                    max_length=20)
+    source: str = Field(default="", max_length=200)
+    provenance: dict[str, Any] = Field(default_factory=dict)
+
+
+class SkillEvidenceBody(BaseModel):
+    kind: str = Field(min_length=1, max_length=40)
+    ref: str = Field(min_length=1, max_length=200)
+    note: str = Field(default="", max_length=300)
+
+
+class SkillAdvanceBody(BaseModel):
+    to_stage: str = Field(min_length=1, max_length=20)
+    confirmed_by: str = Field(default="", max_length=80)
+
+
+class SkillDiscoverBody(BaseModel):
+    project_text: str = Field(min_length=1, max_length=5000)
+    project_ref: str = Field(default="", max_length=100)
+
+
+class SkillAcceptBody(BaseModel):
+    accepted_by: str = Field(min_length=1, max_length=80)
+
+
+class AdvancedOpBody(BaseModel):
+    """One advanced mesh op (mirror/merge/extend/orient).
+    Preview always; persist writes a derived working file."""
+
+    artifact_ref: str = Field(min_length=1, max_length=200)
+    op: str = Field(min_length=1, max_length=20)
+    params: dict[str, Any] = Field(default_factory=dict)
+    extra_refs: list[str] = Field(default_factory=list,
+                                  max_length=9)
+    persist: bool = False
+    max_tris: int = Field(default=5000, ge=1, le=5000)
+
+
+class PromptEditBody(BaseModel):
+    """'maak deze bracket 5mm langer'. Parsed to an explicit
+    op; persist needs a human approver."""
+
+    artifact_ref: str = Field(min_length=1, max_length=200)
+    text: str = Field(min_length=1, max_length=500)
+    persist: bool = False
+    approved_by: str = Field(default="", max_length=80)
+    max_tris: int = Field(default=5000, ge=1, le=5000)
+
+
+class CadDocumentBody(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
+    provenance: dict[str, Any] = Field(default_factory=dict)
+
+
+class CadPartBody(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
+
+
+class CadOpBody(BaseModel):
+    part_id: str = Field(min_length=1, max_length=80)
+    op: str = Field(min_length=1, max_length=20)
+    params: dict[str, Any] = Field(default_factory=dict)
+    adapter: str = Field(default="procedural", min_length=1,
+                         max_length=20)
+
+
+class SpoolCreateBody(BaseModel):
+    material: str = Field(min_length=1, max_length=20)
+    weight_g: float = Field(ge=0, le=10000)
+    color: str = Field(default="", max_length=40)
+    diameter_mm: float = Field(default=1.75, gt=0, le=5)
+    compatible_profiles: list[str] = Field(
+        default_factory=list, max_length=10)
+    source: str = Field(default="", max_length=200)
+    location: str = Field(default="", max_length=200)
+    provenance: dict[str, Any] = Field(default_factory=dict)
+
+
+class PrinterSelectBody(BaseModel):
+    capabilities: list[str] = Field(default_factory=list,
+                                    max_length=20)
+    profile: str = Field(default="", max_length=40)
+    printer_id: str = Field(default="", max_length=80)
+
+
+class PipelinePlanBody(BaseModel):
+    source_object_id: str = Field(default="", max_length=100)
+    source_idea_id: str = Field(default="", max_length=100)
+    profile: str = Field(default="draft-pla", min_length=1,
+                         max_length=40)
+    material: str = Field(default="PLA", min_length=1,
+                          max_length=20)
+
+
+class RobotCreateBody(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
+    robot_type: str = Field(default="other", min_length=1,
+                            max_length=20)
+    capabilities: list[str] = Field(default_factory=list,
+                                    max_length=20)
+    location: str = Field(default="", max_length=200)
+    node_id: str = Field(default="", max_length=80)
+    sensors: list[str] = Field(default_factory=list,
+                               max_length=20)
+    actuators: list[str] = Field(default_factory=list,
+                                 max_length=20)
+    provenance: dict[str, Any] = Field(default_factory=dict)
+
+
+class RobotSafetyBody(BaseModel):
+    safety_state: str = Field(min_length=1, max_length=20)
+
+
+class RobotActionBody(BaseModel):
+    action: str = Field(min_length=1, max_length=40)
+    params: dict[str, Any] = Field(default_factory=dict)
+    simulation_note: str = Field(default="", max_length=500)
+
+
+class RobotApproveBody(BaseModel):
+    action_id: str = Field(min_length=1, max_length=80)
+    robot_id: str = Field(min_length=1, max_length=80)
+    action: str = Field(min_length=1, max_length=40)
+    params: dict[str, Any] = Field(default_factory=dict)
+    physical: bool = False
+    safety_state: str = Field(default="safe", max_length=20)
+    simulation_note: str = Field(default="", max_length=500)
+    approved_by: str = Field(min_length=1, max_length=80)
+
+
+class RobotTelemetryBody(BaseModel):
+    action_id: str = Field(min_length=1, max_length=80)
+    robot_id: str = Field(min_length=1, max_length=80)
+    status: str = Field(min_length=1, max_length=40)
+    detail: str = Field(default="", max_length=500)
+    observation: str = Field(default="", max_length=500)
+
+
+class DroneCreateBody(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
+    capabilities: list[str] = Field(default_factory=list,
+                                    max_length=20)
+    home_location: str = Field(default="", max_length=200)
+    provenance: dict[str, Any] = Field(default_factory=dict)
+
+
+class DroneMissionBody(BaseModel):
+    kind: str = Field(min_length=1, max_length=40)
+    params: dict[str, Any] = Field(default_factory=dict)
+    autonomous: bool = False
+    geofence: str = Field(default="", max_length=200)
+    max_altitude_m: float = Field(default=0.0, ge=0, le=120)
+    approved_by: str = Field(default="", max_length=80)
+
+
+class FamiliarCreateBody(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
+    kind: str = Field(min_length=1, max_length=20)
+    linked_id: str = Field(default="", max_length=120)
+    provenance: dict[str, Any] = Field(default_factory=dict)
+
+
+class TwinLinkBody(BaseModel):
+    physical_ref: str = Field(min_length=1, max_length=200)
+    digital_ref: str = Field(min_length=1, max_length=120)
+    link_type: str = Field(min_length=1, max_length=20)
+    source: str = Field(default="", max_length=200)
+    confidence: float = Field(default=0.5, ge=0.0, le=1.0)
+    last_observed_at: str = Field(default="", max_length=80)
+    provenance: dict[str, Any] = Field(default_factory=dict)
+
+
+class JobRunBody(BaseModel):
+    job_name: str = Field(min_length=1, max_length=40)
+    params: dict[str, Any] = Field(default_factory=dict)
+    run_key: str = Field(default="", max_length=80)

@@ -168,6 +168,49 @@ Zie `docs/distributed-state.md`, `docs/coordinator-failover.md`,
 - Lange-termijn-geheugen en geschiedenis/provenance-blik — FUTURE
 - Fysieke-wereld-koppeling (actuatoren pas na Fases C–E) — FUTURE
 
+## PHASE I — LIVING MYCELIUM (PARTIAL als BIG #11-15)
+
+Zie `docs/memory.md`, `docs/watcher.md`,
+`docs/morning-reports.md`, `docs/health.md`,
+`docs/nutrition.md`, `docs/garmin.md`,
+`docs/research-ingestion.md`, `docs/skills.md`,
+`docs/advanced-workshop.md`, `docs/cad.md`,
+`docs/fabrication.md`, `docs/robots.md`,
+`docs/drones.md`, `docs/digital-twin.md` en
+`docs/mycelium-live.md`.
+
+- Memory-laag (10 typen, truth-tiers, retrieval,
+  consolidatie-voorstellen) — DONE
+- Watcher bruikbaar (15 finding-kinds, explainable,
+  findings-only) — DONE
+- Morning reports (15 secties, deterministisch,
+  mobile-first `/morning`) — DONE
+- Health-tracking + transparante index (geen diagnose-
+  engine) — DONE
+- Nutrition (maaltijden, vegan-bewijs, coverage) — DONE
+- Garmin-adapter (interface + mock + import; live
+  UNAVAILABLE) — DONE als MOCK
+- Research/ingestie (pipeline, claims-met-bron,
+  Instagram manual-export-only) — DONE
+- Skills (candidates, evidence-progressie, discovery) — DONE
+- Advanced 3D (mirror/merge/extend/orient, prompt-edits
+  als voorstel) + CAD-foundation (procedural bouwt;
+  externe adapters UNAVAILABLE) — DONE/PARTIAL
+- Fabrication-orkestratie (filament, selectie, plan;
+  fysieke start blijft gated) — PARTIAL
+- Robots/drones/familiars/digital twin (modellen +
+  gates; executie HARDWARE_REQUIRED) — PARTIAL
+- Live als universele interface (8 nieuwe secties,
+  health apart gescoped) — PARTIAL
+- Jobs-foundation (bounded, observable, idempotent,
+  geen achtergrond-threads) — DONE
+- Living-Workshop-UI (Home/Morning/Memory/Health/
+  Skills/Research/Devices/Watcher-pagina's) — DONE
+- SMOKE11_15: 41/41 — DONE
+- Echte multi-machine-praktijk, echte STT/slicer/
+  printertransports, live Garmin/Instagram, CAD-
+  runtimes, fysieke robot/drone-executie — FUTURE
+
 ## Expliciet niet op de kaart
 
 Autonome ongelimiteerde computerbediening, credential-automatisering,

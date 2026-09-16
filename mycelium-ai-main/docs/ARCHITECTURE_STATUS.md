@@ -1,4 +1,4 @@
-# Architecture Status (september 2026, na BIG #10)
+# Architecture Status (september 2026, na BIG #11-15)
 
 Momentopname van wat het systeem IS. Voor flows, zie
 `chat-agent-architecture.md`; voor richting, zie `ROADMAP.md`.
@@ -105,16 +105,28 @@ Momentopname van wat het systeem IS. Voor flows, zie
 | Watcher + reports | `watcher.py`, `reports.py` | DONE (findings-only, deterministisch) |
 | Domein-extensiepunten | `domains.py` | DONE (placeholders met requirements) |
 | Workshop-UI + 3D-voorstel | `main.py` (`/workshop*`, `/fab/transform`) | DONE |
+| Memory-laag | `memory.py` | DONE (10 typen, truth-tiers, tombstones) |
+| Watcher | `watcher.py` | DONE (15 kinds, findings-only) |
+| Reports | `reports.py` | DONE (15 secties, deterministisch) |
+| Health/nutrition | `health.py`, `nutrition.py` | DONE (tracking; geen diagnose-engine) |
+| Garmin | `garmin.py` | MOCK (live UNAVAILABLE, import-pipeline echt) |
+| Research/ingestie | `research.py` | DONE (claims-met-bron; Instagram manual-export) |
+| Skills | `skills.py` | DONE (evidence-progressie, discovery) |
+| Advanced 3D/CAD | `meshops.py`, `cad.py` | DONE/PARTIAL (procedural bouwt; extern UNAVAILABLE) |
+| Fabricatie-orkestratie | `fabrication.py` | PARTIAL (plant/selecteert; start blijft gated) |
+| Robots/drones/familiars/twin | `robots.py`, `drones.py`, `familiars.py`, `twin.py` | PARTIAL (modellen + gates; executie HARDWARE_REQUIRED) |
+| Jobs | `jobs.py` | DONE (bounded, observable, idempotent) |
+| Live-universiteit | `live.py` + secties | PARTIAL (8 nieuwe secties, health apart gescoped) |
 | Lokale desktop-scanner | `Mycelium/agent/` | Bestaand, read-only |
 
 ## Teststatus (gemeten, niet geschat)
 
-- Mycelium: **857 passed** (`pytest -v` in `mycelium-ai-main/`)
-  (822 vóór BIG #10 + 35 nieuwe dist/failover/sync/workshop/
-  security-tests; camera-ctypes geeft dezelfde pre-existing
-  access-violation-meldingen als altijd)
-- INVENTory: **179 passed, 1 failed** (178 + nieuwe
-  `test_events_since_cursor_bounded`) — de faal is pre-existing:
+- Mycelium: **885 passed** (`pytest -v` in `mycelium-ai-main/`)
+  (857 vóór BIG #11-15 + 28 nieuwe memory/health/nutrition/
+  research/skills/3D/physical/live/smoke-tests; camera-ctypes
+  geeft dezelfde pre-existing access-violation-meldingen als
+  altijd)
+- INVENTory: **179 passed, 1 failed** (ongewijzigd schema) — de faal is pre-existing:
   `test_real_inventory_db_untouched` pint de exacte byte-grootte van
   de gitignored lokale `data/inventory.db`; inhoud groeit bij normaal
   gebruik, dus de assertie is broos per ontwerp van die test.

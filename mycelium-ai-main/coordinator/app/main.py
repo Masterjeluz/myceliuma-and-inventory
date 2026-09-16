@@ -80,11 +80,15 @@ from .sync import (
 )
 from .watcher import (
     WatcherRefusedError,
+    scan_blocked_tasks,
+    scan_device_staleness,
     scan_entities,
+    scan_failed_tasks,
     scan_projects,
     scan_provenance,
     scan_relationships,
     scan_stale_tasks,
+    scan_unfinished_designs,
 )
 from .mesh3d import (
     MeshRefusedError,
@@ -326,7 +330,7 @@ from .routing import (
     requirements_from_payload,
     route_task,
 )
-from .schemas import AdviseRequest, AdviseResponse, CampaignBody, CameraRegisterBody, CaptureCloseBody, CaptureOpenBody, ChatMissionBody, ChatRequest, ChatResponse, ClaimedTask, DecideApprovalBody, DesktopActionBody, DesktopClaimBody, DesktopDecisionBody, DesktopDispatchBody, DesktopResultBody, DistEnvelopeBody, FabGenerateBody, FabSliceBody, GitCommitBody, Heartbeat, InterfaceChatBody, InventoryWriteBody, LiveContextBody, LiveProposeBody, LiveSessionBody, MissionApproveBody, MissionCreateBody, MissionStepBody, NodeRegistration, NotifyBody, PhoneCameraBody, PlanBody, PlanToProposalBody, PrintCancelBody, PrintProposeBody, PrinterRegisterBody, SessionOpenBody, StreamStartBody, SuggestStepsBody, SyncApplyBody, TaskAssignBody, TaskCreate, TaskFromProposalBody, TaskResult, TaskRouteBody, TemplateMissionBody, TransformBody, VisionAnalyzeBody, VisionProposeBody, VoiceApprovalRequestBody, VoiceApproveBody, VoiceChatBody, VoiceSynthesizeBody, VoiceTranscribeBody, WriteDecisionBody
+from .schemas import AdviseRequest, AdviseResponse, AdvancedOpBody, CadDocumentBody, CadOpBody, CadPartBody, CampaignBody, CameraRegisterBody, CaptureCloseBody, CaptureOpenBody, ChatMissionBody, ChatRequest, ChatResponse, ClaimedTask, DecideApprovalBody, DesktopActionBody, DesktopClaimBody, DesktopDecisionBody, DesktopDispatchBody, DesktopResultBody,     DistEnvelopeBody, DroneCreateBody, DroneMissionBody,     FabGenerateBody, FabSliceBody, FamiliarCreateBody, FoodCreateBody, GarminImportBody, GitCommitBody, HealthMeasureBody, Heartbeat, InstagramImportBody,     InterfaceChatBody, InventoryWriteBody, JobRunBody, LiveContextBody, LiveProposeBody, LiveSessionBody, MealCreateBody, MealItemBody, MemoryConsolidateBody, MemoryCreateBody, MemoryRetrieveBody, MemoryVerifyBody, MissionApproveBody, MissionCreateBody, MissionStepBody, NodeRegistration, NotifyBody, PhoneCameraBody,     PlanBody, PlanToProposalBody, PipelinePlanBody, PrintCancelBody, PrintProposeBody, PrinterRegisterBody, PrinterSelectBody, PromptEditBody, ResearchAdvanceBody, ResearchClaimBody, ResearchRecordBody, ResearchSourceBody, RobotActionBody, RobotApproveBody, RobotCreateBody, RobotSafetyBody, RobotTelemetryBody, SessionOpenBody,     StreamStartBody, SuggestStepsBody, SkillAcceptBody, SkillAdvanceBody, SkillCreateBody, SkillDiscoverBody, SkillEvidenceBody, SpoolCreateBody, SyncApplyBody, TaskAssignBody, TaskCreate, TaskFromProposalBody, TaskResult, TaskRouteBody,     TemplateMissionBody, TransformBody, TwinLinkBody, VisionAnalyzeBody, VisionProposeBody, VoiceApprovalRequestBody, VoiceApproveBody, VoiceChatBody, VoiceSynthesizeBody, VoiceTranscribeBody, WriteDecisionBody
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 logger = logging.getLogger("mycelium.coordinator")
@@ -3723,6 +3727,92 @@ async def live_context(body: LiveContextBody) -> dict:
             sources["git"] = {"branch": branch}
         except (GitRefusedError, GitUnavailable, ValueError):
             pass
+    if live_can(session, "memory.read"):
+        try:
+            from .memory import retrieve_memories as _recall
+            sources["memory"] = _recall(
+                body.query, project_ref=str(
+                    scope.get("project_id", "") or ""),
+                limit=8)
+        except Exception:
+            pass
+    if live_can(session, "health.read") and scope.get(
+            "include_health"):
+        try:
+            from .health import personal_health_index as _index
+            index = _index()
+            sources["health"] = [
+                {"dimension": name,
+                 "value": info["value"],
+                 "completeness": info["completeness"]}
+                for name, info in
+                index["dimensions"].items()]
+        except Exception:
+            pass
+    if live_can(session, "research.read"):
+        try:
+            from .research import list_sources as _sources
+            sources["research"] = [
+                {"id": item.source_id,
+                 "title": item.title,
+                 "type": item.source_type}
+                for item in _sources(limit=8)]
+        except Exception:
+            pass
+    if live_can(session, "skills.read"):
+        try:
+            from .skills import list_skills as _skills
+            sources["skills"] = [
+                {"skill_id": item.skill_id, "name": item.name,
+                 "stage": item.stage}
+                for item in _skills(limit=8)]
+        except Exception:
+            pass
+    if live_can(session, "workshop.read"):
+        try:
+            from .printer3d import list_stored_printers as _printers
+            sources["workshop"] = [
+                {"id": item.printer_id, "name": item.name,
+                 "status": item.status}
+                for item in _printers()[:8]]
+        except Exception:
+            pass
+    if live_can(session, "fabrication.read"):
+        try:
+            init_chat_database()
+            with chat_connection() as db:
+                fab_rows = db.execute(
+                    "SELECT fabrication_id, status FROM "
+                    "fabrications ORDER BY fabrication_id DESC "
+                    "LIMIT 8").fetchall()
+            sources["fabrication"] = [
+                {"id": row["fabrication_id"],
+                 "status": row["status"]} for row in fab_rows]
+        except Exception:
+            pass
+    if live_can(session, "twin.read"):
+        try:
+            from .twin import staleness_report as _stale
+            report = _stale()
+            sources["twin"] = {
+                "fresh": len(report["fresh"]),
+                "stale": len(report["stale"])}
+        except Exception:
+            pass
+    if live_can(session, "watcher.read"):
+        try:
+            from datetime import datetime as _dt
+            from datetime import timezone as _tz
+            with connection() as db:
+                task_rows = db.execute(
+                    "SELECT id, status, created_at FROM tasks "
+                    "ORDER BY id DESC LIMIT 50").fetchall()
+            sources["findings"] = [
+                item.summary for item in scan_stale_tasks(
+                    [dict(row) for row in task_rows],
+                    _dt.now(_tz.utc))[:8]]
+        except Exception:
+            pass
     if scope.get("include_events", True):
         sources["events"] = [
             event.model_dump(mode="json")
@@ -3902,6 +3992,14 @@ async def watcher_scan() -> dict:
     except WatcherRefusedError:
         pass
     try:
+        findings += scan_blocked_tasks(tasks, current)
+    except WatcherRefusedError:
+        pass
+    try:
+        findings += scan_failed_tasks(tasks, current)
+    except WatcherRefusedError:
+        pass
+    try:
         browsed = await _world_reader().browse("projects")
         projects = []
         for record in browsed.results:
@@ -3919,6 +4017,25 @@ async def watcher_scan() -> dict:
         findings += scan_projects(projects, current)
     except WatcherRefusedError:
         pass
+    try:
+        init_chat_database()
+        with chat_connection() as db:
+            fab_rows = db.execute(
+                "SELECT fabrication_id, status FROM fabrications "
+                "LIMIT 200").fetchall()
+        findings += scan_unfinished_designs(
+            [dict(row) for row in fab_rows], current)
+    except (WatcherRefusedError, ValueError):
+        pass
+    try:
+        with connection() as db:
+            node_rows = db.execute(
+                "SELECT node_id AS id, status, last_seen "
+                "FROM nodes LIMIT 200").fetchall()
+        findings += scan_device_staleness(
+            [dict(row) for row in node_rows], current)
+    except (WatcherRefusedError, ValueError):
+        pass
     return {"findings": [item.model_dump(mode="json")
                          for item in findings[:50]]}
 
@@ -3927,17 +4044,37 @@ async def watcher_scan() -> dict:
 def report_morning() -> dict:
     """Deterministic morning report over bounded live sources.
     Same inputs, same report; sources are counts and short
-    capped lines, never dumps."""
-    status = coordinator_status()
+    capped lines, never dumps. Fifteen independent sections;
+    each loads on its own."""
+    from datetime import datetime as _dt
+    from datetime import timezone as _tz
     with connection() as db:
+        node_rows = db.execute(
+            "SELECT node_id, status, last_seen FROM nodes").fetchall()
         recent_tasks = db.execute(
             "SELECT id, kind, status FROM tasks ORDER BY id DESC "
             "LIMIT 15").fetchall()
+    online = sum(1 for row in node_rows
+                 if derive_status(row["status"],
+                                  row["last_seen"])
+                 in ("online", "busy"))
     init_chat_database()
     with chat_connection() as db:
         missions = db.execute(
             "SELECT record FROM missions ORDER BY created_at DESC "
             "LIMIT 10").fetchall()
+        try:
+            fabs = db.execute(
+                "SELECT fabrication_id, status FROM fabrications "
+                "ORDER BY fabrication_id DESC LIMIT 5").fetchall()
+        except Exception:
+            fabs = []
+        try:
+            owned_skills = db.execute(
+                "SELECT name, stage FROM skills ORDER BY "
+                "updated_at DESC LIMIT 8").fetchall()
+        except Exception:
+            owned_skills = []
     mission_titles = []
     for row in missions:
         try:
@@ -3948,16 +4085,39 @@ def report_morning() -> dict:
         except ValueError:
             continue
     notes = list_notifications_for_report()
+    current = _dt.now(_tz.utc)
     try:
-        report = morning_report({
-            "missions": mission_titles,
-            "tasks": [f"#{row['id']} {row['kind']} "
-                      f"[{row['status']}]" for row in recent_tasks],
-            "notifications": [item.title for item in notes],
-            "suggestions": [
-                f"{status['nodes']['online']} nodes online, "
-                f"{status['nodes']['stale']} stale"],
-        })
+        findings = scan_stale_tasks(
+            [{"id": row["id"], "status": row["status"],
+              "created_at": ""} for row in recent_tasks],
+            current)[:5]
+    except WatcherRefusedError:
+        findings = []
+    sections = {
+        "today": [current.strftime("%A %Y-%m-%d"),
+                  f"{online}/{len(node_rows)} nodes online"],
+        "missions": mission_titles,
+        "tasks": [f"#{row['id']} {row['kind']} "
+                  f"[{row['status']}]" for row in recent_tasks],
+        "devices": [f"{row['node_id']} "
+                    f"[{derive_status(row['status'], row['last_seen'])}]"
+                    for row in node_rows[:10]],
+        "findings": [item.summary for item in findings],
+        "suggestions": [
+            f"{online} nodes online, "
+            f"{len(node_rows) - online} other",
+            f"{len(notes)} unread notifications"],
+    }
+    if fabs:
+        sections["fabrication"] = [
+            f"{row['fabrication_id']} [{row['status']}]"
+            for row in fabs]
+    if owned_skills:
+        sections["skills"] = [
+            f"{row['name']} [{row['stage']}]"
+            for row in owned_skills]
+    try:
+        report = morning_report(sections)
     except ReportRefusedError as error:
         raise HTTPException(status_code=422, detail=str(error))
     return report.model_dump(mode="json")
@@ -3987,6 +4147,1056 @@ def domain_get(domain: str) -> dict:
         return domain_info(domain).model_dump(mode="json")
     except DomainRefusedError as error:
         raise HTTPException(status_code=404, detail=str(error))
+
+
+# =============================================================================
+# MEMORY (BIG #11-15, Phase 1). Ten typed memories with truth
+# tiers; AI output never auto-promotes. Tombstones on delete.
+# =============================================================================
+
+def _memory_provenance(raw: dict) -> "Provenance":
+    from .inventory_read import Provenance as _Provenance
+    if not raw:
+        return _Provenance(source_type="ai-generated",
+                           creator_id="memory-api",
+                           human_verified=False)
+    try:
+        return _Provenance.model_validate(raw)
+    except Exception as error:
+        raise HTTPException(status_code=422,
+                            detail=f"bad provenance: {error}")
+
+
+@app.post("/api/v1/memory", status_code=201)
+def memory_create(body: MemoryCreateBody) -> dict:
+    """Store one typed memory. Fact tiers need human
+    provenance; AI content without it refuses."""
+    from .memory import MemoryRefusedError as _Refused
+    from .memory import new_memory as _new
+    from .memory import save_memory as _save
+    try:
+        entry = _new(
+            body.memory_type, body.title, truth=body.truth,
+            content=body.content, data=dict(body.data),
+            source=body.source,
+            provenance=_memory_provenance(
+                dict(body.provenance)),
+            confidence=body.confidence,
+            importance=body.importance,
+            project_ref=body.project_ref,
+            entity_refs=list(body.entity_refs),
+            event_refs=list(body.event_refs),
+            derived_from=list(body.derived_from),
+            expiry=body.expiry, observed_at=body.observed_at)
+        _save(entry)
+    except _Refused as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    return entry.model_dump(mode="json")
+
+
+@app.get("/api/v1/memory")
+def memory_list(memory_type: str = "", truth: str = "",
+                project_ref: str = "",
+                limit: int = 50) -> list[dict]:
+    from .memory import MemoryRefusedError as _Refused
+    from .memory import list_memories as _list
+    try:
+        entries = _list(memory_type=memory_type, truth=truth,
+                        project_ref=project_ref, limit=limit)
+    except _Refused as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    return [entry.model_dump(mode="json") for entry in entries]
+
+
+@app.get("/api/v1/memory/{memory_id}")
+def memory_get(memory_id: str) -> dict:
+    from .memory import get_memory as _get
+    entry = _get(memory_id)
+    if entry is None or entry.status == "deleted":
+        raise HTTPException(404, "Memory not found")
+    return entry.model_dump(mode="json")
+
+
+@app.post("/api/v1/memory/{memory_id}/verify")
+def memory_verify(memory_id: str,
+                  body: MemoryVerifyBody) -> dict:
+    """Explicit human promotion to verified. AI content
+    without human_verified provenance refuses."""
+    from .memory import MemoryRefusedError as _Refused
+    from .memory import get_memory as _get
+    from .memory import save_memory as _save
+    from .memory import verify_memory as _verify
+    entry = _get(memory_id)
+    if entry is None or entry.status == "deleted":
+        raise HTTPException(404, "Memory not found")
+    try:
+        verified = _verify(entry, body.verified_by,
+                           confidence=body.confidence)
+        _save(verified)
+    except _Refused as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    return verified.model_dump(mode="json")
+
+
+@app.delete("/api/v1/memory/{memory_id}")
+def memory_delete(memory_id: str) -> dict:
+    from .memory import delete_memory as _delete
+    if not _delete(memory_id):
+        raise HTTPException(404, "Memory not found")
+    return {"memory_id": memory_id, "status": "deleted"}
+
+
+@app.post("/api/v1/memory/retrieve")
+def memory_retrieve(body: MemoryRetrieveBody) -> dict:
+    """Bounded recall over stored memories."""
+    from .memory import MemoryRefusedError as _Refused
+    from .memory import retrieve_memories as _retrieve
+    try:
+        results = _retrieve(
+            body.query, memory_types=list(
+                body.memory_types or []),
+            project_ref=body.project_ref, truth=body.truth,
+            limit=body.limit, semantic=body.semantic)
+    except _Refused as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    return {"results": results}
+
+
+@app.post("/api/v1/memory/consolidate")
+def memory_consolidate(body: MemoryConsolidateBody) -> dict:
+    """Propose candidates from raw texts. Stores nothing;
+    contradictions come back flagged for review."""
+    from .memory import MemoryRefusedError as _Refused
+    from .memory import propose_consolidation as _propose
+    try:
+        return _propose(list(body.raw_texts),
+                        project_ref=body.project_ref,
+                        source=body.source)
+    except _Refused as error:
+        raise HTTPException(status_code=422, detail=str(error))
+
+
+# =============================================================================
+# HEALTH + NUTRITION + GARMIN (BIG #11-15, Phase 2). Tracking and
+# trends only: no illness assessment anywhere, no hidden scores,
+# vegan claims need evidence, Garmin live stays off without a
+# real transport (mock provider for tests/dev).
+# =============================================================================
+
+@app.post("/api/v1/health/measurements", status_code=201)
+def health_measure(body: HealthMeasureBody) -> dict:
+    from .health import HealthRefusedError as _Refused
+    from .health import new_measurement as _new
+    from .health import save_measurement as _save
+    try:
+        entry = _new(body.metric, body.value,
+                     source=body.source,
+                     observed_at=body.observed_at,
+                     provenance=_memory_provenance(
+                         dict(body.provenance))
+                     if body.provenance else None)
+    except _Refused as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    stored = _save(entry)
+    payload = entry.model_dump(mode="json")
+    payload["stored"] = stored
+    payload["duplicate"] = not stored
+    return payload
+
+
+@app.get("/api/v1/health/measurements")
+def health_measurements(metric: str = "", source: str = "",
+                        since: str = "",
+                        limit: int = 100) -> list[dict]:
+    from .health import HealthRefusedError as _Refused
+    from .health import list_measurements as _list
+    try:
+        entries = _list(metric=metric, source=source,
+                        since=since, limit=limit)
+    except _Refused as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    return [entry.model_dump(mode="json") for entry in entries]
+
+
+@app.get("/api/v1/health/trends/{metric}")
+def health_trend(metric: str, limit: int = 30) -> dict:
+    from .health import HealthRefusedError as _Refused
+    from .health import trend_for as _trend
+    try:
+        return _trend(metric, limit=limit)
+    except _Refused as error:
+        raise HTTPException(status_code=422, detail=str(error))
+
+
+@app.get("/api/v1/health/index")
+def health_index() -> dict:
+    """Transparent per-dimension index. Method and
+    completeness on every dimension; nothing hidden."""
+    from .health import personal_health_index as _index
+    return _index()
+
+
+@app.post("/api/v1/nutrition/foods", status_code=201)
+def nutrition_food_create(body: FoodCreateBody) -> dict:
+    from .nutrition import NutritionRefusedError as _Refused
+    from .nutrition import new_food as _new
+    from .nutrition import save_food as _save
+    try:
+        food = _new(body.name, dict(body.nutrients),
+                    vegan_status=body.vegan_status,
+                    vegan_evidence=body.vegan_evidence,
+                    source=body.source,
+                    provenance=_memory_provenance(
+                        dict(body.provenance))
+                    if body.provenance else None)
+        _save(food)
+    except _Refused as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    return food.model_dump(mode="json")
+
+
+@app.get("/api/v1/nutrition/foods")
+def nutrition_food_lookup(name: str = "") -> dict:
+    from .nutrition import NUTRIENTS as _nutrients
+    if not name:
+        return {"nutrients": _nutrients, "foods": []}
+    from .nutrition import find_food as _find
+    found = _find(name)
+    return {"nutrients": _nutrients,
+            "foods": [found.model_dump(mode="json")]
+            if found is not None else []}
+
+
+@app.post("/api/v1/nutrition/meals", status_code=201)
+def nutrition_meal_create(body: MealCreateBody) -> dict:
+    from .nutrition import NutritionRefusedError as _Refused
+    from .nutrition import new_meal as _new
+    from .nutrition import save_meal as _save
+    try:
+        meal = _new(
+            body.name,
+            [item.model_dump(mode="json")
+             for item in body.items],
+            source=body.source, observed_at=body.observed_at,
+            provenance=_memory_provenance(
+                dict(body.provenance))
+            if body.provenance else None)
+        _save(meal)
+    except _Refused as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    return meal.model_dump(mode="json")
+
+
+@app.get("/api/v1/nutrition/daily")
+def nutrition_daily(day: str) -> dict:
+    from .nutrition import NutritionRefusedError as _Refused
+    from .nutrition import coverage_for as _coverage
+    from .nutrition import daily_totals as _totals
+    try:
+        totals = _totals(day)
+    except _Refused as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    return {"totals": totals,
+            "coverage": _coverage(totals["totals"])}
+
+
+@app.get("/api/v1/nutrition/weekly")
+def nutrition_weekly(end_day: str) -> dict:
+    from .nutrition import NutritionRefusedError as _Refused
+    from .nutrition import weekly_trend as _trend
+    try:
+        return _trend(end_day)
+    except _Refused as error:
+        raise HTTPException(status_code=422, detail=str(error))
+
+
+@app.get("/api/v1/integrations/garmin/status")
+def garmin_status(provider: str = "unavailable") -> dict:
+    """Honest provider state: UNAVAILABLE by default, MOCK for
+    tests/dev, never a fake LIVE."""
+    from .garmin import get_garmin_provider as _get
+    return _get(provider).status()
+
+
+@app.post("/api/v1/integrations/garmin/import")
+def garmin_import(body: GarminImportBody) -> dict:
+    """Import one bounded page into health measurements
+    (source=wearable, external-source provenance, deduped)."""
+    from .garmin import GarminRefusedError as _Refused
+    from .garmin import get_garmin_provider as _get
+    from .garmin import import_samples as _import
+    try:
+        return _import(_get(body.provider), since=body.since,
+                       cursor=body.cursor, limit=body.limit)
+    except _Refused as error:
+        raise HTTPException(status_code=422, detail=str(error))
+
+
+# =============================================================================
+# RESEARCH + INGESTION + SKILLS (BIG #11-15, Phase 3). Sources
+# never write to INVENTory directly; claims cite stored
+# sources; candidates are not skills; Instagram is
+# manual-export only.
+# =============================================================================
+
+@app.post("/api/v1/research/sources", status_code=201)
+def research_source_receive(body: ResearchSourceBody) -> dict:
+    from .research import ResearchRefusedError as _Refused
+    from .research import extract_source as _extract
+    from .research import new_source as _new
+    from .research import save_source as _save
+    try:
+        entry = _new(
+            body.source_type, body.title, content=body.content,
+            external_id=body.external_id,
+            reference=body.reference, author=body.author,
+            topics=list(body.topics),
+            entities=list(body.entities),
+            published_at=body.published_at,
+            provenance=_memory_provenance(
+                dict(body.provenance))
+            if body.provenance else None)
+        entry = _extract(entry)
+    except _Refused as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    stored = _save(entry)
+    payload = entry.model_dump(mode="json")
+    payload["stored"] = stored
+    payload["duplicate"] = not stored
+    return payload
+
+
+@app.get("/api/v1/research/sources")
+def research_source_list(source_type: str = "",
+                         limit: int = 50) -> list[dict]:
+    from .research import ResearchRefusedError as _Refused
+    from .research import list_sources as _list
+    try:
+        entries = _list(source_type=source_type, limit=limit)
+    except _Refused as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    return [entry.model_dump(mode="json") for entry in entries]
+
+
+@app.post("/api/v1/research/sources/{source_id}/advance")
+def research_source_advance(source_id: str,
+                            body: ResearchAdvanceBody) -> dict:
+    from .research import ResearchRefusedError as _Refused
+    from .research import advance_source as _advance
+    try:
+        return _advance(source_id, body.to_stage,
+                        approved_by=body.approved_by).model_dump(
+                            mode="json")
+    except _Refused as error:
+        raise HTTPException(status_code=422, detail=str(error))
+
+
+@app.post("/api/v1/research/records", status_code=201)
+def research_record_create(body: ResearchRecordBody) -> dict:
+    """QUESTION → cited claims → synthesis. Uncited claims
+    refuse; synthesis stays interpretation."""
+    from .research import ResearchRefusedError as _Refused
+    from .research import new_research_record as _new
+    from .research import save_research_record as _save
+    try:
+        record = _new(
+            body.question,
+            [item.model_dump(mode="json")
+             for item in body.claims],
+            synthesis=body.synthesis,
+            provenance=_memory_provenance(
+                dict(body.provenance))
+            if body.provenance else None)
+        _save(record)
+    except _Refused as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    return record.model_dump(mode="json")
+
+
+@app.get("/api/v1/research/records/{record_id}")
+def research_record_get(record_id: str) -> dict:
+    from .research import get_research_record as _get
+    record = _get(record_id)
+    if record is None:
+        raise HTTPException(404, "Research record not found")
+    return record.model_dump(mode="json")
+
+
+@app.get("/api/v1/integrations/instagram/status")
+def instagram_status() -> dict:
+    from .research import INSTAGRAM_STATUS as _status
+    return dict(_status)
+
+
+@app.post("/api/v1/ingest/instagram")
+def instagram_ingest(body: InstagramImportBody) -> dict:
+    """Ingest a user-owned manual export (or the mock).
+    Anything else refuses; live access is unavailable."""
+    from .research import ResearchRefusedError as _Refused
+    from .research import instagram_export_to_sources as _map
+    from .research import save_source as _save
+    try:
+        sources = _map(dict(body.export),
+                       collection=body.collection)
+    except _Refused as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    stored = sum(1 for entry in sources if _save(entry))
+    return {"received": len(sources), "stored": stored,
+            "duplicates": len(sources) - stored,
+            "sources": [entry.model_dump(mode="json")
+                        for entry in sources]}
+
+
+@app.post("/api/v1/skills", status_code=201)
+def skill_create(body: SkillCreateBody) -> dict:
+    from .skills import SkillRefusedError as _Refused
+    from .skills import new_skill as _new
+    from .skills import save_skill as _save
+    try:
+        skill = _new(
+            body.name, category=body.category,
+            description=body.description,
+            prerequisites=list(body.prerequisites),
+            related_skills=list(body.related_skills),
+            stage=body.stage, proficiency=body.proficiency,
+            project_refs=list(body.project_refs),
+            source=body.source,
+            provenance=_memory_provenance(
+                dict(body.provenance))
+            if body.provenance else None)
+        _save(skill)
+    except _Refused as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    return skill.model_dump(mode="json")
+
+
+@app.get("/api/v1/skills")
+def skill_list(stage: str = "", limit: int = 100) -> list[dict]:
+    from .skills import SkillRefusedError as _Refused
+    from .skills import list_skills as _list
+    try:
+        found = _list(stage=stage, limit=limit)
+    except _Refused as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    return [item.model_dump(mode="json") for item in found]
+
+
+@app.get("/api/v1/skills/{skill_id}")
+def skill_get(skill_id: str) -> dict:
+    from .skills import get_skill as _get
+    skill = _get(skill_id)
+    if skill is None:
+        raise HTTPException(404, "Skill not found")
+    return skill.model_dump(mode="json")
+
+
+@app.post("/api/v1/skills/{skill_id}/evidence")
+def skill_evidence(skill_id: str,
+                   body: SkillEvidenceBody) -> dict:
+    from .skills import SkillRefusedError as _Refused
+    from .skills import add_evidence as _add
+    try:
+        return _add(skill_id, body.kind, body.ref,
+                    note=body.note).model_dump(mode="json")
+    except _Refused as error:
+        raise HTTPException(status_code=422, detail=str(error))
+
+
+@app.post("/api/v1/skills/{skill_id}/advance")
+def skill_advance(skill_id: str,
+                  body: SkillAdvanceBody) -> dict:
+    from .skills import SkillRefusedError as _Refused
+    from .skills import advance_skill as _advance
+    try:
+        return _advance(skill_id, body.to_stage,
+                        confirmed_by=body.confirmed_by
+                        ).model_dump(mode="json")
+    except _Refused as error:
+        raise HTTPException(status_code=422, detail=str(error))
+
+
+@app.post("/api/v1/skills/discover")
+def skill_discover(body: SkillDiscoverBody) -> dict:
+    """Deterministic candidates from project text. Saved as
+    proposed; acceptance is a separate human step."""
+    from .skills import SkillRefusedError as _Refused
+    from .skills import discover_candidates as _discover
+    from .skills import save_candidate as _save
+    try:
+        candidates = _discover(body.project_text,
+                               project_ref=body.project_ref)
+    except _Refused as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    for candidate in candidates:
+        _save(candidate)
+    return {"candidates": [item.model_dump(mode="json")
+                           for item in candidates]}
+
+
+@app.post("/api/v1/skills/candidates/{candidate_id}/accept")
+def skill_candidate_accept(candidate_id: str,
+                           body: SkillAcceptBody) -> dict:
+    from .skills import SkillRefusedError as _Refused
+    from .skills import accept_candidate as _accept
+    try:
+        return _accept(candidate_id,
+                       accepted_by=body.accepted_by
+                       ).model_dump(mode="json")
+    except _Refused as error:
+        raise HTTPException(status_code=422, detail=str(error))
+
+
+# =============================================================================
+# ADVANCED 3D + CAD + FABRICATION (BIG #11-15, Phase 4). Safe ops
+# only; prompt edits parse to explicit ops; physical start
+# stays behind existing approval gates.
+# =============================================================================
+
+def _advanced_facets(artifact_ref: str, op: str, params: dict,
+                     extra_refs: list, max_tris: int) -> tuple:
+    from .mesh3d import MeshRefusedError, mesh_facets
+    from .meshops import (MeshOpRefusedError, bounds_of,
+                          check_advanced_op, extend_facets,
+                          merge_facets, mirror_facets,
+                          orient_facets)
+    try:
+        cleaned = check_advanced_op(op, dict(params))
+        facets, format_name, total, _ = mesh_facets(
+            artifact_ref, max_tris)
+    except (MeshRefusedError, MeshOpRefusedError,
+            ValueError) as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    try:
+        if op == "mirror":
+            moved = mirror_facets(facets, cleaned["plane"])
+            detail: dict = {"plane": cleaned["plane"]}
+        elif op == "extend":
+            moved = extend_facets(facets, cleaned["axis"],
+                                  cleaned["delta_mm"])
+            detail = {"axis": cleaned["axis"],
+                      "delta_mm": cleaned["delta_mm"]}
+        elif op == "orient":
+            moved, detail = orient_facets(facets)
+        else:
+            groups = [facets]
+            for ref in (extra_refs or [])[:9]:
+                more, _, _, _ = mesh_facets(ref, max_tris)
+                groups.append(more)
+            moved = merge_facets(groups)
+            detail = {"groups": len(groups)}
+    except (MeshRefusedError, MeshOpRefusedError,
+            ValueError) as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    return moved, format_name, total, detail
+
+
+@app.post("/api/v1/fab/advanced", status_code=201)
+def fab_advanced(body: AdvancedOpBody) -> dict:
+    """Preview (optionally persist) one advanced op. Persist
+    writes a derived working file; INVENTory registration
+    still needs the file proposal flow."""
+    from .mesh3d import validate_mesh, write_derived_mesh
+    moved, format_name, total, detail = _advanced_facets(
+        body.artifact_ref, body.op, dict(body.params),
+        list(body.extra_refs), body.max_tris)
+    preview = [[[round(float(value), 3) for value in point]
+                for point in facet] for facet in moved[:50]]
+    result: dict = {
+        "source_ref": body.artifact_ref, "op": body.op,
+        "detail": detail, "format": format_name,
+        "total_tris": total, "result_tris": len(moved),
+        "preview_tris": preview, "executed": False}
+    if body.persist:
+        try:
+            derived_ref, digest, size = write_derived_mesh(
+                body.artifact_ref, body.op, moved)
+        except (ValueError, OSError) as error:
+            raise HTTPException(status_code=422,
+                                detail=str(error))
+        report = validate_mesh(derived_ref)
+        result.update({
+            "executed": True, "derived_ref": derived_ref,
+            "sha256": digest, "size_bytes": size,
+            "validation": report.model_dump(mode="json")})
+    return result
+
+
+@app.post("/api/v1/fab/prompt-edit", status_code=201)
+def fab_prompt_edit(body: PromptEditBody) -> dict:
+    """Parse a prompt edit to an explicit op and preview it.
+    Persist needs a human approver by name."""
+    from .meshops import MeshOpRefusedError, parse_prompt_edit
+    try:
+        parsed = parse_prompt_edit(body.text)
+    except MeshOpRefusedError as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    if body.persist and not body.approved_by.strip():
+        raise HTTPException(status_code=422, detail=
+                            "persisting a prompt edit needs "
+                            "approved_by (human)")
+    moved, format_name, total, detail = _advanced_facets(
+        body.artifact_ref, parsed["op"], parsed["params"], [],
+        body.max_tris)
+    preview = [[[round(float(value), 3) for value in point]
+                for point in facet] for facet in moved[:50]]
+    result: dict = {
+        "source_ref": body.artifact_ref,
+        "interpretation": parsed["interpretation"],
+        "op": parsed["op"], "detail": detail,
+        "format": format_name, "total_tris": total,
+        "result_tris": len(moved), "preview_tris": preview,
+        "executed": False, "approved_by": body.approved_by}
+    if body.persist:
+        from .mesh3d import validate_mesh, write_derived_mesh
+        try:
+            derived_ref, digest, size = write_derived_mesh(
+                body.artifact_ref, parsed["op"], moved)
+        except (ValueError, OSError) as error:
+            raise HTTPException(status_code=422,
+                                detail=str(error))
+        report = validate_mesh(derived_ref)
+        result.update({
+            "executed": True, "derived_ref": derived_ref,
+            "sha256": digest, "size_bytes": size,
+            "validation": report.model_dump(mode="json")})
+    return result
+
+
+@app.get("/api/v1/fab/volume")
+def fab_volume(artifact_ref: str) -> dict:
+    """Mesh volume estimate in cm³ (filament math input)."""
+    from .mesh3d import MeshRefusedError, mesh_facets
+    from .meshops import MeshOpRefusedError, mesh_volume_cm3
+    try:
+        facets, _, total, _ = mesh_facets(artifact_ref)
+        volume = mesh_volume_cm3(facets)
+    except (MeshRefusedError, MeshOpRefusedError,
+            ValueError) as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    return {"artifact_ref": artifact_ref, "volume_cm3": volume,
+            "facets": total}
+
+
+@app.post("/api/v1/cad/documents", status_code=201)
+def cad_document_create(body: CadDocumentBody) -> dict:
+    from .cad import CadRefusedError as _Refused
+    from .cad import new_document as _new
+    from .cad import save_document as _save
+    try:
+        document = _new(
+            body.name, provenance=_memory_provenance(
+                dict(body.provenance))
+            if body.provenance else None)
+        _save(document)
+    except _Refused as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    return document.model_dump(mode="json")
+
+
+@app.get("/api/v1/cad/documents/{document_id}")
+def cad_document_get(document_id: str) -> dict:
+    from .cad import get_document as _get
+    document = _get(document_id)
+    if document is None:
+        raise HTTPException(404, "CAD document not found")
+    return document.model_dump(mode="json")
+
+
+@app.get("/api/v1/cad/adapters")
+def cad_adapters() -> list[dict]:
+    from .cad import adapter_status as _status
+    return _status()
+
+
+@app.post("/api/v1/cad/documents/{document_id}/parts",
+          status_code=201)
+def cad_part_add(document_id: str,
+                 body: CadPartBody) -> dict:
+    from .cad import CadRefusedError as _Refused
+    from .cad import add_part as _add
+    from .cad import get_document as _get
+    from .cad import save_document as _save
+    document = _get(document_id)
+    if document is None:
+        raise HTTPException(404, "CAD document not found")
+    try:
+        updated = _add(document, body.name)
+        _save(updated)
+    except _Refused as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    return updated.model_dump(mode="json")
+
+
+@app.post("/api/v1/cad/documents/{document_id}/operate")
+def cad_operate(document_id: str, body: CadOpBody) -> dict:
+    from .cad import CadRefusedError as _Refused
+    from .cad import add_operation as _add
+    from .cad import get_document as _get
+    from .cad import save_document as _save
+    document = _get(document_id)
+    if document is None:
+        raise HTTPException(404, "CAD document not found")
+    try:
+        updated = _add(document, body.part_id, body.op,
+                       dict(body.params), adapter=body.adapter)
+        _save(updated)
+    except _Refused as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    return updated.model_dump(mode="json")
+
+
+@app.post("/api/v1/cad/documents/{document_id}/build")
+def cad_build(document_id: str) -> dict:
+    """Execute the procedural op stack to derived meshes.
+    External adapters refuse; nothing subprocesses."""
+    from .cad import CadRefusedError as _Refused
+    from .cad import execute_document as _execute
+    from .cad import get_document as _get
+    from .cad import save_document as _save
+    document = _get(document_id)
+    if document is None:
+        raise HTTPException(404, "CAD document not found")
+    try:
+        built = _execute(document)
+        _save(built)
+    except _Refused as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    return built.model_dump(mode="json")
+
+
+@app.post("/api/v1/filament/spools", status_code=201)
+def filament_spool_create(body: SpoolCreateBody) -> dict:
+    from .fabrication import FabricationRefusedError as _Refused
+    from .fabrication import new_spool as _new
+    from .fabrication import save_spool as _save
+    try:
+        spool = _new(
+            body.material, body.weight_g, color=body.color,
+            diameter_mm=body.diameter_mm,
+            compatible_profiles=list(
+                body.compatible_profiles),
+            source=body.source, location=body.location,
+            provenance=_memory_provenance(
+                dict(body.provenance))
+            if body.provenance else None)
+        _save(spool)
+    except _Refused as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    return spool.model_dump(mode="json")
+
+
+@app.get("/api/v1/filament/spools")
+def filament_spool_list() -> list[dict]:
+    from .fabrication import list_spools as _list
+    return [item.model_dump(mode="json") for item in _list()]
+
+
+@app.get("/api/v1/filament/check")
+def filament_check(spool_id: str, grams: float) -> dict:
+    from .fabrication import FabricationRefusedError as _Refused
+    from .fabrication import spool_check as _check
+    try:
+        return _check(spool_id, grams)
+    except _Refused as error:
+        raise HTTPException(status_code=422, detail=str(error))
+
+
+@app.post("/api/v1/fab/select-printer")
+def fab_select_printer(body: PrinterSelectBody) -> dict:
+    from .fabrication import FabricationRefusedError as _Refused
+    from .fabrication import select_printer as _select
+    try:
+        return _select({"capabilities": list(
+            body.capabilities), "profile": body.profile,
+            "printer_id": body.printer_id})
+    except _Refused as error:
+        raise HTTPException(status_code=422, detail=str(error))
+
+
+@app.post("/api/v1/fab/plan")
+def fab_plan(body: PipelinePlanBody) -> dict:
+    from .fabrication import FabricationRefusedError as _Refused
+    from .fabrication import plan_pipeline as _plan
+    try:
+        return _plan(source_object_id=body.source_object_id,
+                     source_idea_id=body.source_idea_id,
+                     profile=body.profile,
+                     material=body.material)
+    except _Refused as error:
+        raise HTTPException(status_code=422, detail=str(error))
+
+
+# =============================================================================
+# ROBOTS + DRONES + FAMILIARS + DIGITAL TWIN (BIG #11-15, Phase 5).
+# Capabilities allow-listed, safety states explicit, physical
+# execution HARDWARE_REQUIRED. Proposals approve, telemetry
+# reports, verification stays independent.
+# =============================================================================
+
+@app.post("/api/v1/robots", status_code=201)
+def robot_register(body: RobotCreateBody) -> dict:
+    from .robots import RobotRefusedError as _Refused
+    from .robots import new_robot as _new
+    from .robots import save_robot as _save
+    try:
+        robot = _new(
+            body.name, robot_type=body.robot_type,
+            capabilities=list(body.capabilities),
+            location=body.location, node_id=body.node_id,
+            sensors=list(body.sensors),
+            actuators=list(body.actuators),
+            provenance=_memory_provenance(
+                dict(body.provenance))
+            if body.provenance else None)
+        _save(robot)
+    except _Refused as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    return robot.model_dump(mode="json")
+
+
+@app.get("/api/v1/robots")
+def robot_list() -> list[dict]:
+    from .robots import list_robots as _list
+    return [item.model_dump(mode="json") for item in _list()]
+
+
+@app.get("/api/v1/robots/{robot_id}")
+def robot_get(robot_id: str) -> dict:
+    from .robots import get_robot as _get
+    robot = _get(robot_id)
+    if robot is None:
+        raise HTTPException(404, "Robot not found")
+    return robot.model_dump(mode="json")
+
+
+@app.post("/api/v1/robots/{robot_id}/safety")
+def robot_safety(robot_id: str,
+                 body: RobotSafetyBody) -> dict:
+    from .robots import RobotRefusedError as _Refused
+    from .robots import set_safety as _set
+    try:
+        return _set(robot_id,
+                    body.safety_state).model_dump(mode="json")
+    except _Refused as error:
+        raise HTTPException(status_code=422, detail=str(error))
+
+
+@app.post("/api/v1/robots/{robot_id}/propose")
+def robot_propose(robot_id: str,
+                  body: RobotActionBody) -> dict:
+    from .robots import RobotRefusedError as _Refused
+    from .robots import propose_action as _propose
+    try:
+        return _propose(robot_id, body.action,
+                        dict(body.params),
+                        simulation_note=body.simulation_note
+                        ).model_dump(mode="json")
+    except _Refused as error:
+        raise HTTPException(status_code=422, detail=str(error))
+
+
+@app.post("/api/v1/robots/{robot_id}/approve")
+def robot_approve(robot_id: str,
+                  body: RobotApproveBody) -> dict:
+    from .robots import RobotActionProposal as _Proposal
+    from .robots import RobotRefusedError as _Refused
+    from .robots import approve_action as _approve
+    try:
+        proposal = _Proposal(
+            action_id=body.action_id, robot_id=robot_id,
+            action=body.action, params=dict(body.params),
+            physical=body.physical,
+            safety_state=body.safety_state,
+            simulation_note=body.simulation_note)
+        return _approve(
+            proposal,
+            body.approved_by).model_dump(mode="json")
+    except _Refused as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    except Exception as error:
+        raise HTTPException(status_code=422, detail=str(error))
+
+
+@app.post("/api/v1/robots/{robot_id}/telemetry")
+def robot_telemetry(robot_id: str,
+                    body: RobotTelemetryBody) -> dict:
+    """Record telemetry and, with an independent observation,
+    verify. Telemetry alone never verifies."""
+    from .robots import RobotRefusedError as _Refused
+    from .robots import record_telemetry as _record
+    from .robots import verify_action as _verify
+    try:
+        telemetry = _record(body.action_id, robot_id,
+                            body.status, body.detail)
+        if not body.observation.strip():
+            return {"telemetry": telemetry.model_dump(
+                mode="json"), "verification": None,
+                "note": "no independent observation supplied; "
+                        "not verified"}
+        return {"telemetry": telemetry.model_dump(mode="json"),
+                "verification": _verify(telemetry,
+                                        body.observation)}
+    except _Refused as error:
+        raise HTTPException(status_code=422, detail=str(error))
+
+
+@app.post("/api/v1/drones", status_code=201)
+def drone_register(body: DroneCreateBody) -> dict:
+    from .drones import DroneRefusedError as _Refused
+    from .drones import new_drone as _new
+    from .drones import save_drone as _save
+    try:
+        drone = _new(
+            body.name, capabilities=list(body.capabilities),
+            home_location=body.home_location,
+            provenance=_memory_provenance(
+                dict(body.provenance))
+            if body.provenance else None)
+        _save(drone)
+    except _Refused as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    return drone.model_dump(mode="json")
+
+
+@app.get("/api/v1/drones")
+def drone_list() -> list[dict]:
+    from .drones import list_drones as _list
+    return [item.model_dump(mode="json") for item in _list()]
+
+
+@app.post("/api/v1/drones/{drone_id}/mission")
+def drone_mission(drone_id: str,
+                  body: DroneMissionBody) -> dict:
+    """Propose (and with approved_by, approve) a mission.
+    Autonomous needs geofence + altitude cap + human."""
+    from .drones import DroneRefusedError as _Refused
+    from .drones import approve_mission as _approve
+    from .drones import propose_mission as _propose
+    try:
+        mission = _propose(
+            drone_id, body.kind, dict(body.params),
+            autonomous=body.autonomous, geofence=body.geofence,
+            max_altitude_m=body.max_altitude_m)
+        if body.approved_by.strip():
+            mission = _approve(mission, body.approved_by)
+    except _Refused as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    return mission.model_dump(mode="json")
+
+
+@app.post("/api/v1/familiars", status_code=201)
+def familiar_register(body: FamiliarCreateBody) -> dict:
+    from .familiars import FamiliarRefusedError as _Refused
+    from .familiars import new_familiar as _new
+    from .familiars import save_familiar as _save
+    try:
+        familiar = _new(
+            body.name, body.kind, linked_id=body.linked_id,
+            provenance=_memory_provenance(
+                dict(body.provenance))
+            if body.provenance else None)
+        _save(familiar)
+    except _Refused as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    return familiar.model_dump(mode="json")
+
+
+@app.get("/api/v1/familiars")
+def familiar_list() -> list[dict]:
+    from .familiars import list_familiars as _list
+    return [item.model_dump(mode="json") for item in _list()]
+
+
+@app.post("/api/v1/twin/links", status_code=201)
+def twin_link_create(body: TwinLinkBody) -> dict:
+    from .twin import TwinRefusedError as _Refused
+    from .twin import new_link as _new
+    from .twin import save_link as _save
+    try:
+        link = _new(
+            body.physical_ref, body.digital_ref,
+            body.link_type, source=body.source,
+            confidence=body.confidence,
+            last_observed_at=body.last_observed_at,
+            provenance=_memory_provenance(
+                dict(body.provenance))
+            if body.provenance else None)
+        _save(link)
+    except _Refused as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    return link.model_dump(mode="json")
+
+
+@app.get("/api/v1/twin/links")
+def twin_link_list(status: str = "") -> list[dict]:
+    from .twin import TwinRefusedError as _Refused
+    from .twin import list_links as _list
+    try:
+        links = _list(status=status)
+    except _Refused as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    return [item.model_dump(mode="json") for item in links]
+
+
+@app.post("/api/v1/twin/links/{link_id}/observe")
+def twin_link_observe(link_id: str) -> dict:
+    from .twin import observe_link as _observe
+    updated = _observe(link_id)
+    if updated is None:
+        raise HTTPException(404, "Twin link not found")
+    return updated.model_dump(mode="json")
+
+
+@app.get("/api/v1/twin/staleness")
+def twin_staleness(stale_hours: float = 24.0) -> dict:
+    from .twin import TwinRefusedError as _Refused
+    from .twin import staleness_report as _report
+    try:
+        return _report(stale_hours=stale_hours)
+    except _Refused as error:
+        raise HTTPException(status_code=422, detail=str(error))
+
+
+# =============================================================================
+# JOBS (BIG #11-15, Phase 6). Named bounded runs: observable,
+# retryable, cancellable, idempotent via run_key. No background
+# threads; runs trigger via API.
+# =============================================================================
+
+@app.get("/api/v1/jobs")
+def job_list() -> list[dict]:
+    from .jobs import JOB_NAMES as _names
+    return [{"job_name": name,
+             "trigger": "POST /api/v1/jobs/run"}
+            for name in _names]
+
+
+@app.post("/api/v1/jobs/run", status_code=201)
+def job_run(body: JobRunBody) -> dict:
+    from .jobs import JobRefusedError as _Refused
+    from .jobs import run_job as _run
+    try:
+        return _run(body.job_name, dict(body.params),
+                    run_key=body.run_key)
+    except _Refused as error:
+        raise HTTPException(status_code=422, detail=str(error))
+
+
+@app.get("/api/v1/jobs/runs")
+def job_runs(job_name: str = "", limit: int = 20) -> list[dict]:
+    from .jobs import JobRefusedError as _Refused
+    from .jobs import list_runs as _list
+    try:
+        return _list(job_name=job_name, limit=limit)
+    except _Refused as error:
+        raise HTTPException(status_code=422, detail=str(error))
+
+
+@app.post("/api/v1/jobs/runs/{run_id}/cancel")
+def job_cancel(run_id: str) -> dict:
+    from .jobs import cancel_run as _cancel
+    return {"run_id": run_id,
+            "cancelled": _cancel(run_id)}
 
 
 @app.get("/workshop/graph", response_class=HTMLResponse)
@@ -4653,11 +5863,187 @@ def _workspace_nav() -> str:    return ("""<nav><a href="/">Mycelium</a><a href=
             """<a href="/cameras">Cameras</a>"""
             """<a href="/fabrication">Fabrication</a>"""
             """<a href="/mobile">Mobile</a>"""
+            """<a href="/morning">Morning</a>"""
+            """<a href="/memory">Memory</a>"""
+            """<a href="/health">Health</a>"""
+            """<a href="/skills">Skills</a>"""
+            """<a href="/research">Research</a>"""
+            """<a href="/devices">Devices</a>"""
+            """<a href="/watcher">Watcher</a>"""
             """<a href="/workshop/graph">Graph</a>"""
             """<a href="/workshop">Workshop</a>"""
             """<a href="/workshop/3d">3D</a>"""
             """<a href="http://127.0.0.1:8080" target="_blank">INVENTory</a>"""
             """<a href="/api/v1/agent/status">Agent-status (JSON)</a></nav>""")
+
+
+def _cards(title: str, items: list[str]) -> str:
+    body = "".join(f"<li>{escape(str(item))}</li>"
+                   for item in (items or [])[:15])
+    return (f"<div class='card'><h3>{escape(title)}</h3>"
+            f"<ul>{body or '<li>—</li>'}</ul></div>")
+
+
+@app.get("/morning", response_class=HTMLResponse)
+def morning_page() -> str:
+    """Mobile-first morning report: cards per section."""
+    report = report_morning()
+    cards = "".join(
+        _cards(section["title"], section["items"])
+        for section in report.get("sections", []))
+    return f"""<!doctype html><html><head><title>Morning — Mycelium</title><style>
+    body{{font:16px system-ui;max-width:960px;margin:2rem auto;padding:0 1rem;color:#17352a;background:#f4f5ed}} h1{{color:#2f6b45}} nav{{margin:1rem 0}} nav a{{margin-right:1rem;color:#2f6b45}} .card{{background:white;border:1px solid #dde5dc;padding:.8rem 1rem;margin-bottom:1rem}} .card h3{{margin:.2rem 0}} ul{{margin:.4rem 0;padding-left:1.2rem}}</style></head>
+    <body>{_workspace_nav()}<h1>Morning report</h1>
+    <p><small>{escape(str(report.get('generated_at', '')))} · {escape(str(report.get('report_id', '')))}</small></p>
+    {cards}</body></html>"""
+
+
+@app.get("/memory", response_class=HTMLResponse)
+def memory_page(memory_type: str = "") -> str:
+    from .memory import MEMORY_TYPES, list_memories
+    try:
+        entries = list_memories(memory_type=memory_type,
+                                limit=50)
+    except Exception:
+        entries = []
+    options = "".join(
+        f"<option value='{kind}'"
+        + (" selected" if kind == memory_type else "")
+        + f">{kind}</option>" for kind in ["", *MEMORY_TYPES])
+    rows = "".join(
+        f"<tr><td>{escape(entry.title)}</td>"
+        f"<td>{escape(entry.memory_type)}</td>"
+        f"<td>{escape(entry.truth)}</td>"
+        f"<td>{escape(entry.project_ref or '—')}</td></tr>"
+        for entry in entries) or "<tr><td colspan='4'>—</td></tr>"
+    return f"""<!doctype html><html><head><title>Memory — Mycelium</title><style>
+    body{{font:16px system-ui;max-width:960px;margin:2rem auto;padding:0 1rem;color:#17352a;background:#f4f5ed}} h1{{color:#2f6b45}} table{{width:100%;border-collapse:collapse;background:white}} td,th{{padding:.6rem;text-align:left;border-bottom:1px solid #dde5dc}} nav{{margin:1rem 0}} nav a{{margin-right:1rem;color:#2f6b45}}</style></head>
+    <body>{_workspace_nav()}<h1>Memory</h1>
+    <form method='get' action='/memory'><select name='memory_type' onchange='this.form.submit()'>{options}</select></form>
+    <table><tr><th>Title</th><th>Type</th><th>Truth</th><th>Project</th></tr>{rows}</table></body></html>"""
+
+
+@app.get("/health", response_class=HTMLResponse)
+def health_page() -> str:
+    from .health import list_measurements, personal_health_index
+    index = personal_health_index()
+    dims = "".join(
+        f"<tr><td>{escape(name)}</td>"
+        f"<td>{escape(str(info['value']))}</td>"
+        f"<td>{escape(str(info['completeness']))}</td>"
+        f"<td><small>{escape(str(info['method']))}</small></td></tr>"
+        for name, info in index["dimensions"].items())
+    recent = list_measurements(limit=20)
+    rows = "".join(
+        f"<tr><td>{escape(entry.metric)}</td>"
+        f"<td>{escape(str(entry.value))}</td>"
+        f"<td>{escape(entry.unit)}</td>"
+        f"<td>{escape(entry.source)}</td>"
+        f"<td>{escape(entry.observed_at[:16])}</td></tr>"
+        for entry in recent) or "<tr><td colspan='5'>—</td></tr>"
+    return f"""<!doctype html><html><head><title>Health — Mycelium</title><style>
+    body{{font:16px system-ui;max-width:960px;margin:2rem auto;padding:0 1rem;color:#17352a;background:#f4f5ed}} h1,h2{{color:#2f6b45}} table{{width:100%;border-collapse:collapse;background:white;margin-bottom:2rem}} td,th{{padding:.6rem;text-align:left;border-bottom:1px solid #dde5dc}} nav{{margin:1rem 0}} nav a{{margin-right:1rem;color:#2f6b45}}</style></head>
+    <body>{_workspace_nav()}<h1>Health</h1>
+    <p><small>Tracking only — {escape(str(index['overall_completeness']))} · overall {escape(str(index['overall']))} ({escape(index['overall_method'])})</small></p>
+    <h2>Index dimensions</h2><table><tr><th>Dimension</th><th>Value</th><th>Completeness</th><th>Method</th></tr>{dims}</table>
+    <h2>Recent measurements</h2><table><tr><th>Metric</th><th>Value</th><th>Unit</th><th>Source</th><th>Observed</th></tr>{rows}</table></body></html>"""
+
+
+@app.get("/skills", response_class=HTMLResponse)
+def skills_page() -> str:
+    from .skills import list_candidates, list_skills
+    owned = list_skills(limit=100)
+    candidates = list_candidates()
+    skill_rows = "".join(
+        f"<tr><td>{escape(skill.name)}</td>"
+        f"<td>{escape(skill.stage)}</td>"
+        f"<td>{escape(skill.proficiency)}</td>"
+        f"<td>{len(skill.evidence)}</td></tr>"
+        for skill in owned) or "<tr><td colspan='4'>—</td></tr>"
+    cand_rows = "".join(
+        f"<tr><td>{escape(item.name)}</td>"
+        f"<td>{escape(item.project_ref or '—')}</td>"
+        f"<td>{escape(item.status)}</td></tr>"
+        for item in candidates) or "<tr><td colspan='3'>—</td></tr>"
+    return f"""<!doctype html><html><head><title>Skills — Mycelium</title><style>
+    body{{font:16px system-ui;max-width:960px;margin:2rem auto;padding:0 1rem;color:#17352a;background:#f4f5ed}} h1,h2{{color:#2f6b45}} table{{width:100%;border-collapse:collapse;background:white;margin-bottom:2rem}} td,th{{padding:.6rem;text-align:left;border-bottom:1px solid #dde5dc}} nav{{margin:1rem 0}} nav a{{margin-right:1rem;color:#2f6b45}}</style></head>
+    <body>{_workspace_nav()}<h1>Skills</h1>
+    <h2>Owned</h2><table><tr><th>Name</th><th>Stage</th><th>Proficiency</th><th>Evidence</th></tr>{skill_rows}</table>
+    <h2>Candidates</h2><table><tr><th>Name</th><th>Project</th><th>Status</th></tr>{cand_rows}</table></body></html>"""
+
+
+@app.get("/research", response_class=HTMLResponse)
+def research_page() -> str:
+    from .research import list_sources
+    sources = list_sources(limit=50)
+    rows = "".join(
+        f"<tr><td>{escape(item.title)}</td>"
+        f"<td>{escape(item.source_type)}</td>"
+        f"<td>{escape(item.status)}</td></tr>"
+        for item in sources) or "<tr><td colspan='3'>—</td></tr>"
+    return f"""<!doctype html><html><head><title>Research — Mycelium</title><style>
+    body{{font:16px system-ui;max-width:960px;margin:2rem auto;padding:0 1rem;color:#17352a;background:#f4f5ed}} h1{{color:#2f6b45}} table{{width:100%;border-collapse:collapse;background:white}} td,th{{padding:.6rem;text-align:left;border-bottom:1px solid #dde5dc}} nav{{margin:1rem 0}} nav a{{margin-right:1rem;color:#2f6b45}}</style></head>
+    <body>{_workspace_nav()}<h1>Research sources</h1>
+    <table><tr><th>Title</th><th>Type</th><th>Stage</th></tr>{rows}</table></body></html>"""
+
+
+@app.get("/devices", response_class=HTMLResponse)
+def devices_page() -> str:
+    from .drones import list_drones
+    from .familiars import list_familiars
+    from .robots import list_robots
+    robots = "".join(
+        f"<tr><td>{escape(item.name)}</td>"
+        f"<td>robot</td><td>{escape(item.status)}</td>"
+        f"<td>{escape(item.safety_state)}</td></tr>"
+        for item in list_robots())
+    drones = "".join(
+        f"<tr><td>{escape(item.name)}</td>"
+        f"<td>drone</td><td>{escape(item.status)}</td>"
+        f"<td>{escape(item.safety_state)}</td></tr>"
+        for item in list_drones())
+    familiars = "".join(
+        f"<tr><td>{escape(item.name)}</td>"
+        f"<td>{escape(item.kind)}</td>"
+        f"<td>{escape(item.status)}</td><td>—</td></tr>"
+        for item in list_familiars())
+    rows = robots + drones + familiars or \
+        "<tr><td colspan='4'>—</td></tr>"
+    return f"""<!doctype html><html><head><title>Devices — Mycelium</title><style>
+    body{{font:16px system-ui;max-width:960px;margin:2rem auto;padding:0 1rem;color:#17352a;background:#f4f5ed}} h1{{color:#2f6b45}} table{{width:100%;border-collapse:collapse;background:white}} td,th{{padding:.6rem;text-align:left;border-bottom:1px solid #dde5dc}} nav{{margin:1rem 0}} nav a{{margin-right:1rem;color:#2f6b45}}</style></head>
+    <body>{_workspace_nav()}<h1>Devices</h1>
+    <table><tr><th>Name</th><th>Kind</th><th>Status</th><th>Safety</th></tr>{rows}</table></body></html>"""
+
+
+@app.get("/watcher", response_class=HTMLResponse)
+def watcher_page() -> str:
+    from datetime import datetime as _dt
+    from datetime import timezone as _tz
+    current = _dt.now(_tz.utc)
+    with connection() as db:
+        task_rows = db.execute(
+            "SELECT id, status, created_at FROM tasks "
+            "ORDER BY id DESC LIMIT 200").fetchall()
+    findings = []
+    try:
+        findings += scan_stale_tasks(
+            [dict(row) for row in task_rows], current)
+        findings += scan_failed_tasks(
+            [dict(row) for row in task_rows], current)
+        findings += scan_blocked_tasks(
+            [dict(row) for row in task_rows], current)
+    except WatcherRefusedError:
+        pass
+    rows = "".join(
+        f"<tr><td>{escape(item.kind)}</td>"
+        f"<td>{escape(item.summary)}</td></tr>"
+        for item in findings[:50]) or \
+        "<tr><td colspan='2'>No findings — all quiet</td></tr>"
+    return f"""<!doctype html><html><head><title>Watcher — Mycelium</title><style>
+    body{{font:16px system-ui;max-width:960px;margin:2rem auto;padding:0 1rem;color:#17352a;background:#f4f5ed}} h1{{color:#2f6b45}} table{{width:100%;border-collapse:collapse;background:white}} td,th{{padding:.6rem;text-align:left;border-bottom:1px solid #dde5dc}} nav{{margin:1rem 0}} nav a{{margin-right:1rem;color:#2f6b45}}</style></head>
+    <body>{_workspace_nav()}<h1>Watcher findings</h1>
+    <p><small>Findings only — the watcher never executes.</small></p>
+    <table><tr><th>Kind</th><th>Finding</th></tr>{rows}</table></body></html>"""
 
 
 @app.get("/chat", response_class=HTMLResponse)

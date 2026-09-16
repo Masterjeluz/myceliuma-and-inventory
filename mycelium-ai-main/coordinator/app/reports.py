@@ -17,7 +17,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
-MAX_BLOCKS = 12
+MAX_BLOCKS = 16
 MAX_ITEMS_PER_BLOCK = 15
 MAX_ITEM_CHARS = 300
 MAX_TITLE_CHARS = 120
@@ -92,24 +92,27 @@ def assemble_report(blocks: list[tuple[str, Any]]) -> Report:
 
 def morning_report(sections: dict) -> Report:
     """Morning-report template over named bounded sources.
-    Accepted keys: health, projects, missions, tasks, skills,
-    inventory, research, fabrication, notifications,
-    suggestions. Unknown keys refuse (no silent scope creep)."""
-    allowed = ("health", "projects", "missions", "tasks",
-               "skills", "inventory", "research", "fabrication",
-               "notifications", "suggestions")
+    Fifteen independent sections (DEEL C); each loads on its
+    own, none dumps context. Unknown keys refuse (no silent
+    scope creep)."""
+    allowed = ("today", "health", "recovery", "projects",
+               "tasks", "missions", "skills", "inventory",
+               "workshop", "research", "fabrication", "devices",
+               "findings", "suggestions", "fun")
     if not isinstance(sections, dict):
         raise ReportRefusedError("Morning report needs an object")
     unknown = set(sections) - set(allowed)
     if unknown:
         raise ReportRefusedError(
             f"Unknown report sections: {sorted(unknown)}")
-    titles = {"health": "Health", "projects": "Projects",
-              "missions": "Missions", "tasks": "Tasks",
+    titles = {"today": "Today", "health": "Health",
+              "recovery": "Recovery", "projects": "Projects",
+              "tasks": "Tasks", "missions": "Missions",
               "skills": "Skills", "inventory": "Inventory",
-              "research": "Research", "fabrication": "Fabrication",
-              "notifications": "Notifications",
-              "suggestions": "Suggestions"}
+              "workshop": "Workshop", "research": "Research",
+              "fabrication": "Fabrication", "devices": "Devices",
+              "findings": "Watcher findings",
+              "suggestions": "Suggestions", "fun": "Fun"}
     return assemble_report([(titles[key], sections[key])
                             for key in allowed
                             if key in sections])

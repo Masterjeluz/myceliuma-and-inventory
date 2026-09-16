@@ -337,6 +337,190 @@ def init_chat_database() -> None:
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS memories (
+            memory_id TEXT PRIMARY KEY,
+            memory_type TEXT NOT NULL DEFAULT 'fact',
+            truth TEXT NOT NULL DEFAULT 'ai_suggestion',
+            title TEXT NOT NULL DEFAULT '',
+            content TEXT NOT NULL DEFAULT '',
+            data TEXT NOT NULL DEFAULT '{}',
+            source TEXT NOT NULL DEFAULT '',
+            provenance TEXT NOT NULL DEFAULT '{}',
+            confidence REAL NOT NULL DEFAULT 0.5,
+            importance REAL NOT NULL DEFAULT 0.5,
+            project_ref TEXT NOT NULL DEFAULT '',
+            entity_refs TEXT NOT NULL DEFAULT '[]',
+            event_refs TEXT NOT NULL DEFAULT '[]',
+            derived_from TEXT NOT NULL DEFAULT '[]',
+            revision INTEGER NOT NULL DEFAULT 1,
+            status TEXT NOT NULL DEFAULT 'active',
+            expiry TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL,
+            observed_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            fingerprint TEXT NOT NULL DEFAULT ''
+        );
+        CREATE INDEX IF NOT EXISTS idx_memories_type
+            ON memories(memory_type, status);
+        CREATE INDEX IF NOT EXISTS idx_memories_project
+            ON memories(project_ref, status);
+        CREATE TABLE IF NOT EXISTS health_measurements (
+            measurement_id TEXT PRIMARY KEY,
+            metric TEXT NOT NULL DEFAULT '',
+            value REAL NOT NULL DEFAULT 0.0,
+            unit TEXT NOT NULL DEFAULT '',
+            source TEXT NOT NULL DEFAULT 'manual',
+            provenance TEXT NOT NULL DEFAULT '{}',
+            observed_at TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            dedup_key TEXT NOT NULL DEFAULT ''
+        );
+        CREATE INDEX IF NOT EXISTS idx_health_metric
+            ON health_measurements(metric, observed_at);
+        CREATE TABLE IF NOT EXISTS foods (
+            food_id TEXT PRIMARY KEY,
+            name TEXT NOT NULL DEFAULT '',
+            nutrients TEXT NOT NULL DEFAULT '{}',
+            vegan_status TEXT NOT NULL DEFAULT 'unknown',
+            vegan_evidence TEXT NOT NULL DEFAULT '',
+            source TEXT NOT NULL DEFAULT 'manual',
+            provenance TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS meals (
+            meal_id TEXT PRIMARY KEY,
+            name TEXT NOT NULL DEFAULT '',
+            items TEXT NOT NULL DEFAULT '[]',
+            source TEXT NOT NULL DEFAULT 'manual',
+            provenance TEXT NOT NULL DEFAULT '{}',
+            observed_at TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS research_sources (
+            source_id TEXT PRIMARY KEY,
+            source_type TEXT NOT NULL DEFAULT 'manual',
+            external_id TEXT NOT NULL DEFAULT '',
+            reference TEXT NOT NULL DEFAULT '',
+            title TEXT NOT NULL DEFAULT '',
+            author TEXT NOT NULL DEFAULT '',
+            content TEXT NOT NULL DEFAULT '',
+            content_hash TEXT NOT NULL DEFAULT '',
+            topics TEXT NOT NULL DEFAULT '[]',
+            provenance TEXT NOT NULL DEFAULT '{}',
+            status TEXT NOT NULL DEFAULT 'stored',
+            captured_at TEXT NOT NULL,
+            published_at TEXT NOT NULL DEFAULT ''
+        );
+        CREATE TABLE IF NOT EXISTS research_records (
+            record_id TEXT PRIMARY KEY,
+            question TEXT NOT NULL DEFAULT '',
+            claims TEXT NOT NULL DEFAULT '[]',
+            source_ids TEXT NOT NULL DEFAULT '[]',
+            synthesis TEXT NOT NULL DEFAULT '',
+            provenance TEXT NOT NULL DEFAULT '{}',
+            status TEXT NOT NULL DEFAULT 'stored',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS skills (
+            skill_id TEXT PRIMARY KEY,
+            name TEXT NOT NULL DEFAULT '',
+            category TEXT NOT NULL DEFAULT '',
+            description TEXT NOT NULL DEFAULT '',
+            prerequisites TEXT NOT NULL DEFAULT '[]',
+            related_skills TEXT NOT NULL DEFAULT '[]',
+            stage TEXT NOT NULL DEFAULT 'discovered',
+            proficiency TEXT NOT NULL DEFAULT 'unknown',
+            evidence TEXT NOT NULL DEFAULT '[]',
+            source TEXT NOT NULL DEFAULT '',
+            provenance TEXT NOT NULL DEFAULT '{}',
+            project_refs TEXT NOT NULL DEFAULT '[]',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS skill_candidates (
+            candidate_id TEXT PRIMARY KEY,
+            name TEXT NOT NULL DEFAULT '',
+            evidence TEXT NOT NULL DEFAULT '[]',
+            project_ref TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL DEFAULT 'proposed',
+            created_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS cad_documents (
+            document_id TEXT PRIMARY KEY,
+            name TEXT NOT NULL DEFAULT '',
+            parts TEXT NOT NULL DEFAULT '[]',
+            parameters TEXT NOT NULL DEFAULT '{}',
+            operations TEXT NOT NULL DEFAULT '[]',
+            status TEXT NOT NULL DEFAULT 'draft',
+            provenance TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS filament_spools (
+            spool_id TEXT PRIMARY KEY,
+            material TEXT NOT NULL DEFAULT '',
+            color TEXT NOT NULL DEFAULT '',
+            diameter_mm REAL NOT NULL DEFAULT 1.75,
+            weight_remaining_g REAL NOT NULL DEFAULT 0.0,
+            compatible_profiles TEXT NOT NULL DEFAULT '[]',
+            source TEXT NOT NULL DEFAULT '',
+            location TEXT NOT NULL DEFAULT '',
+            provenance TEXT NOT NULL DEFAULT '{}',
+            updated_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS robots (
+            robot_id TEXT PRIMARY KEY,
+            name TEXT NOT NULL DEFAULT '',
+            robot_type TEXT NOT NULL DEFAULT 'other',
+            capabilities TEXT NOT NULL DEFAULT '[]',
+            location TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL DEFAULT 'idle',
+            safety_state TEXT NOT NULL DEFAULT 'safe',
+            node_id TEXT NOT NULL DEFAULT '',
+            provenance TEXT NOT NULL DEFAULT '{}',
+            updated_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS drones (
+            drone_id TEXT PRIMARY KEY,
+            name TEXT NOT NULL DEFAULT '',
+            capabilities TEXT NOT NULL DEFAULT '[]',
+            status TEXT NOT NULL DEFAULT 'grounded',
+            safety_state TEXT NOT NULL DEFAULT 'safe',
+            home_location TEXT NOT NULL DEFAULT '',
+            provenance TEXT NOT NULL DEFAULT '{}',
+            updated_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS familiars (
+            familiar_id TEXT PRIMARY KEY,
+            name TEXT NOT NULL DEFAULT '',
+            kind TEXT NOT NULL DEFAULT 'digital',
+            capabilities TEXT NOT NULL DEFAULT '[]',
+            linked_id TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL DEFAULT 'idle',
+            provenance TEXT NOT NULL DEFAULT '{}',
+            updated_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS twin_links (
+            link_id TEXT PRIMARY KEY,
+            physical_ref TEXT NOT NULL DEFAULT '',
+            digital_ref TEXT NOT NULL DEFAULT '',
+            link_type TEXT NOT NULL DEFAULT '',
+            source TEXT NOT NULL DEFAULT '',
+            confidence REAL NOT NULL DEFAULT 0.5,
+            last_observed_at TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL DEFAULT 'active',
+            provenance TEXT NOT NULL DEFAULT '{}',
+            updated_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS job_runs (
+            run_id TEXT PRIMARY KEY,
+            job_name TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL DEFAULT 'completed',
+            detail TEXT NOT NULL DEFAULT '',
+            started_at TEXT NOT NULL,
+            finished_at TEXT NOT NULL DEFAULT ''
+        );
         """)
 
 

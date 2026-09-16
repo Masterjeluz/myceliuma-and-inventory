@@ -37,6 +37,13 @@ VALID_FINDING_KINDS = frozenset({
     "missing_provenance",
     "old_idea",
     "maintenance_hint",
+    "blocked_task",
+    "failed_task",
+    "orphan_file",
+    "duplicate_file",
+    "unfinished_design",
+    "skill_gap",
+    "device_stale",
 })
 
 MAX_FINDINGS = 50
@@ -224,6 +231,188 @@ def scan_provenance(records: list[dict], current: datetime
                 "is AI-generated and unverified",
                 [str(record.get("entity_id",
                                 record.get("id", "")))], current))
+        if len(findings) >= MAX_FINDINGS:
+            break
+    return findings
+
+
+def _bounded(rows, cap: int = 200) -> list[dict]:
+    return [row for row in (rows or [])[:cap]
+            if isinstance(row, dict)]
+
+
+def scan_blocked_tasks(tasks: list[dict], current: datetime
+                       ) -> list[Finding]:
+    """Tasks in blocked status. Reason shown: status + age."""
+    findings = []
+    for task in _bounded(tasks):
+        if str(task.get("status", "")) != "blocked":
+            continue
+        age = _age_hours(str(task.get("updated_at",
+                                      task.get("created_at",
+                                               ""))), current)
+        age_text = f", blocked for {age:.1f}h" \
+            if age is not None else ""
+        findings.append(_finding(
+            "blocked_task",
+            f"task {task.get('id', '?')} is blocked{age_text}; "
+            "needs a human decision or unblocked dependency",
+            [str(task.get("id", ""))], current))
+        if len(findings) >= MAX_FINDINGS:
+            break
+    return findings
+
+
+def scan_failed_tasks(tasks: list[dict], current: datetime
+                      ) -> list[Finding]:
+    """Failed tasks + repeatedly failing (attempts/maxed).
+    Reason shown: status and attempt counts, never a retry."""
+    findings = []
+    for task in _bounded(tasks):
+        status = str(task.get("status", ""))
+        attempts = task.get("attempts", task.get("attempt_count",
+                                                 0))
+        try:
+            attempts = int(attempts or 0)
+        except (TypeError, ValueError):
+            attempts = 0
+        if status == "failed":
+            findings.append(_finding(
+                "failed_task",
+                f"task {task.get('id', '?')} failed after "
+                f"{attempts} attempt(s); inspect before retrying",
+                [str(task.get("id", ""))], current))
+        elif status in ("queued", "assigned") and attempts >= 3:
+            findings.append(_finding(
+                "failed_task",
+                f"task {task.get('id', '?')} failed repeatedly "
+                f"({attempts} attempts); do not retry blindly",
+                [str(task.get("id", ""))], current))
+        if len(findings) >= MAX_FINDINGS:
+            break
+    return findings
+
+
+def scan_orphan_files(files: list[dict], edges: list[dict],
+                      current: datetime) -> list[Finding]:
+    """Files with no relationship edge at all. Reason shown:
+    zero edges in the bounded edge set."""
+    linked: set[str] = set()
+    for edge in _bounded(edges, 500):
+        for key in ("from_id", "to_id"):
+            value = str(edge.get(key, ""))
+            if value:
+                linked.add(value)
+    findings = []
+    for record in _bounded(files):
+        file_id = str(record.get("id", record.get("file_id",
+                                                  "")))
+        if not file_id or file_id in linked:
+            continue
+        findings.append(_finding(
+            "orphan_file",
+            f"file {file_id} has no relationships; link it to "
+            "a source or project, or confirm it is spare",
+            [file_id], current))
+        if len(findings) >= MAX_FINDINGS:
+            break
+    return findings
+
+
+def scan_duplicate_files(files: list[dict], current: datetime
+                         ) -> list[Finding]:
+    """Files sharing one sha256. Reason shown: the hash."""
+    by_hash: dict[str, list[str]] = {}
+    for record in _bounded(files):
+        digest = str(record.get("sha256", "")).lower()
+        file_id = str(record.get("id", record.get("file_id",
+                                                  "")))
+        if not digest or not file_id:
+            continue
+        by_hash.setdefault(digest, []).append(file_id)
+    findings = []
+    for digest in sorted(by_hash):
+        ids = by_hash[digest]
+        if len(ids) < 2:
+            continue
+        findings.append(_finding(
+            "duplicate_file",
+            f"{len(ids)} files share sha256 {digest[:16]}...; "
+            "deduplicate or confirm intentional copies",
+            ids[:10], current))
+        if len(findings) >= MAX_FINDINGS:
+            break
+    return findings
+
+
+def scan_unfinished_designs(fabrications: list[dict],
+                            current: datetime) -> list[Finding]:
+    """Fabrication records stuck before verification.
+    Reason shown: current stage."""
+    findings = []
+    for record in _bounded(fabrications):
+        status = str(record.get("status", ""))
+        if status in ("verified", "cancelled"):
+            continue
+        findings.append(_finding(
+            "unfinished_design",
+            f"fabrication {record.get('fabrication_id', '?')} "
+            f"is at stage '{status or 'unknown'}'; finish or "
+            "cancel explicitly",
+            [str(record.get("fabrication_id", ""))], current))
+        if len(findings) >= MAX_FINDINGS:
+            break
+    return findings
+
+
+def scan_skill_gaps(requirements: list[dict],
+                    owned_skill_names: list[str],
+                    current: datetime) -> list[Finding]:
+    """Project skill needs without an owned skill. Reason
+    shown: which project needs which skill. Suggestion only:
+    never enrols or buys anything."""
+    owned = {str(name).strip().lower()
+             for name in (owned_skill_names or [])}
+    findings = []
+    for requirement in _bounded(requirements):
+        skill = str(requirement.get("skill", "")).strip()
+        project = str(requirement.get("project_ref",
+                                      requirement.get(
+                                          "project_id", "")))
+        if not skill or skill.lower() in owned:
+            continue
+        findings.append(_finding(
+            "skill_gap",
+            f"project {project or '?'} needs skill '{skill}' "
+            "which is not owned; consider a learning resource "
+            "or a small practice task",
+            [project] if project else [], current))
+        if len(findings) >= MAX_FINDINGS:
+            break
+    return findings
+
+
+def scan_device_staleness(devices: list[dict], current: datetime,
+                          *, kind: str = "device_stale",
+                          stale_hours: float = 24.0 * 7
+                          ) -> list[Finding]:
+    """Printers/cameras/nodes unseen beyond the bound. Reason
+    shown: last-seen age."""
+    findings = []
+    for device in _bounded(devices):
+        last_seen = str(device.get("last_seen",
+                                   device.get("updated_at",
+                                              "")))
+        age = _age_hours(last_seen, current)
+        if age is None or age < stale_hours:
+            continue
+        findings.append(_finding(
+            kind,
+            f"{device.get('device_id', device.get('id', '?'))} "
+            f"unseen for {age / 24:.1f}d; check power, "
+            "connection and retention",
+            [str(device.get("device_id",
+                            device.get("id", "")))], current))
         if len(findings) >= MAX_FINDINGS:
             break
     return findings

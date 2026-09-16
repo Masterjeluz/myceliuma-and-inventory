@@ -58,6 +58,15 @@ LIVE_READ_CAPABILITIES = frozenset({
     "node.read",
     "git.read",
     "git.diff",
+    "memory.read",
+    "health.read",
+    "research.read",
+    "skills.read",
+    "workshop.read",
+    "fabrication.read",
+    "twin.read",
+    "watcher.read",
+    "reports.read",
 })
 
 LIVE_PROPOSE_CAPABILITIES = frozenset({
@@ -174,7 +183,8 @@ def _check_scope(scope) -> dict:
     allowed = {"project_id", "entity_id", "entity_type",
                "mission_id", "conversation_id", "node_id",
                "include_observations", "include_events",
-               "include_git", "include_tasks", "include_files"}
+               "include_git", "include_tasks", "include_files",
+               "include_health"}
     unknown = set(scope) - allowed
     if unknown:
         raise LiveRefusedError(
@@ -251,7 +261,9 @@ def pack_context(session: LiveSession, sources: dict,
     used = 0
     for section in ("project", "object", "mission", "observations",
                     "relationships", "tasks", "nodes", "files",
-                    "git", "events"):
+                    "git", "events", "memory", "health",
+                    "research", "skills", "workshop",
+                    "fabrication", "twin", "findings"):
         raw = sources.get(section)
         if raw is None:
             continue
@@ -279,10 +291,12 @@ def _render_section(section: str, raw) -> str:
             continue
         kept = []
         for key in ("id", "entity_id", "observation_id",
-                    "mission_id", "node_id", "type",
+                    "mission_id", "node_id", "memory_id",
+                    "memory_type", "truth", "skill_id",
+                    "metric", "value", "unit", "type",
                     "entity_type", "title", "name", "label",
-                    "status", "event_type", "branch",
-                    "human_verified", "source_type",
+                    "status", "stage", "event_type", "branch",
+                    "dimension", "human_verified", "source_type",
                     "created_at"):
             if key in item:
                 kept.append(f"{key}={_clean_text(item[key])[:160]}")

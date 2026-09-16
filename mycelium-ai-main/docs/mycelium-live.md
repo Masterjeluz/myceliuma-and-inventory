@@ -34,3 +34,19 @@ POST /api/v1/live/propose {session_id, kind, ...} →
 - Morning report (`GET /api/v1/reports/morning`) is
   deterministisch: zelfde inputs, zelfde secties; tellen
   en korte regels, nooit dumps.
+
+## BIG #11-15: universele interface (PARTIAL)
+
+Live ontsluit nu ook memory, health, research, skills,
+workshop, fabrication, twin en watcher-findings — elke
+sectie achter een eigen capability
+(`memory.read`, `health.read`, `research.read`,
+`skills.read`, `workshop.read`, `fabrication.read`,
+`twin.read`, `watcher.read`). Health vereist bovendien
+een expliciete `include_health`-scope; zonder die vlag
+komt er geen enkele gezondheidsbyte in het pakket.
+Voorstel-capabilities (`3d.propose_transform`,
+`research.propose`, …) blijven inert tot de bestaande
+approval-flow ze oppakt. Volledige spraak-/actie-
+dekking van alle Live-commando's is FUTURE; elke actie
+blijft door capability/proposal/approval gaan.
