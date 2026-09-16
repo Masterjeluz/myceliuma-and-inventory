@@ -1,4 +1,4 @@
-# Architecture Status (september 2026, na BIG #9)
+# Architecture Status (september 2026, na BIG #10)
 
 Momentopname van wat het systeem IS. Voor flows, zie
 `chat-agent-architecture.md`; voor richting, zie `ROADMAP.md`.
@@ -98,15 +98,23 @@ Momentopname van wat het systeem IS. Voor flows, zie
 | 3D-pijplijn | `pipeline3d.py` | PARTIAL (contracten) |
 | Standalone agent | `desktop_agent/` | DONE |
 | Node-client (read-only loop) | `node_client/` | DONE |
-| INVENTory wereldmodel | `inventory/app/` | DONE (onaangeroerd) |
+| INVENTory wereldmodel | `inventory/app/` | DONE (alleen additieve `since`-cursor op `/events`) |
+| Distributed state | `diststate.py`, `sync.py` | DONE (event-log, idempotent, expliciete conflicten) |
+| Failover | `failover.py` | DONE (lease/epoch/fencing, quorum/degraded) |
+| Live-sessies | `live.py` | DONE (capability-scoped, bounded context) |
+| Watcher + reports | `watcher.py`, `reports.py` | DONE (findings-only, deterministisch) |
+| Domein-extensiepunten | `domains.py` | DONE (placeholders met requirements) |
+| Workshop-UI + 3D-voorstel | `main.py` (`/workshop*`, `/fab/transform`) | DONE |
 | Lokale desktop-scanner | `Mycelium/agent/` | Bestaand, read-only |
 
 ## Teststatus (gemeten, niet geschat)
 
-- Mycelium: **822 passed** (`pytest -v` in `mycelium-ai-main/`)
-  (784 vóór BIG #9 + 38 nieuwe interface-tests; camera-ctypes geeft
-  dezelfde pre-existing access-violation-meldingen als altijd)
-- INVENTory: **178 passed, 1 failed** — de faal is pre-existing:
+- Mycelium: **857 passed** (`pytest -v` in `mycelium-ai-main/`)
+  (822 vóór BIG #10 + 35 nieuwe dist/failover/sync/workshop/
+  security-tests; camera-ctypes geeft dezelfde pre-existing
+  access-violation-meldingen als altijd)
+- INVENTory: **179 passed, 1 failed** (178 + nieuwe
+  `test_events_since_cursor_bounded`) — de faal is pre-existing:
   `test_real_inventory_db_untouched` pint de exacte byte-grootte van
   de gitignored lokale `data/inventory.db`; inhoud groeit bij normaal
   gebruik, dus de assertie is broos per ontwerp van die test.

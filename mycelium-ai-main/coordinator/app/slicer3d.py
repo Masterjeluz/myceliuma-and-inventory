@@ -177,10 +177,10 @@ def _store_gcode(filename: str, text: str) -> tuple[str, bytes]:
     if len(data) > MAX_GCODE_BYTES:
         raise SlicerRefusedError("G-code exceeds the size cap")
     path = artifact_path(reference)
-    with open(path, "wb") as handle:
-        handle.write(data)
     from .mesh3d import prune_fabrication
     prune_fabrication()
+    with open(path, "wb") as handle:
+        handle.write(data)
     return reference, data
 
 

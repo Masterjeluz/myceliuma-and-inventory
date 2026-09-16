@@ -143,10 +143,28 @@ Zie `docs/human-interface-architecture.md`.
 - Garmin/auto/camper-integraties — FUTURE
 - Toekomstige AR-weergave van wereldmodel — FUTURE
 
-## PHASE H — LIVING WORKSHOP (FUTURE)
+## PHASE H — LIVING WORKSHOP (PARTIAL als BIG #10)
 
-- Definitieve Mycelium-workspace (chat, missies, wereldgrafiek,
-  projecten, ideeën, agents, apparaten in één beeld) — FUTURE
+Zie `docs/distributed-state.md`, `docs/coordinator-failover.md`,
+`docs/living-workshop.md` en `docs/mycelium-live.md`.
+
+- Distributed state als event/change-log (geen DB-kopie,
+  idempotent, expliciete conflicten, geen last-write-wins) — DONE
+- Coordinator-failover (lease/epoch/fencing, deterministische
+  verkiezing, quorum/degraded, geen split-brain) — DONE
+- INVENTory change-feed via additieve `since`-cursor op
+  `/api/v1/events` (read-only HTTP, geen dumps) — DONE
+- Uniforme wereldgrafiek met node/printer-overlays — DONE
+- Interactieve workshop-UI (`/workshop`, `/workshop/graph`,
+  `/workshop/3d`) — DONE
+- 3D-transform als voorstel (preview + lokaal werkbestand,
+  INVENTory-registratie via BIG #5-flow) — DONE
+- Live-sessies (capability-scoped, bounded context,
+  `git.commit ≠ git.push`) — DONE
+- Watcher-findings, morning report, domein-extensiepunten
+  (health/skills/ingestion als placeholders) — DONE
+- Definitieve Mycelium-workspace (alles in één beeld) — PARTIAL
+  (workshop-pagina's als foundation; samenvoeging volgt)
 - Lange-termijn-geheugen en geschiedenis/provenance-blik — FUTURE
 - Fysieke-wereld-koppeling (actuatoren pas na Fases C–E) — FUTURE
 

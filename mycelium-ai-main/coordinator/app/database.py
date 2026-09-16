@@ -73,6 +73,7 @@ def _ensure_node_columns(db) -> None:
         ("resources", "TEXT DEFAULT '{}'"),
         ("locality_zone", "TEXT DEFAULT 'local_network'"),
         ("last_auth", "TEXT DEFAULT ''"),
+        ("coordinator_capable", "INTEGER NOT NULL DEFAULT 0"),
     ):
         if column not in existing:
             db.execute(f"ALTER TABLE nodes ADD COLUMN {column} {ddl}")
@@ -276,6 +277,55 @@ def init_chat_database() -> None:
             status TEXT NOT NULL DEFAULT 'pending',
             created_at TEXT NOT NULL,
             expires_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS live_sessions (
+            session_id TEXT PRIMARY KEY,
+            interface TEXT NOT NULL,
+            actor TEXT NOT NULL DEFAULT '',
+            capabilities TEXT NOT NULL DEFAULT '[]',
+            context_scope TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL,
+            expires_at TEXT NOT NULL,
+            active INTEGER NOT NULL DEFAULT 1
+        );
+        CREATE TABLE IF NOT EXISTS dist_events (
+            event_id TEXT PRIMARY KEY,
+            origin_node_id TEXT NOT NULL,
+            entity_id TEXT NOT NULL,
+            entity_type TEXT NOT NULL DEFAULT '',
+            entity_revision TEXT NOT NULL DEFAULT '',
+            base_revision TEXT NOT NULL DEFAULT '',
+            event_type TEXT NOT NULL,
+            timestamp TEXT NOT NULL,
+            payload TEXT NOT NULL DEFAULT '{}',
+            provenance TEXT NOT NULL DEFAULT '{}',
+            epoch INTEGER NOT NULL DEFAULT 0,
+            payload_hash TEXT NOT NULL DEFAULT '',
+            applied_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_dist_entity
+            ON dist_events(entity_id, applied_at);
+        CREATE TABLE IF NOT EXISTS dist_conflicts (
+            conflict_id TEXT PRIMARY KEY,
+            entity_id TEXT NOT NULL,
+            base_revision TEXT NOT NULL DEFAULT '',
+            first_event_id TEXT NOT NULL,
+            second_event_id TEXT NOT NULL,
+            first_origin TEXT NOT NULL DEFAULT '',
+            second_origin TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL DEFAULT 'open',
+            created_at TEXT NOT NULL,
+            notes TEXT NOT NULL DEFAULT ''
+        );
+        CREATE INDEX IF NOT EXISTS idx_dist_conflict_entity
+            ON dist_conflicts(entity_id, status);
+        CREATE TABLE IF NOT EXISTS coordinator_lease (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            epoch INTEGER NOT NULL DEFAULT 0,
+            holder_node_id TEXT NOT NULL DEFAULT '',
+            fencing_token TEXT NOT NULL DEFAULT '',
+            expires_at TEXT NOT NULL DEFAULT '',
+            updated_at TEXT NOT NULL DEFAULT ''
         );
         CREATE TABLE IF NOT EXISTS write_proposals (
             proposal_id TEXT PRIMARY KEY,

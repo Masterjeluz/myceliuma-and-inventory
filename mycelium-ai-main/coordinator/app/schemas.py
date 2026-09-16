@@ -28,6 +28,7 @@ class NodeRegistration(BaseModel):
                                max_length=20)
     node_token: str | None = Field(default=None, min_length=8,
                                    max_length=256)
+    coordinator_capable: bool = False
 
 
 class NodeResponse(NodeRegistration):
@@ -480,3 +481,71 @@ class PhoneCameraBody(BaseModel):
                       max_length=120)
     kinds: list[str] = Field(default_factory=lambda: ["snapshot"],
                              min_length=1, max_length=4)
+
+
+class CampaignBody(BaseModel):
+    """Seek or renew the coordinator lease (BIG #10)."""
+
+    node_id: str = Field(min_length=3, max_length=80)
+
+
+class DistEnvelopeBody(BaseModel):
+    """One distributed change envelope for sync apply."""
+
+    event_id: str = Field(min_length=3, max_length=80)
+    origin_node_id: str = Field(min_length=1, max_length=80)
+    entity_id: str = Field(min_length=1, max_length=100)
+    entity_type: str = Field(min_length=1, max_length=40)
+    entity_revision: str = Field(default="", max_length=120)
+    base_revision: str = Field(default="", max_length=120)
+    event_type: str = Field(min_length=1, max_length=40)
+    timestamp: str = Field(default="", max_length=80)
+    payload: dict[str, Any] = Field(default_factory=dict)
+    provenance: dict[str, Any] = Field(default_factory=dict)
+    epoch: int = Field(default=0, ge=0)
+
+
+class SyncApplyBody(BaseModel):
+    items: list[DistEnvelopeBody] = Field(default_factory=list,
+                                          max_length=100)
+
+
+class LiveSessionBody(BaseModel):
+    """Open one capability-scoped Live session (least privilege)."""
+
+    interface: str = Field(min_length=1, max_length=40)
+    actor: str = Field(min_length=1, max_length=80)
+    capabilities: list[str] = Field(default_factory=list,
+                                    max_length=20)
+    context_scope: dict[str, Any] = Field(default_factory=dict)
+    ttl_seconds: int = Field(default=3600, ge=1, le=86400)
+
+
+class LiveContextBody(BaseModel):
+    session_id: str = Field(min_length=3, max_length=80)
+    query: str = Field(default="", max_length=500)
+    budget: int = Field(default=8000, ge=512, le=20000)
+    entity_id: str = Field(default="", max_length=100)
+
+
+class LiveProposeBody(BaseModel):
+    """Propose through a Live session. Capability-gated; the
+    proposal itself still needs the existing approval flow."""
+
+    session_id: str = Field(min_length=3, max_length=80)
+    kind: str = Field(min_length=1, max_length=40)
+    target: str = Field(default="", max_length=200)
+    payload: dict[str, Any] = Field(default_factory=dict)
+    actor: str = Field(default="", max_length=80)
+
+
+class TransformBody(BaseModel):
+    """Preview (and optionally persist locally) one mesh
+    transform. Persistence is a local working file; INVENTory
+    registration still needs the file proposal flow."""
+
+    artifact_ref: str = Field(min_length=1, max_length=200)
+    op: str = Field(min_length=1, max_length=20)
+    params: dict[str, Any] = Field(default_factory=dict)
+    persist: bool = False
+    max_tris: int = Field(default=5000, ge=1, le=5000)

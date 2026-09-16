@@ -413,3 +413,38 @@ class InventoryReader:
         if data is None:
             raise InventoryUnavailable("INVENTory graph returned 404")
         return GraphResponse.model_validate(data)
+
+    async def events_since(self, since: str = "",
+                           limit: int = 100) -> list[dict]:
+        """Cursor change feed over INVENTory events (BIG #10).
+        Additive read-only route use: ``since`` is an ISO
+        timestamp cursor, ``limit`` is clamped 1..500 server
+        side too. Returns raw event dicts with provenance."""
+        try:
+            count = max(1, min(int(limit or 100), 500))
+        except (TypeError, ValueError):
+            raise InventoryRefusedError("limit must be an integer")
+        params: dict = {"limit": count}
+        if since:
+            if not isinstance(since, str):
+                raise InventoryRefusedError(
+                    "since must be an ISO timestamp")
+            params["since"] = since.strip()[:64]
+        data = await self._get("/api/v1/events", params)
+        if data is None:
+            return []
+        if not isinstance(data, list):
+            raise InventoryUnavailable(
+                "INVENTory answered with invalid JSON")
+        items = []
+        for entry in data[:count]:
+            if not isinstance(entry, dict):
+                continue
+            items.append({
+                "id": str(entry.get("id", "")),
+                "event_type": str(entry.get("event_type", "")),
+                "entity_id": str(entry.get("entity_id", "")),
+                "timestamp": str(entry.get("timestamp", "")),
+                "provenance": entry.get("provenance", {}),
+            })
+        return items

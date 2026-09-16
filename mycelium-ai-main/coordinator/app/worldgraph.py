@@ -27,6 +27,16 @@ INVENTORY_NODE_TYPES = frozenset({
 })
 MYCELIUM_NODE_TYPES = frozenset({"mission", "agent", "node"})
 
+#: Overlay node types owned by Mycelium (BIG #10 uniform layer).
+#: INVENTory types above stay authoritative; these never pretend
+#: to be world entities.
+OVERLAY_NODE_TYPES = frozenset({
+    "mission", "agent", "node", "observation", "artifact",
+    "print_job", "printer", "live_session",
+})
+
+MAX_NODE_OVERLAY = 50
+
 
 def _inventory_node(node) -> dict:
     provenance = node.provenance
@@ -59,7 +69,9 @@ async def build_world_graph(reader, entity_id: str, depth: int = 1, *,
                             include_missions: bool = False,
                             agent_nodes: list[dict] | None = None,
                             observations: list[dict] | None = None,
-                            fabrication: list[dict] | None = None
+                            fabrication: list[dict] | None = None,
+                            registry_nodes: list[dict] | None = None,
+                            printers: list[dict] | None = None
                             ) -> dict:
     """Project inventory graph + optional Mycelium overlay."""
     if isinstance(depth, bool) or depth not in GRAPH_DEPTHS:
@@ -83,6 +95,10 @@ async def build_world_graph(reader, entity_id: str, depth: int = 1, *,
         _overlay_observations(nodes, edges, observations)
     if fabrication:
         _overlay_fabrication(nodes, edges, fabrication)
+    if registry_nodes:
+        _overlay_registry_nodes(nodes, edges, registry_nodes)
+    if printers:
+        _overlay_printers(nodes, edges, printers)
     for agent in (agent_nodes or [])[:50]:
         node_id = str(agent.get("node_id", ""))
         if not node_id or node_id in nodes:
@@ -252,6 +268,82 @@ def _overlay_fabrication(nodes: dict, edges: list,
                 "to": target,
                 "provenance": {"source_type": "ai-generated",
                                "creator_id": "fabrication-flow",
+                               "human_verified": False},
+            })
+        if len(nodes) >= MAX_NODES:
+            return
+
+
+MAX_REGISTRY_NODES = 50
+
+
+def _overlay_registry_nodes(nodes: dict, edges: list,
+                            registry: list[dict]) -> None:
+    """Coordinator node registry as overlay (BIG #10 uniform
+    layer). Nodes carry derived status, capability/model counts
+    and revision hints (last_seen); they never merge with
+    INVENTory entities."""
+    for item in list(registry or [])[:MAX_REGISTRY_NODES]:
+        if not isinstance(item, dict):
+            continue
+        node_id = str(item.get("node_id", ""))
+        if not node_id or node_id in nodes:
+            continue
+        capabilities = item.get("capabilities", [])
+        models = item.get("models", [])
+        nodes[node_id] = {
+            "id": node_id,
+            "type": "node",
+            "label": str(item.get("display_name")
+                         or item.get("hostname", "")
+                         or node_id)[:120],
+            "source": "mycelium",
+            "metadata": {
+                "status": str(item.get("derived_status",
+                                       item.get("status", ""))),
+                "tier": str(item.get("tier", "")),
+                "capabilities": len(capabilities)
+                if isinstance(capabilities, list) else 0,
+                "models": len(models)
+                if isinstance(models, list) else 0,
+                "revision": str(item.get("last_seen", "")),
+                "last_seen": str(item.get("last_seen", "")),
+            },
+        }
+        if len(nodes) >= MAX_NODES:
+            return
+
+
+def _overlay_printers(nodes: dict, edges: list,
+                      printers: list[dict]) -> None:
+    """Printer devices as overlay (BIG #10 uniform layer)."""
+    for item in list(printers or [])[:MAX_REGISTRY_NODES]:
+        if not isinstance(item, dict):
+            continue
+        printer_id = str(item.get("printer_id", ""))
+        if not printer_id or printer_id in nodes:
+            continue
+        nodes[printer_id] = {
+            "id": printer_id,
+            "type": "printer",
+            "label": str(item.get("name", printer_id))[:120],
+            "source": "mycelium",
+            "metadata": {
+                "status": str(item.get("status", "")),
+                "capabilities": list(
+                    item.get("capabilities", []))[:10],
+            },
+        }
+        twin = str(item.get("inventory_hardware_id", ""))
+        if twin and twin in nodes:
+            if len(edges) >= MAX_EDGES:
+                return
+            edges.append({
+                "from": printer_id,
+                "predicate": "twinned_with",
+                "to": twin,
+                "provenance": {"source_type": "user-created",
+                               "creator_id": "printer-registry",
                                "human_verified": False},
             })
         if len(nodes) >= MAX_NODES:

@@ -226,6 +226,34 @@ def test_unknown_file_id_404(client):
 
 
 # =============================================================================
+# Events change feed: bounded `since` cursor (BIG #10, additief)
+# =============================================================================
+
+def test_events_since_cursor_bounded(client):
+    first = make_file(client)
+    events = client.get("/api/v1/events",
+                        params={"entity_id": first["id"]}).json()
+    assert events and events[0]["event_type"] == "file_created"
+    cursor = events[0]["timestamp"]
+    # Nothing newer yet: empty page, no dump.
+    assert client.get("/api/v1/events",
+                      params={"since": cursor}).json() == []
+    make_file(client, name="tweede.stl", sha256=SHA2)
+    newer = client.get("/api/v1/events",
+                       params={"since": cursor}).json()
+    assert newer
+    assert all(evt["timestamp"] > cursor for evt in newer)
+    # Fail-closed on garbage; limit stays clamped.
+    assert client.get("/api/v1/events",
+                      params={"since": "geen-tijdstempel"}).status_code == 422
+    assert client.get("/api/v1/events",
+                      params={"since": cursor, "limit": 1}).json() != []
+    capped = client.get("/api/v1/events",
+                        params={"since": cursor, "limit": 5000}).json()
+    assert len(capped) <= 500
+
+
+# =============================================================================
 # Safety: geen filesystem/network/subprocess-toegang
 # =============================================================================
 

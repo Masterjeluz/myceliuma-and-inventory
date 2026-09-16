@@ -1343,15 +1343,36 @@ def delete_relationship(rel_id: str) -> Response:
 # =============================================================================
 
 @app.get("/api/v1/events", response_model=list[EventResponse])
-def list_events(entity_id: str | None = None, limit: int = 100) -> list[EventResponse]:
+def list_events(entity_id: str | None = None, limit: int = 100, since: str | None = None) -> list[EventResponse]:
+    """Bounded event feed with an optional ``since`` timestamp cursor
+    (BIG #10 change feed). Additive: existing entity_id/limit behavior
+    is unchanged. No dumps: limit is clamped to 1..500."""
+    try:
+        count = max(1, min(int(limit), 500))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=422, detail="limit must be an integer")
+    cursor = None
+    if since:
+        from datetime import datetime
+        try:
+            cursor = datetime.fromisoformat(since)
+        except ValueError:
+            raise HTTPException(status_code=422, detail="since must be an ISO timestamp")
     with connection() as db:
-        if entity_id:
+        if entity_id and cursor is not None:
+            rows = db.execute(
+                "SELECT * FROM events WHERE entity_id=? AND timestamp>? ORDER BY timestamp DESC LIMIT ?",
+                (entity_id, since, count),
+            ).fetchall()
+        elif entity_id:
             rows = db.execute(
                 "SELECT * FROM events WHERE entity_id=? ORDER BY timestamp DESC LIMIT ?",
-                (entity_id, limit),
+                (entity_id, count),
             ).fetchall()
+        elif cursor is not None:
+            rows = db.execute("SELECT * FROM events WHERE timestamp>? ORDER BY timestamp DESC LIMIT ?", (since, count)).fetchall()
         else:
-            rows = db.execute("SELECT * FROM events ORDER BY timestamp DESC LIMIT ?", (limit,)).fetchall()
+            rows = db.execute("SELECT * FROM events ORDER BY timestamp DESC LIMIT ?", (count,)).fetchall()
     return [_row_to_event(r) for r in rows]
 
 

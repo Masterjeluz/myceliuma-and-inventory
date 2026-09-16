@@ -191,11 +191,11 @@ def _store_artifact(filename: str, data: bytes) -> str:
     reference = check_artifact_ref(filename)
     if len(data) > MAX_MESH_BYTES:
         raise MeshRefusedError("Artifact exceeds the size cap")
+    prune_fabrication()
     path = os.path.abspath(
         os.path.join(os.path.abspath(fabrication_dir()), reference))
     with open(path, "wb") as handle:
         handle.write(data)
-    prune_fabrication()
     return reference
 
 
@@ -587,3 +587,174 @@ def file_payload_for_mesh(report: MeshReport, data_sha256: str,
                      "faces": report.faces,
                      "bounds_mm": report.bounds_mm},
     }
+
+
+#: Preview/transform bounds: never a full-mesh dump by default.
+PREVIEW_MAX_TRIS = 5000
+
+VALID_TRANSFORM_OPS = frozenset({"rotate", "translate", "scale"})
+
+
+def mesh_facets(artifact_ref: str, max_tris: int = PREVIEW_MAX_TRIS
+                ) -> tuple[list, str, int, bool]:
+    """Bounded facet read for preview/transform. Returns
+    (facets, format, total, truncated). Validation state does
+    not matter here — preview shows bytes, verdicts stay with
+    validate_mesh."""
+    try:
+        count = max(1, min(int(max_tris or PREVIEW_MAX_TRIS),
+                           PREVIEW_MAX_TRIS))
+    except (TypeError, ValueError):
+        raise MeshRefusedError("max_tris must be an integer")
+    data = read_artifact_bytes(artifact_ref)
+    lowered = artifact_ref.lower()
+    if lowered.endswith(".stl"):
+        text = None
+        try:
+            text = data.decode("ascii")
+        except UnicodeDecodeError:
+            text = None
+        if text is not None and text.lstrip().lower().startswith(
+                "solid"):
+            facets, _, _, _ = _parse_stl_ascii(text)
+            format_name = "stl-ascii"
+        else:
+            facets, _, _, _ = _parse_stl_binary(data)
+            format_name = "stl-binary"
+    elif lowered.endswith(".obj"):
+        try:
+            text = data.decode("utf-8")
+        except UnicodeDecodeError:
+            raise MeshRefusedError(
+                "OBJ preview needs UTF-8 text")
+        _, facets, _, _, _ = _parse_obj(text)
+        format_name = "obj"
+    else:  # pragma: no cover - guarded by check_artifact_ref
+        raise MeshRefusedError("Unsupported mesh suffix")
+    total = len(facets)
+    return facets[:count], format_name, total, total > count
+
+
+def check_transform(op: str, params) -> dict:
+    """Validate one mesh transform. Pure math only: rotate
+    (axis + degrees), translate (dx/dy/dz), scale (factor).
+    No scripting, no code, no file access."""
+    if op not in VALID_TRANSFORM_OPS:
+        raise MeshRefusedError(
+            f"Unknown transform '{op}'; expected one of "
+            f"{sorted(VALID_TRANSFORM_OPS)}")
+    if not isinstance(params, dict):
+        raise MeshRefusedError("transform params must be an object")
+    if op == "rotate":
+        axis = str(params.get("axis", ""))
+        if axis not in ("x", "y", "z"):
+            raise MeshRefusedError(
+                "rotate needs axis x, y or z")
+        try:
+            degrees = float(params.get("degrees", 0.0))
+        except (TypeError, ValueError):
+            raise MeshRefusedError("degrees must be a number")
+        if not math.isfinite(degrees) or abs(degrees) > 360.0:
+            raise MeshRefusedError("degrees must be -360..360")
+        unknown = set(params) - {"axis", "degrees"}
+        if unknown:
+            raise MeshRefusedError(
+                f"rotate carries unexpected params: "
+                f"{sorted(unknown)}")
+        return {"axis": axis, "degrees": degrees}
+    if op == "translate":
+        deltas = {}
+        for key in ("dx", "dy", "dz"):
+            try:
+                value = float(params.get(key, 0.0))
+            except (TypeError, ValueError):
+                raise MeshRefusedError(f"{key} must be a number")
+            if not math.isfinite(value) or abs(value) > 1000.0:
+                raise MeshRefusedError(
+                    f"{key} must be -1000..1000")
+            deltas[key] = value
+        unknown = set(params) - {"dx", "dy", "dz"}
+        if unknown:
+            raise MeshRefusedError(
+                f"translate carries unexpected params: "
+                f"{sorted(unknown)}")
+        return deltas
+    try:
+        factor = float(params.get("factor", 1.0))
+    except (TypeError, ValueError):
+        raise MeshRefusedError("factor must be a number")
+    if not math.isfinite(factor) or not 0.01 <= factor <= 100.0:
+        raise MeshRefusedError("factor must be 0.01..100")
+    unknown = set(params) - {"factor"}
+    if unknown:
+        raise MeshRefusedError(
+            f"scale carries unexpected params: {sorted(unknown)}")
+    return {"factor": factor}
+
+
+def transform_facets(facets: list, op: str, params: dict) -> list:
+    """Apply one validated transform to facet triples. Returns
+    new triples; input untouched."""
+    import math as _math
+    out = []
+    if op == "rotate":
+        axis, degrees = params["axis"], params["degrees"]
+        radians = _math.radians(degrees)
+        cos_a, sin_a = _math.cos(radians), _math.sin(radians)
+
+        def turn(point):
+            x, y, z = (float(point[0]), float(point[1]),
+                       float(point[2]))
+            if axis == "x":
+                return (x, y * cos_a - z * sin_a,
+                        y * sin_a + z * cos_a)
+            if axis == "y":
+                return (x * cos_a + z * sin_a, y,
+                        -x * sin_a + z * cos_a)
+            return (x * cos_a - y * sin_a,
+                    x * sin_a + y * cos_a, z)
+    elif op == "translate":
+        dx, dy, dz = (params["dx"], params["dy"], params["dz"])
+
+        def turn(point):
+            return (float(point[0]) + dx, float(point[1]) + dy,
+                    float(point[2]) + dz)
+    else:
+        factor = params["factor"]
+
+        def turn(point):
+            return (float(point[0]) * factor,
+                    float(point[1]) * factor,
+                    float(point[2]) * factor)
+    for facet in facets or []:
+        out.append(tuple(turn(point) for point in facet))
+    return out
+
+
+def write_derived_mesh(source_ref: str, op: str,
+                       facets: list) -> tuple[str, str, int]:
+    """Persist transformed facets as a local derived STL file.
+    Returns (artifact_ref, sha256, size). The file is a working
+    artifact: INVENTory registration still needs the BIG #5
+    proposal flow (file_payload_for_mesh)."""
+    import hashlib as _hashlib
+    lines = [f"solid mycelium_derived_{op}"]
+    for facet in facets:
+        lines.append("  facet normal 0 0 0")
+        lines.append("    outer loop")
+        for point in facet:
+            lines.append(
+                f"      vertex {float(point[0]):.3f} "
+                f"{float(point[1]):.3f} {float(point[2]):.3f}")
+        lines.append("    endloop")
+        lines.append("  endfacet")
+    lines.append(f"endsolid mycelium_derived_{op}")
+    data = ("\n".join(lines) + "\n").encode("ascii")
+    digest = _hashlib.sha256(data).hexdigest()
+    reference = check_artifact_ref(f"fab-derived-{digest[:12]}.stl")
+    prune_fabrication()
+    path = os.path.abspath(os.path.join(
+        os.path.abspath(fabrication_dir()), reference))
+    with open(path, "wb") as handle:
+        handle.write(data)
+    return reference, digest, len(data)

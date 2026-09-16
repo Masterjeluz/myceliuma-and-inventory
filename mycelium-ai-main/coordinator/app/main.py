@@ -44,15 +44,61 @@ from .fab_flow import (
     verify_print_camera,
     verify_print_telemetry,
 )
+from .failover import (
+    ElectionRefusedError,
+    FencingError,
+    campaign as failover_campaign,
+    current_epoch,
+    release as failover_release,
+    require_epoch,
+    sync_status as failover_status,
+)
+from .live import (
+    GIT_PUSH_CAPABILITY,
+    LiveRefusedError,
+    check_capabilities as live_check_caps,
+    live_can,
+    load_live_session,
+    open_session as live_open_session,
+    pack_context,
+    revoke_live_session,
+    save_live_session,
+    session_live,
+)
+from .reports import (
+    ReportRefusedError,
+    assemble_report,
+    make_block,
+    morning_report,
+)
+from .sync import (
+    SyncRefusedError,
+    apply_pulled,
+    fetch_inventory_changes,
+    pull_changes,
+    sync_status as dist_sync_status,
+)
+from .watcher import (
+    WatcherRefusedError,
+    scan_entities,
+    scan_projects,
+    scan_provenance,
+    scan_relationships,
+    scan_stale_tasks,
+)
 from .mesh3d import (
     MeshRefusedError,
     MeshUnavailable,
     assess_printability,
     check_artifact_ref,
+    check_transform,
     file_payload_for_mesh,
     get_generator,
+    mesh_facets,
     read_artifact_bytes,
+    transform_facets,
     validate_mesh,
+    write_derived_mesh,
 )
 from .git_commit import (
     GitWriteFailedError,
@@ -99,6 +145,26 @@ from .verification import (
     is_verified,
     new_verification_request,
     verify_inventory_write,
+)
+from .diststate import (
+    DistStateRefusedError,
+    apply_envelope,
+    detect_conflict,
+    entity_history,
+    known_event_ids,
+    list_conflicts,
+    new_conflict,
+    new_envelope,
+    read_log,
+    resolve_conflict,
+    save_conflict,
+    save_envelope,
+)
+from .domains import (
+    DomainRefusedError,
+    domain_info,
+    ingestion_stage,
+    list_domains,
 )
 from .events import (
     EventRefusedError,
@@ -260,7 +326,7 @@ from .routing import (
     requirements_from_payload,
     route_task,
 )
-from .schemas import AdviseRequest, AdviseResponse, CameraRegisterBody, CaptureCloseBody, CaptureOpenBody, ChatMissionBody, ChatRequest, ChatResponse, ClaimedTask, DecideApprovalBody, DesktopActionBody, DesktopClaimBody, DesktopDecisionBody, DesktopDispatchBody, DesktopResultBody, FabGenerateBody, FabSliceBody, GitCommitBody, Heartbeat, InterfaceChatBody, InventoryWriteBody, MissionApproveBody, MissionCreateBody, MissionStepBody, NodeRegistration, NotifyBody, PhoneCameraBody, PlanBody, PlanToProposalBody, PrintCancelBody, PrintProposeBody, PrinterRegisterBody, SessionOpenBody, StreamStartBody, SuggestStepsBody, TaskAssignBody, TaskCreate, TaskFromProposalBody, TaskResult, TaskRouteBody, TemplateMissionBody, VisionAnalyzeBody, VisionProposeBody, VoiceApprovalRequestBody, VoiceApproveBody, VoiceChatBody, VoiceSynthesizeBody, VoiceTranscribeBody, WriteDecisionBody
+from .schemas import AdviseRequest, AdviseResponse, CampaignBody, CameraRegisterBody, CaptureCloseBody, CaptureOpenBody, ChatMissionBody, ChatRequest, ChatResponse, ClaimedTask, DecideApprovalBody, DesktopActionBody, DesktopClaimBody, DesktopDecisionBody, DesktopDispatchBody, DesktopResultBody, DistEnvelopeBody, FabGenerateBody, FabSliceBody, GitCommitBody, Heartbeat, InterfaceChatBody, InventoryWriteBody, LiveContextBody, LiveProposeBody, LiveSessionBody, MissionApproveBody, MissionCreateBody, MissionStepBody, NodeRegistration, NotifyBody, PhoneCameraBody, PlanBody, PlanToProposalBody, PrintCancelBody, PrintProposeBody, PrinterRegisterBody, SessionOpenBody, StreamStartBody, SuggestStepsBody, SyncApplyBody, TaskAssignBody, TaskCreate, TaskFromProposalBody, TaskResult, TaskRouteBody, TemplateMissionBody, TransformBody, VisionAnalyzeBody, VisionProposeBody, VoiceApprovalRequestBody, VoiceApproveBody, VoiceChatBody, VoiceSynthesizeBody, VoiceTranscribeBody, WriteDecisionBody
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 logger = logging.getLogger("mycelium.coordinator")
@@ -332,6 +398,7 @@ def register_node(node: NodeRegistration) -> dict[str, str]:
                                   "unknown"):
         raise HTTPException(status_code=422,
                             detail="energy_source unknown")
+    capable = bool(node.coordinator_capable)
     with connection() as db:
         existing = db.execute(
             "SELECT status, auth_token_hash FROM nodes WHERE node_id=?",
@@ -355,8 +422,8 @@ def register_node(node: NodeRegistration) -> dict[str, str]:
         (node_id, hostname, tier, capabilities, cpu_cores, memory_mb,
          energy_source, last_seen, status, auth_token_hash,
          display_name, models, executors, resources, locality_zone,
-         last_auth)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         last_auth, coordinator_capable)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(node_id) DO UPDATE SET hostname=excluded.hostname,
         tier=excluded.tier, capabilities=excluded.capabilities,
         cpu_cores=excluded.cpu_cores, memory_mb=excluded.memory_mb,
@@ -366,12 +433,14 @@ def register_node(node: NodeRegistration) -> dict[str, str]:
         display_name=excluded.display_name, models=excluded.models,
         executors=excluded.executors, resources=excluded.resources,
         locality_zone=excluded.locality_zone,
-        last_auth=excluded.last_auth""",
+        last_auth=excluded.last_auth,
+        coordinator_capable=excluded.coordinator_capable""",
             (node_id, node.hostname, node.tier,
              dump(capabilities), node.cpu_cores, node.memory_mb,
              node.energy_source, now(), status, bound_hash,
              display_name, dump(models), dump(executors),
-             dump(resources), locality_zone, auth_mode))
+             dump(resources), locality_zone, auth_mode,
+             1 if capable else 0))
     logger.info("node_registered node_id=%s tier=%s auth=%s",
                 node_id, node.tier,
                 "token" if auth_mode == "token" else "legacy")
@@ -436,7 +505,8 @@ def heartbeat(node_id: str, heartbeat_data: Heartbeat) -> Response:
 NODE_PUBLIC_COLUMNS = (
     "node_id, hostname, tier, capabilities, cpu_cores, memory_mb, "
     "energy_source, last_seen, status, display_name, models, "
-    "executors, resources, locality_zone, last_auth"
+    "executors, resources, locality_zone, last_auth, "
+    "coordinator_capable"
 )
 
 
@@ -450,6 +520,11 @@ def _node_to_json(row) -> dict:
             record[key] = [] if key != "resources" else {}
     record["derived_status"] = derive_status(
         record.get("status", "unknown"), record.get("last_seen", ""))
+    try:
+        record["coordinator_capable"] = bool(
+            int(record.get("coordinator_capable", 0) or 0))
+    except (TypeError, ValueError):
+        record["coordinator_capable"] = False
     return record
 
 
@@ -635,12 +710,14 @@ def assign_task(task_id: int, body: TaskAssignBody) -> dict:
             detail="; ".join(
                 reason for entry in decision.rejected
                 for reason in entry.reasons) or "no eligible node")
+    stamped = decision.model_dump(mode="json")
+    stamped["epoch"] = current_epoch()
     with connection() as db:
         changed = db.execute(
             "UPDATE tasks SET assigned_node_id=?, routing_decision=? "
             "WHERE id=? AND status='queued'",
             (decision.selected_node_id,
-             dump(decision.model_dump(mode="json")), task_id)).rowcount
+             dump(stamped), task_id)).rowcount
     if not changed:
         raise HTTPException(status_code=409,
                             detail="Task changed state; refusing")
@@ -652,7 +729,7 @@ def assign_task(task_id: int, body: TaskAssignBody) -> dict:
                node_id=decision.selected_node_id or "")
     return {"id": task_id, "assigned_node_id":
             decision.selected_node_id,
-            "routing": decision.model_dump(mode="json")}
+            "routing": stamped}
 
 
 @app.post("/api/v1/tasks/claim/{node_id}", response_model=ClaimedTask | None)
@@ -696,6 +773,16 @@ def _claim_task(node_id: str, now_str: str,
         candidates = db.execute("SELECT * FROM tasks WHERE status='queued' ORDER BY priority DESC, id ASC").fetchall()
         for task in candidates:
             if task["assigned_node_id"] not in (None, node_id):
+                continue
+            try:
+                assigned = load(task["routing_decision"] or "{}")
+                if not isinstance(assigned, dict):
+                    assigned = {}
+                require_epoch(assigned.get("epoch", 0), now_str)
+            except (ValueError, FencingError):
+                logger.info(
+                    "task_claim_fenced task_id=%s node_id=%s",
+                    task["id"], node_id)
                 continue
             needed = set(load(task["required_capabilities"]))
             tier_ok = task["preferred_tier"] is None or task["preferred_tier"] == node["tier"]
@@ -3403,6 +3490,669 @@ def phone_camera_register(node_id: str,
 
 
 # =============================================================================
+# DISTRIBUTED STATE + FAILOVER + SYNC + LIVE + WORKSHOP (BIG #10).
+# Event-log sync (never DB copies), epoch/fencing election,
+# capability-scoped Live sessions, uniform graph overlays,
+# interactive workshop UI. No Raft, no brokers, no cloud.
+# =============================================================================
+
+def _election_nodes() -> list[dict]:
+    """Nodes projected for election: identity, capability flag,
+    status, freshness. Never credentials."""
+    with connection() as db:
+        rows = db.execute(
+            "SELECT node_id, status, last_seen, "
+            "coordinator_capable FROM nodes").fetchall()
+    return [{
+        "node_id": row["node_id"],
+        "status": row["status"],
+        "last_seen": row["last_seen"],
+        "coordinator_capable": bool(row["coordinator_capable"]),
+    } for row in rows]
+
+
+@app.post("/api/v1/coordinator/campaign")
+def coordinator_campaign(body: CampaignBody) -> dict:
+    """Seek or renew the coordinator lease. Deterministic order,
+    quorum or explicit degraded mode; a live foreign holder
+    refuses. Fail-closed on every doubt."""
+    try:
+        result = failover_campaign(body.node_id, _election_nodes)
+    except ElectionRefusedError as error:
+        raise HTTPException(status_code=409, detail=str(error))
+    emit_event("coordinator.epoch",
+               f"Coordinator epoch {result['epoch']} "
+               f"({result['mode']}) held by {result['node_id']}",
+               node_id=result["node_id"])
+    return result
+
+
+@app.post("/api/v1/coordinator/release")
+def coordinator_release(body: CampaignBody) -> dict:
+    released = failover_release(body.node_id)
+    return {"node_id": body.node_id, "released": released}
+
+
+@app.get("/api/v1/coordinator/status")
+def coordinator_election_status() -> dict:
+    """Election snapshot: epoch, holder, expiry, voters, mode."""
+    return failover_status(_election_nodes())
+
+
+@app.get("/api/v1/sync/changes")
+def sync_changes(after: int = 0, limit: int = 100) -> dict:
+    """Bounded pull page over the durable log. No dumps."""
+    try:
+        items, latest = read_log(after_rowid=after, limit=limit)
+    except DistStateRefusedError as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    return {"items": items, "latest": latest}
+
+
+@app.post("/api/v1/sync/apply")
+def sync_apply(body: SyncApplyBody) -> dict:
+    """Validate + idempotently apply pulled envelopes. Duplicates
+    acknowledge without mutation; conflicts record explicitly."""
+    try:
+        envelopes = [DistEnvelopeBody.model_validate(item)
+                     for item in body.items]
+    except Exception as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    from .diststate import DistEnvelope as _Envelope
+    summary = apply_pulled([
+        _Envelope.model_validate(item.model_dump(mode="json"))
+        for item in envelopes])
+    return summary
+
+
+@app.get("/api/v1/sync/status")
+def sync_status(cursor: int = 0) -> dict:
+    """Local sync snapshot: cursor, log size, conflicts, epoch."""
+    with connection() as db:
+        nodes = db.execute(
+            "SELECT status, last_seen FROM nodes").fetchall()
+    return dist_sync_status(
+        [{"status": row["status"], "last_seen": row["last_seen"],
+          "derived_status": derive_status(
+              row["status"], row["last_seen"])}
+         for row in nodes],
+        cursor=cursor)
+
+
+@app.get("/api/v1/inventory/changes")
+async def inventory_changes(since: str = "",
+                            limit: int = 100) -> dict:
+    """INVENTory change feed over HTTP (cursor + bounded page).
+    The SQLite file is never copied and never opened."""
+    try:
+        items = await fetch_inventory_changes(
+            _world_reader(), since=since, limit=limit)
+    except InventoryRefusedError as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    except InventoryUnavailable:
+        raise HTTPException(status_code=502,
+                            detail="INVENTory unavailable")
+    return {"items": items}
+
+
+@app.get("/api/v1/dist/conflicts")
+def dist_conflicts(status: str = "") -> list[dict]:
+    try:
+        found = list_conflicts(status=status)
+    except DistStateRefusedError as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    return [item.model_dump(mode="json") for item in found]
+
+
+@app.post("/api/v1/dist/conflicts/{conflict_id}/resolve")
+def dist_conflict_resolve(conflict_id: str) -> dict:
+    try:
+        resolved = resolve_conflict(conflict_id, "resolved")
+    except DistStateRefusedError as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    if not resolved:
+        raise HTTPException(404, "Conflict not found or not open")
+    return {"conflict_id": conflict_id, "status": "resolved"}
+
+
+def _live_session_or_403(session_id: str):
+    from .live import load_live_session as _load
+    session = _load(session_id)
+    if session is None:
+        raise HTTPException(404, "Live session not found")
+    if not session_live(session):
+        raise HTTPException(status_code=403,
+                            detail="Live session expired or revoked")
+    return session
+
+
+@app.post("/api/v1/live/sessions", status_code=201)
+def live_session_open(body: LiveSessionBody) -> dict:
+    """Open one capability-scoped Live session. Least privilege:
+    only listed capabilities; git.push is never granted."""
+    from .live import open_session as _open
+    try:
+        session = _open(body.interface, body.actor,
+                        list(body.capabilities),
+                        context_scope=dict(body.context_scope),
+                        ttl_seconds=body.ttl_seconds)
+    except LiveRefusedError as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    try:
+        save_live_session(session)
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    return session.model_dump(mode="json")
+
+
+@app.get("/api/v1/live/sessions/{session_id}")
+def live_session_get(session_id: str) -> dict:
+    return _live_session_or_403(session_id).model_dump(mode="json")
+
+
+@app.post("/api/v1/live/sessions/{session_id}/revoke")
+def live_session_revoke(session_id: str) -> dict:
+    if not revoke_live_session(session_id):
+        raise HTTPException(404, "Live session not found")
+    return {"session_id": session_id, "active": False}
+
+
+@app.post("/api/v1/live/context")
+async def live_context(body: LiveContextBody) -> dict:
+    """Pack a bounded context package for one live session.
+    Each section passes through its capability gate and the
+    existing readers; file contents, secrets and absolute
+    paths are stripped."""
+    session = _live_session_or_403(body.session_id)
+    scope = dict(session.context_scope or {})
+    if body.entity_id:
+        scope["entity_id"] = body.entity_id
+    sources: dict = {}
+    if live_can(session, "project.read"):
+        try:
+            sources["project"] = default_context().model_dump(
+                mode="json")
+        except ValueError:
+            pass
+    if live_can(session, "inventory.read") and scope.get(
+            "entity_id"):
+        try:
+            record = await _world_reader().get(
+                scope.get("entity_type", "object") or "object",
+                scope["entity_id"])
+            if record is not None:
+                sources["object"] = record.model_dump(mode="json")
+        except (InventoryRefusedError, InventoryUnavailable,
+                ValueError):
+            pass
+    if live_can(session, "mission.read") and scope.get(
+            "mission_id"):
+        mission = load_mission(scope["mission_id"])
+        if mission is not None:
+            sources["mission"] = {
+                "mission_id": mission.mission_id,
+                "goal": mission.goal, "status": mission.status}
+    if live_can(session, "camera.read") and scope.get(
+            "include_observations", True):
+        sources["observations"] = [
+            obs.model_dump(mode="json")
+            for obs in _recent_observations(5)]
+    if live_can(session, "graph.read") and scope.get("entity_id"):
+        try:
+            graph = await _world_reader().graph(
+                scope["entity_id"], 1)
+            sources["relationships"] = [
+                {"from_id": edge.from_id,
+                 "predicate": edge.predicate,
+                 "to_id": edge.to_id}
+                for edge in graph.edges[:20]]
+        except (InventoryRefusedError, InventoryUnavailable,
+                ValueError):
+            pass
+    if live_can(session, "task.read"):
+        sources["tasks"] = [{
+            "id": item["id"], "kind": item.get("kind", ""),
+            "status": item.get("status", "")}
+            for item in list_tasks()[:20]]
+    if live_can(session, "node.read"):
+        sources["nodes"] = list_nodes()[:20]
+    if live_can(session, "git.read") and scope.get("include_git"):
+        try:
+            root = _project_root(None)
+            branch = git_branch(root)["branch"]
+            sources["git"] = {"branch": branch}
+        except (GitRefusedError, GitUnavailable, ValueError):
+            pass
+    if scope.get("include_events", True):
+        sources["events"] = [
+            event.model_dump(mode="json")
+            for event in bus_events(limit=20)]
+    try:
+        return pack_context(session, sources, query=body.query,
+                            budget=body.budget)
+    except LiveRefusedError as error:
+        raise HTTPException(status_code=422, detail=str(error))
+
+
+@app.post("/api/v1/live/propose", status_code=201)
+def live_propose(body: LiveProposeBody) -> dict:
+    """Propose through a Live session. Capability-gated; the
+    proposal itself is inert and still needs the existing
+    approval flow. git.push is unavailable, always."""
+    import secrets as _secrets
+    session = _live_session_or_403(body.session_id)
+    actor = (body.actor or session.actor).strip()[:80]
+    if not actor:
+        raise HTTPException(status_code=422,
+                            detail="actor must be non-empty text")
+    if body.kind == "inventory_write":
+        if not live_can(session, "inventory.propose_write"):
+            raise HTTPException(
+                status_code=403,
+                detail="session lacks inventory.propose_write")
+        try:
+            proposal = propose_inventory_write(
+                f"wrt-{_secrets.token_hex(4)}", "create",
+                body.payload.get("entity_type", ""),
+                dict(body.payload.get("fields", {})),
+                entity_id=str(body.payload.get("entity_id", "")),
+                actor=actor)
+        except (InventoryWriteRefusedError, ValueError) as error:
+            raise HTTPException(status_code=422, detail=str(error))
+        _write_save(proposal, "proposed")
+        return _write_to_json(_write_load(proposal.proposal_id))
+    if body.kind == "git_commit":
+        if not live_can(session, "git.commit"):
+            raise HTTPException(status_code=403,
+                                detail="session lacks git.commit")
+        fields = body.payload
+        try:
+            proposal = propose_git_commit(
+                f"wrt-{_secrets.token_hex(4)}",
+                str(fields.get("repository", "")),
+                str(fields.get("branch", "")),
+                str(fields.get("expected_head", "")),
+                str(fields.get("message", "")),
+                list(fields.get("files", [])),
+                changeset_fingerprint=str(fields.get(
+                    "changeset_fingerprint", "")),
+                actor=actor)
+        except (GitWriteRefusedError, ValueError) as error:
+            raise HTTPException(status_code=422, detail=str(error))
+        _write_save(proposal, "proposed")
+        return _write_to_json(_write_load(proposal.proposal_id))
+    if body.kind == "transform":
+        if not live_can(session, "3d.propose_transform"):
+            raise HTTPException(
+                status_code=403,
+                detail="session lacks 3d.propose_transform")
+        return _transform_artifact(
+            str(body.payload.get("artifact_ref", "")),
+            str(body.payload.get("op", "")),
+            body.payload.get("params", {}),
+            persist=bool(body.payload.get("persist", False)))
+    if body.kind in ("task", "mission", "research", "project",
+                     "desktop", "git_push"):
+        raise HTTPException(
+            status_code=422,
+            detail=f"kind '{body.kind}' is not wired yet; "
+                   "git.push is never available")
+    raise HTTPException(status_code=422,
+                        detail=f"Unknown propose kind '{body.kind}'")
+
+
+@app.get("/api/v1/fab/mesh/preview")
+def fab_mesh_preview(artifact_ref: str,
+                     max_tris: int = 1000) -> dict:
+    """Bounded wireframe preview data for one mesh artifact.
+    Preview only: no files written, no registration."""
+    from .mesh3d import mesh_facets
+    try:
+        facets, format_name, total, truncated = mesh_facets(
+            artifact_ref, max_tris)
+    except (MeshRefusedError, ValueError) as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    return {
+        "artifact_ref": artifact_ref, "format": format_name,
+        "total_tris": total, "truncated": truncated,
+        "tris": [[[float(value) for value in point]
+                  for point in facet] for facet in facets],
+    }
+
+
+@app.post("/api/v1/fab/transform", status_code=201)
+def fab_transform(body: TransformBody) -> dict:
+    """Preview (and optionally persist locally) one mesh
+    transform. Persistence is a local working file; INVENTory
+    registration still needs the file proposal flow."""
+    return _transform_artifact(body.artifact_ref, body.op,
+                               dict(body.params or {}),
+                               persist=body.persist,
+                               max_tris=body.max_tris)
+
+
+def _transform_artifact(artifact_ref: str, op: str, params: dict,
+                        persist: bool = False,
+                        max_tris: int = 5000) -> dict:
+    from .mesh3d import (
+        check_transform,
+        file_payload_for_mesh,
+        mesh_facets,
+        transform_facets,
+        validate_mesh,
+        write_derived_mesh,
+    )
+    try:
+        cleaned = check_transform(op, params)
+        facets, format_name, total, _ = mesh_facets(
+            artifact_ref, max_tris)
+    except (MeshRefusedError, ValueError) as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    moved = transform_facets(facets, op, cleaned)
+    preview = [[[round(float(value), 3) for value in point]
+                for point in facet] for facet in moved]
+    result: dict = {
+        "source_ref": artifact_ref, "op": op,
+        "params": cleaned, "format": format_name,
+        "total_tris": total,
+        "preview_tris": preview,
+        "executed": False,
+    }
+    if persist:
+        try:
+            derived_ref, digest, size = write_derived_mesh(
+                artifact_ref, op, moved)
+        except (MeshRefusedError, ValueError, OSError) as error:
+            raise HTTPException(status_code=422, detail=str(error))
+        report = validate_mesh(derived_ref)
+        try:
+            payload = file_payload_for_mesh(
+                report, digest, size, derived_ref)
+        except (MeshRefusedError, ValueError) as error:
+            raise HTTPException(status_code=422, detail=str(error))
+        result.update({
+            "executed": True,
+            "derived_ref": derived_ref,
+            "sha256": digest,
+            "size_bytes": size,
+            "validation": report.model_dump(mode="json"),
+            "file_payload": payload,
+        })
+    return result
+
+
+@app.get("/api/v1/watcher/scan")
+async def watcher_scan() -> dict:
+    """Run watcher detectors over bounded live sources. Findings
+    only — never execution, never writes."""
+    from datetime import datetime as _dt
+    from datetime import timezone as _tz
+    current = _dt.now(_tz.utc)
+    try:
+        with connection() as db:
+            task_rows = db.execute(
+                "SELECT id, status, created_at FROM tasks "
+                "ORDER BY id DESC LIMIT 200").fetchall()
+        tasks = [dict(row) for row in task_rows]
+    except ValueError:
+        tasks = []
+    findings = []
+    try:
+        findings += scan_stale_tasks(tasks, current)
+    except WatcherRefusedError:
+        pass
+    try:
+        browsed = await _world_reader().browse("projects")
+        projects = []
+        for record in browsed.results:
+            details = record.details \
+                if isinstance(record.details, dict) else {}
+            projects.append({
+                "id": record.entity_id,
+                "status": details.get("status", ""),
+                "updated_at": details.get("updated_at", ""),
+                "created_at": details.get("created_at", "")})
+    except (InventoryRefusedError, InventoryUnavailable,
+            ValueError, AttributeError):
+        projects = []
+    try:
+        findings += scan_projects(projects, current)
+    except WatcherRefusedError:
+        pass
+    return {"findings": [item.model_dump(mode="json")
+                         for item in findings[:50]]}
+
+
+@app.get("/api/v1/reports/morning")
+def report_morning() -> dict:
+    """Deterministic morning report over bounded live sources.
+    Same inputs, same report; sources are counts and short
+    capped lines, never dumps."""
+    status = coordinator_status()
+    with connection() as db:
+        recent_tasks = db.execute(
+            "SELECT id, kind, status FROM tasks ORDER BY id DESC "
+            "LIMIT 15").fetchall()
+    init_chat_database()
+    with chat_connection() as db:
+        missions = db.execute(
+            "SELECT record FROM missions ORDER BY created_at DESC "
+            "LIMIT 10").fetchall()
+    mission_titles = []
+    for row in missions:
+        try:
+            record = load(row["record"])
+            mission_titles.append(
+                f"{record.get('goal', '?')} "
+                f"[{record.get('status', '?')}]")
+        except ValueError:
+            continue
+    notes = list_notifications_for_report()
+    try:
+        report = morning_report({
+            "missions": mission_titles,
+            "tasks": [f"#{row['id']} {row['kind']} "
+                      f"[{row['status']}]" for row in recent_tasks],
+            "notifications": [item.title for item in notes],
+            "suggestions": [
+                f"{status['nodes']['online']} nodes online, "
+                f"{status['nodes']['stale']} stale"],
+        })
+    except ReportRefusedError as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    return report.model_dump(mode="json")
+
+
+def list_notifications_for_report(limit: int = 10) -> list:
+    from .database import chat_connection, init_chat_database
+    from .events import Notification
+    init_chat_database()
+    with chat_connection() as db:
+        rows = db.execute(
+            "SELECT * FROM notifications ORDER BY created_at DESC "
+            "LIMIT ?", (max(1, min(limit, 20)),)).fetchall()
+    return [Notification(**{**dict(row),
+                            "read": bool(row["read"])})
+            for row in rows]
+
+
+@app.get("/api/v1/domains")
+def domains_list() -> list[dict]:
+    return [item.model_dump(mode="json") for item in list_domains()]
+
+
+@app.get("/api/v1/domains/{domain}")
+def domain_get(domain: str) -> dict:
+    try:
+        return domain_info(domain).model_dump(mode="json")
+    except DomainRefusedError as error:
+        raise HTTPException(status_code=404, detail=str(error))
+
+
+@app.get("/workshop/graph", response_class=HTMLResponse)
+async def workshop_graph_page(entity_id: str = "", depth: int = 1,
+                              show: str = "missions,nodes"):
+    """Interactive Living Workshop graph (BIG #10, deel 5).
+
+    Server-rendered data, vanilla SVG + JS: deterministic circle
+    layout grouped by source (no physics, no framework), click
+    select with details panel, source/type filters, zoom/pan,
+    focus, edge following. Bounded: depth 1|2, capped nodes.
+    Visual separation WORLD (inventory) vs MYCELIUM overlay vs
+    LIVE/PROPOSAL/EVENT/CONFLICT via color + legend."""
+    from .worldgraph import GRAPH_DEPTHS
+    flags = {part.strip() for part in show.split(",")}
+    graph: dict = {"nodes": [], "edges": []}
+    error = ""
+    if entity_id:
+        try:
+            clean_depth = depth if depth in GRAPH_DEPTHS else 1
+            graph = await build_world_graph(
+                _world_reader(), entity_id, clean_depth,
+                include_missions="missions" in flags,
+                agent_nodes=[{"node_id": row["node_id"],
+                              "capabilities": row["capabilities"]}
+                             for row in list_nodes()]
+                if "nodes" in flags else None,
+                observations=([obs.model_dump(mode="json")
+                               for obs in _recent_observations(10)]
+                              if "observations" in flags else None),
+                nodes=list_nodes() if "nodes" in flags else None,
+                printers=([device.model_dump(mode="json")
+                           for device in list_stored_printers()]
+                          if "printers" in flags else None))
+        except (ValueError, InventoryRefusedError) as exc:
+            error = str(exc)
+        except InventoryUnavailable:
+            error = "INVENTory unavailable"
+    import json as _json
+    data = _json.dumps(graph)
+    return f"""<!doctype html><html><head><title>Mycelium Graph</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <style>
+    body{{font:14px system-ui;margin:0 auto;padding:0 1rem;max-width:1100px;color:#17352a;background:#f4f5ed}}
+    h1{{color:#2f6b45;font-size:1.3rem}} nav a{{margin-right:.7rem;color:#2f6b45}}
+    .panel{{background:white;border:1px solid #dde5dc;padding:.7rem;border-radius:6px;margin-bottom:.7rem}}
+    #stage{{width:100%;height:480px;background:#101a14;border-radius:6px;cursor:grab}}
+    .legend span{{display:inline-block;margin-right:.8rem}}
+    .dot{{display:inline-block;width:.7em;height:.7em;border-radius:50%;margin-right:.3em}}
+    #details{{white-space:pre-wrap;font-size:.85rem}}</style></head>
+    <body>{_workspace_nav()}<h1>Living Workshop — Graph</h1>
+    <div class="panel"><form method="get" action="/workshop/graph">
+    <input type="text" name="entity_id" placeholder="entity_id, bijv. obj_..." value="{escape(entity_id)}" style="width:40%">
+    <input type="number" name="depth" value="{depth}" min="1" max="2" style="width:3rem">
+    <input type="text" name="show" value="{escape(show)}" style="width:30%">
+    <button type="submit">Toon</button></form>
+    <p class="legend"><span><i class="dot" style="background:#2f6b45"></i>WORLD (INVENTory)</span>
+    <span><i class="dot" style="background:#6b5ca5"></i>MYCELIUM overlay</span>
+    <span><i class="dot" style="background:#b5892e"></i>LIVE/proposal/event</span>
+    <span><i class="dot" style="background:#b3362b"></i>CONFLICT</span></p>
+    <p><small>Filter:</small>
+    <label><input type="checkbox" id="f-world" checked> world</label>
+    <label><input type="checkbox" id="f-mycelium" checked> mycelium</label>
+    <label><input type="checkbox" id="f-conflict" checked> conflict</label>
+    <button id="zin">+</button><button id="zout">−</button>
+    <button id="focus">Focus selectie</button></p>
+    <p style="color:#b3362b">{escape(error)}</p></div>
+    <svg id="stage" viewBox="0 0 1000 480"></svg>
+    <div class="panel"><h2>Details</h2><div id="details">Klik een node of relatie.</div></div>
+    <script>
+    const data = {data};
+    const svg = document.getElementById('stage');
+    let scale = 1, tx = 0, ty = 0, selected = null;
+    function colorOf(n) {{
+      if ((n.metadata && n.metadata.status === 'conflict') || n.type === 'conflict') return '#b3362b';
+      if (n.source === 'inventory') return '#2f6b45';
+      return '#6b5ca5';
+    }}
+    function visible(n) {{
+      const w = document.getElementById('f-world').checked;
+      const m = document.getElementById('f-mycelium').checked;
+      const c = document.getElementById('f-conflict').checked;
+      if (colorOf(n) === '#b3362b') return c;
+      return n.source === 'inventory' ? w : m;
+    }}
+    function layout() {{
+      const nodes = data.nodes.filter(visible);
+      const byId = {{}};
+      nodes.forEach((n, i) => {{
+        const a = 2 * Math.PI * i / Math.max(1, nodes.length);
+        const r = n.source === 'inventory' ? 150 : 200;
+        byId[n.id] = {{x: 500 + r * Math.cos(a), y: 240 + r * Math.sin(a), n}};
+      }});
+      return byId;
+    }}
+    function render() {{
+      while (svg.firstChild) svg.removeChild(svg.firstChild);
+      const g = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+      g.setAttribute('transform', 'translate(' + tx + ',' + ty + ') scale(' + scale + ')');
+      svg.appendChild(g);
+      const byId = layout();
+      (data.edges || []).forEach(e => {{
+        if (!byId[e.from] || !byId[e.to]) return;
+        const l = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+        l.setAttribute('x1', byId[e.from].x); l.setAttribute('y1', byId[e.from].y);
+        l.setAttribute('x2', byId[e.to].x); l.setAttribute('y2', byId[e.to].y);
+        l.setAttribute('stroke', '#8a9a8e'); l.setAttribute('stroke-width', '1');
+        l.style.cursor = 'pointer';
+        l.onclick = () => selectEdge(e);
+        g.appendChild(l);
+        const t = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+        t.setAttribute('x', (byId[e.from].x + byId[e.to].x) / 2);
+        t.setAttribute('y', (byId[e.from].y + byId[e.to].y) / 2);
+        t.setAttribute('font-size', '9'); t.setAttribute('fill', '#5a6a5e');
+        t.textContent = e.predicate;
+        g.appendChild(t);
+      }});
+      Object.values(byId).forEach(p => {{
+        const c = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+        c.setAttribute('cx', p.x); c.setAttribute('cy', p.y);
+        c.setAttribute('r', p.n.id === selected ? 12 : 8);
+        c.setAttribute('fill', colorOf(p.n));
+        if (p.n.id === selected) c.setAttribute('stroke', '#17352a');
+        c.style.cursor = 'pointer';
+        c.onclick = () => selectNode(p.n);
+        g.appendChild(c);
+        const t = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+        t.setAttribute('x', p.x + 11); t.setAttribute('y', p.y + 4);
+        t.setAttribute('font-size', '10'); t.setAttribute('fill', '#e8efe6');
+        t.textContent = (p.n.label || p.n.id).slice(0, 28);
+        g.appendChild(t);
+      }});
+    }}
+    function selectNode(n) {{
+      selected = n.id;
+      document.getElementById('details').textContent =
+        'NODE\\n' + JSON.stringify(n, null, 1);
+      render();
+    }}
+    function selectEdge(e) {{
+      document.getElementById('details').textContent =
+        'EDGE\\n' + JSON.stringify(e, null, 1);
+    }}
+    document.getElementById('zin').onclick = () => {{ scale *= 1.2; render(); }};
+    document.getElementById('zout').onclick = () => {{ scale /= 1.2; render(); }};
+    document.getElementById('focus').onclick = () => {{ tx = 0; ty = 0; scale = 1; render(); }};
+    ['f-world', 'f-mycelium', 'f-conflict'].forEach(id => {{
+      document.getElementById(id).onchange = render;
+    }});
+    let drag = null;
+    svg.addEventListener('mousedown', e => {{ drag = [e.clientX, e.clientY]; }});
+    window.addEventListener('mouseup', () => drag = null);
+    svg.addEventListener('mousemove', e => {{
+      if (!drag) return;
+      tx += e.clientX - drag[0]; ty += e.clientY - drag[1];
+      drag = [e.clientX, e.clientY]; render();
+    }});
+    svg.addEventListener('wheel', e => {{
+      e.preventDefault();
+      scale *= e.deltaY < 0 ? 1.1 : 0.9; render();
+    }}, {{passive: false}});
+    render();
+    </script></body></html>"""
+
+
+# =============================================================================
 # WORLD GRAPH (BIG #4) — uniform projection, no new source of truth.
 # =============================================================================
 
@@ -3411,7 +4161,9 @@ async def world_graph_unified(entity_id: str, depth: int = 1,
                               include_missions: bool = False,
                               include_observations: bool = False,
                               include_fabrication: bool = False,
-                              fabrication_id: str = "") -> dict:
+                              fabrication_id: str = "",
+                              include_nodes: bool = False,
+                              include_printers: bool = False) -> dict:
     try:
         with connection() as db:
             agent_rows = db.execute(
@@ -3424,10 +4176,16 @@ async def world_graph_unified(entity_id: str, depth: int = 1,
                         if include_observations else None)
         fabrication = (_fabrication_overlay(fabrication_id)
                        if include_fabrication else None)
+        registry_nodes = (list_nodes()
+                          if include_nodes else None)
+        printers = ([device.model_dump(mode="json")
+                     for device in list_stored_printers()]
+                    if include_printers else None)
         graph = await build_world_graph(
             _world_reader(), entity_id, depth,
             include_missions=include_missions, agent_nodes=agents,
-            observations=observations, fabrication=fabrication)
+            observations=observations, fabrication=fabrication,
+            registry_nodes=registry_nodes, printers=printers)
     except ValueError as error:
         raise HTTPException(status_code=422, detail=str(error))
     except InventoryRefusedError as error:
@@ -3895,6 +4653,9 @@ def _workspace_nav() -> str:    return ("""<nav><a href="/">Mycelium</a><a href=
             """<a href="/cameras">Cameras</a>"""
             """<a href="/fabrication">Fabrication</a>"""
             """<a href="/mobile">Mobile</a>"""
+            """<a href="/workshop/graph">Graph</a>"""
+            """<a href="/workshop">Workshop</a>"""
+            """<a href="/workshop/3d">3D</a>"""
             """<a href="http://127.0.0.1:8080" target="_blank">INVENTory</a>"""
             """<a href="/api/v1/agent/status">Agent-status (JSON)</a></nav>""")
 
@@ -4263,6 +5024,177 @@ def fabrication_page() -> str:
     geen fysieke e-stop. Details: <code>docs/3d-architecture.md</code>.</p></div>
     <h2>Runs</h2><ul>{runs or "<li>○ geen runs</li>"}</ul>
     <h2>Printers</h2><ul>{printers or "<li>○ geen printers</li>"}</ul></body></html>"""
+
+
+@app.get("/workshop", response_class=HTMLResponse)
+def workshop_page(fabrication_id: str = "") -> str:
+    """Combined Workshop view (BIG #10, deel 7): object →
+    mesh → sliced file → G-code → printer → execution →
+    observation → verification. Read-only chain display; every
+    transition still runs through its own gates."""
+    records = list_fabrications(20)
+    chain_html = ""
+    if fabrication_id:
+        record = load_fabrication(fabrication_id)
+        if record is None:
+            chain_html = "<p>Onbekende fabrication.</p>"
+        else:
+            data = record.model_dump(mode="json")
+            stages = [
+                ("Project/object", data.get("source_object_id")
+                 or data.get("source_idea_id") or "○"),
+                ("Mesh", f"{data.get('mesh_ref') or '○'} "
+                 f"({data.get('mesh_validation') or '?'})"),
+                ("Mesh-File", data.get("mesh_file_id") or "○"),
+                ("G-code", f"{data.get('gcode_ref') or '○'} "
+                 f"({data.get('gcode_safety') or '?'})"),
+                ("G-code-File", data.get("gcode_file_id") or "○"),
+                ("Printer/job", data.get("job_id") or "○"),
+                ("Observatie", data.get("observation_id") or "○"),
+                ("Status", data.get("status") or "?"),
+            ]
+            chain_html = "<ol>" + "".join(
+                f"<li><b>{escape(title)}</b>: {escape(value)}</li>"
+                for title, value in stages) + "</ol>"
+            history = "".join(
+                f"<li><small>{escape(str(entry.get('at', '')))}</small> "
+                f"<b>{escape(str(entry.get('stage', '')))}</b> — "
+                f"{escape(str(entry.get('detail', ''))[:160])}</li>"
+                for entry in data.get("history", [])[-20:])
+            chain_html += f"<h2>History</h2><ul>{history}</ul>"
+    runs = "".join(
+        f"<li><a href='/workshop?fabrication_id="
+        f"{escape(record.fabrication_id)}'>"
+        f"{escape(record.fabrication_id)}</a> — "
+        f"{escape(record.status)}</li>"
+        for record in records)
+    return f"""<!doctype html><html><head><title>Mycelium Workshop</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <style>
+    body{{font:16px system-ui;max-width:860px;margin:0 auto;padding:0 1rem;color:#17352a;background:#f4f5ed}}
+    h1{{color:#2f6b45}} nav a{{margin-right:.7rem;color:#2f6b45}}
+    .panel{{background:white;border:1px solid #dde5dc;padding:.8rem;border-radius:6px;margin-bottom:.8rem}}</style></head>
+    <body>{_workspace_nav()}<h1>Living Workshop</h1>
+    <div class="panel"><p>Project → object → mesh → G-code → printer →
+    uitvoering → observatie → verificatie. Deze view <b>toont</b> waar een
+    proces staat; elke overgang loopt via voorstel → approval → uitvoering →
+    verificatie. Geen printeractie vanuit deze pagina.</p></div>
+    <div class="panel"><h2>Keten</h2>{chain_html or "<p>Kies een run.</p>"}</div>
+    <div class="panel"><h2>Runs</h2><ul>{runs or "<li>○ geen runs</li>"}</ul></div>
+    </body></html>"""
+
+
+@app.get("/workshop/3d", response_class=HTMLResponse)
+def workshop_3d_page(artifact: str = "") -> str:
+    """Interactive 3D Workshop foundation (BIG #10, deel 6):
+    wireframe preview of mesh artifacts with rotate/pan/zoom +
+    inspect, plus validated transform proposals (rotate /
+    translate / scale). Viewing is free; persisting a derived
+    file returns a file_payload for the BIG #5 proposal flow —
+    registration still needs approval. No CAD kernel, no
+    scripting, no printer commands."""
+    return f"""<!doctype html><html><head><title>Mycelium 3D Workshop</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <style>
+    body{{font:14px system-ui;margin:0 auto;padding:0 1rem;max-width:1000px;color:#17352a;background:#f4f5ed}}
+    h1{{color:#2f6b45;font-size:1.3rem}} nav a{{margin-right:.7rem;color:#2f6b45}}
+    .panel{{background:white;border:1px solid #dde5dc;padding:.7rem;border-radius:6px;margin-bottom:.7rem}}
+    #view{{width:100%;height:420px;background:#101a14;border-radius:6px;cursor:grab}}
+    #info{{white-space:pre-wrap;font-size:.85rem}}</style></head>
+    <body>{_workspace_nav()}<h1>3D Workshop</h1>
+    <div class="panel"><form id="loadform">
+    <input type="text" id="ref" placeholder="artifact_ref, bijv. fab-test-cube.stl"
+    value="{escape(artifact)}" style="width:50%">
+    <button type="submit">Laad</button>
+    <span id="meta"></span></form></div>
+    <canvas id="view" width="960" height="420"></canvas>
+    <div class="panel"><h2>Transformatie-voorstel</h2>
+    <form id="tform">
+    <select id="op"><option value="rotate">rotate</option>
+    <option value="translate">translate</option><option value="scale">scale</option></select>
+    <input type="text" id="params" placeholder='bijv. {{"axis":"z","degrees":90}}' style="width:50%">
+    <label><input type="checkbox" id="persist"> lokaal bewaren (derived file)</label>
+    <button type="submit">Preview</button></form>
+    <p><small>Roteer/draai/schaal tonen een preview. Bewaren maakt een lokaal
+    abgeleid bestand + file_payload voor het bestaande
+    voorstel/approval-pad — registratie in INVENTory gebeurt nooit automatisch.</small></p>
+    <div id="info">Laad een mesh-artefact.</div></div>
+    <script>
+    let tris = [], rotX = 0.5, rotY = 0.6, scale = 1, ox = 0, oy = 0;
+    const canvas = document.getElementById('view');
+    const ctx = canvas.getContext('2d');
+    function project(p) {{
+      const [x, y, z] = p;
+      const cx = Math.cos(rotY), sx = Math.sin(rotY);
+      const cy = Math.cos(rotX), sy = Math.sin(rotX);
+      const x1 = x * cx - z * sx, z1 = x * sx + z * cx;
+      const y1 = y * cy - z1 * sy;
+      return [480 + (x1 * scale) + ox, 210 - (y1 * scale) + oy];
+    }}
+    function draw() {{
+      ctx.clearRect(0, 0, 960, 420);
+      ctx.strokeStyle = '#7fc97f'; ctx.lineWidth = 1;
+      ctx.beginPath();
+      tris.forEach(t => {{
+        const [a, b, c] = t.map(project);
+        ctx.moveTo(a[0], a[1]); ctx.lineTo(b[0], b[1]);
+        ctx.lineTo(c[0], c[1]); ctx.closePath();
+      }});
+      ctx.stroke();
+    }}
+    async function loadPreview(ref) {{
+      const r = await fetch('/api/v1/fab/mesh/preview?artifact_ref=' + encodeURIComponent(ref));
+      if (!r.ok) {{ document.getElementById('info').textContent = 'Preview mislukt: ' + r.status; return; }}
+      const j = await r.json();
+      tris = j.tris || [];
+      document.getElementById('meta').textContent =
+        j.format + ' · ' + j.total_tris + ' tris' + (j.truncated ? ' (afgekapt)' : '');
+      document.getElementById('info').textContent =
+        'ref=' + j.artifact_ref + '\\nformat=' + j.format + '\\ntris=' + j.total_tris;
+      draw();
+    }}
+    document.getElementById('loadform').onsubmit = e => {{
+      e.preventDefault();
+      loadPreview(document.getElementById('ref').value);
+    }};
+    document.getElementById('tform').onsubmit = async e => {{
+      e.preventDefault();
+      const ref = document.getElementById('ref').value;
+      let params = {{}};
+      try {{ params = JSON.parse(document.getElementById('params').value || '{{}}'); }}
+      catch (err) {{ document.getElementById('info').textContent = 'Params moeten JSON zijn.'; return; }}
+      const r = await fetch('/api/v1/fab/transform', {{
+        method: 'POST', headers: {{'Content-Type': 'application/json'}},
+        body: JSON.stringify({{artifact_ref: ref,
+          op: document.getElementById('op').value, params,
+          persist: document.getElementById('persist').checked}})
+      }});
+      const j = await r.json();
+      if (!r.ok) {{ document.getElementById('info').textContent = 'Geweigerd: ' + JSON.stringify(j); return; }}
+      tris = j.preview_tris || tris;
+      document.getElementById('info').textContent =
+        'op=' + j.op + ' total_tris=' + j.total_tris +
+        (j.executed ? '\\nderived=' + j.derived_ref + '\\nsha256=' + j.sha256 +
+         '\\nfile_payload klaar voor voorstel-flow (niet geregistreerd)' : '\\npreview only');
+      draw();
+    }};
+    let drag = null;
+    canvas.addEventListener('mousedown', e => {{ drag = [e.clientX, e.clientY, e.button]; }});
+    window.addEventListener('mouseup', () => drag = null);
+    canvas.addEventListener('mousemove', e => {{
+      if (!drag) return;
+      if (drag[2] === 2) {{ ox += e.clientX - drag[0]; oy += e.clientY - drag[1]; }}
+      else {{ rotY += (e.clientX - drag[0]) * 0.01; rotX += (e.clientY - drag[1]) * 0.01; }}
+      drag = [e.clientX, e.clientY, drag[2]]; draw();
+    }});
+    canvas.addEventListener('contextmenu', e => e.preventDefault());
+    canvas.addEventListener('wheel', e => {{
+      e.preventDefault(); scale *= e.deltaY < 0 ? 1.1 : 0.9; draw();
+    }}, {{passive: false}});
+    const initial = document.getElementById('ref').value;
+    if (initial) loadPreview(initial);
+    draw();
+    </script></body></html>"""
 
 
 @app.get("/mobile", response_class=HTMLResponse)

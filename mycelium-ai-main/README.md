@@ -255,15 +255,17 @@ coordinator/app/nodes.py, routing.py, sim_nodes.py
 desktop_agent/   standalone lokale agent (poll, claim, voer uit, rapporteer)
 node_client/     lichte client voor seed/worker/core nodes (pull-only, token-optie)
 docs/            architectuurstatus, roadmap, principes, oorsprong
-tests/           822 tests (pytest -v)
+tests/           857 tests (pytest -v)
 ```
 
 Zie `docs/ARCHITECTURE_STATUS.md` (wat het systeem is),
 `docs/chat-agent-architecture.md` (hoe de keten loopt),
 `docs/controlled-writes-and-verification.md` (schrijven + bewijzen),
 `docs/first-node-blueprint.md` (eerste externe node),
-`docs/semantic-world-model.md`, `docs/camera-architecture.md` en
-`docs/ROADMAP.md` (wat volgt). Teststatus: **822 passed**.
+`docs/semantic-world-model.md`, `docs/camera-architecture.md`,
+`docs/distributed-state.md`, `docs/coordinator-failover.md`,
+`docs/living-workshop.md`, `docs/mycelium-live.md` en
+`docs/ROADMAP.md` (wat volgt). Teststatus: **857 passed**.
 
 ## Bijdragen
 
