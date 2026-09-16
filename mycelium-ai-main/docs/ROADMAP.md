@@ -258,6 +258,25 @@ automation-laag rondom Mycelium — nooit de coordinator.
 - Echte n8n-workflows, echte Garmin-OAuth, live externe
   integraties — FUTURE (pas met officiële toegang)
 
+## PHASE L — LIVING WORKSHOP UI (DONE als BIG #19)
+
+Zie `docs/living-workshop-ui.md`. Van technisch
+dashboard naar levende digitale werkplaats — zelfde
+API's, nieuwe ervaring.
+
+- Design system (`ui.py`: tokens, shell, componenten) — DONE
+- Living home (grafiek centraal, missies/taken/nodes/
+  notificaties eromheen, chat eronder) — DONE
+- World graph explorer (pan/zoom/select/focus/expand/
+  filters, toetsenbord, touch) — DONE
+- Organische graftaal + node-states + truth/state-chips — DONE
+- Chat met entity-referenties naar de wereld — DONE
+- Missies als procespad (approved ≠ executed) — DONE
+- Project-ecosystemen, entity-details, activity stream — DONE
+- Physical/fabrication met LIVE/SIMULATED/TEST-states — DONE
+- Bewuste mobile-volgorde, reduced-motion, focus, landmarks — DONE
+- Testbasis: 944+ Mycelium-tests — DONE
+
 ## Expliciet niet op de kaart
 
 Autonome ongelimiteerde computerbediening, credential-automatisering,

@@ -161,13 +161,13 @@ def test_conversation_pages_and_nav(tmp_path, monkeypatch):
         home = test_client.get("/")
         assert home.status_code == 200
         assert "/chat" in home.text and "/agents" in home.text
-        assert "Nodes" in home.text and "Taken" in home.text
+        assert "Nodes" in home.text and "Tasks" in home.text
         chat_page = test_client.get("/chat")
         assert chat_page.status_code == 200
         assert "Mycelium Chat" in chat_page.text
         agents_page = test_client.get("/agents")
         assert agents_page.status_code == 200
-        assert "APPROVAL" in agents_page.text
+        assert "approval" in agents_page.text.lower()
 
 
 def test_web_chat_form_roundtrip(tmp_path, monkeypatch):

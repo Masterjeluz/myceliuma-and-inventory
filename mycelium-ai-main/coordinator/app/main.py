@@ -5692,164 +5692,20 @@ def maintenance_prune() -> dict:
 @app.get("/workshop/graph", response_class=HTMLResponse)
 async def workshop_graph_page(entity_id: str = "", depth: int = 1,
                               show: str = "missions,nodes"):
-    """Interactive Living Workshop graph (BIG #10, deel 5).
-
-    Server-rendered data, vanilla SVG + JS: deterministic circle
-    layout grouped by source (no physics, no framework), click
-    select with details panel, source/type filters, zoom/pan,
-    focus, edge following. Bounded: depth 1|2, capped nodes.
-    Visual separation WORLD (inventory) vs MYCELIUM overlay vs
-    LIVE/PROPOSAL/EVENT/CONFLICT via color + legend."""
-    from .worldgraph import GRAPH_DEPTHS
-    flags = {part.strip() for part in show.split(",")}
-    graph: dict = {"nodes": [], "edges": []}
-    error = ""
-    if entity_id:
-        try:
-            clean_depth = depth if depth in GRAPH_DEPTHS else 1
-            graph = await build_world_graph(
-                _world_reader(), entity_id, clean_depth,
-                include_missions="missions" in flags,
-                agent_nodes=[{"node_id": row["node_id"],
-                              "capabilities": row["capabilities"]}
-                             for row in list_nodes()]
-                if "nodes" in flags else None,
-                observations=([obs.model_dump(mode="json")
-                               for obs in _recent_observations(10)]
-                              if "observations" in flags else None),
-                nodes=list_nodes() if "nodes" in flags else None,
-                printers=([device.model_dump(mode="json")
-                           for device in list_stored_printers()]
-                          if "printers" in flags else None))
-        except (ValueError, InventoryRefusedError) as exc:
-            error = str(exc)
-        except InventoryUnavailable:
-            error = "INVENTory unavailable"
+    """Living Workshop graph: same explorer as /world.
+    Server data, vanilla SVG + JS, bounded depth 1|2."""
+    from . import ui as _ui
     import json as _json
-    data = _json.dumps(graph)
-    return f"""<!doctype html><html><head><title>Mycelium Graph</title>
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <style>
-    body{{font:14px system-ui;margin:0 auto;padding:0 1rem;max-width:1100px;color:#17352a;background:#f4f5ed}}
-    h1{{color:#2f6b45;font-size:1.3rem}} nav a{{margin-right:.7rem;color:#2f6b45}}
-    .panel{{background:white;border:1px solid #dde5dc;padding:.7rem;border-radius:6px;margin-bottom:.7rem}}
-    #stage{{width:100%;height:480px;background:#101a14;border-radius:6px;cursor:grab}}
-    .legend span{{display:inline-block;margin-right:.8rem}}
-    .dot{{display:inline-block;width:.7em;height:.7em;border-radius:50%;margin-right:.3em}}
-    #details{{white-space:pre-wrap;font-size:.85rem}}</style></head>
-    <body>{_workspace_nav()}<h1>Living Workshop — Graph</h1>
-    <div class="panel"><form method="get" action="/workshop/graph">
-    <input type="text" name="entity_id" placeholder="entity_id, bijv. obj_..." value="{escape(entity_id)}" style="width:40%">
-    <input type="number" name="depth" value="{depth}" min="1" max="2" style="width:3rem">
-    <input type="text" name="show" value="{escape(show)}" style="width:30%">
-    <button type="submit">Toon</button></form>
-    <p class="legend"><span><i class="dot" style="background:#2f6b45"></i>WORLD (INVENTory)</span>
-    <span><i class="dot" style="background:#6b5ca5"></i>MYCELIUM overlay</span>
-    <span><i class="dot" style="background:#b5892e"></i>LIVE/proposal/event</span>
-    <span><i class="dot" style="background:#b3362b"></i>CONFLICT</span></p>
-    <p><small>Filter:</small>
-    <label><input type="checkbox" id="f-world" checked> world</label>
-    <label><input type="checkbox" id="f-mycelium" checked> mycelium</label>
-    <label><input type="checkbox" id="f-conflict" checked> conflict</label>
-    <button id="zin">+</button><button id="zout">−</button>
-    <button id="focus">Focus selectie</button></p>
-    <p style="color:#b3362b">{escape(error)}</p></div>
-    <svg id="stage" viewBox="0 0 1000 480"></svg>
-    <div class="panel"><h2>Details</h2><div id="details">Klik een node of relatie.</div></div>
-    <script>
-    const data = {data};
-    const svg = document.getElementById('stage');
-    let scale = 1, tx = 0, ty = 0, selected = null;
-    function colorOf(n) {{
-      if ((n.metadata && n.metadata.status === 'conflict') || n.type === 'conflict') return '#b3362b';
-      if (n.source === 'inventory') return '#2f6b45';
-      return '#6b5ca5';
-    }}
-    function visible(n) {{
-      const w = document.getElementById('f-world').checked;
-      const m = document.getElementById('f-mycelium').checked;
-      const c = document.getElementById('f-conflict').checked;
-      if (colorOf(n) === '#b3362b') return c;
-      return n.source === 'inventory' ? w : m;
-    }}
-    function layout() {{
-      const nodes = data.nodes.filter(visible);
-      const byId = {{}};
-      nodes.forEach((n, i) => {{
-        const a = 2 * Math.PI * i / Math.max(1, nodes.length);
-        const r = n.source === 'inventory' ? 150 : 200;
-        byId[n.id] = {{x: 500 + r * Math.cos(a), y: 240 + r * Math.sin(a), n}};
-      }});
-      return byId;
-    }}
-    function render() {{
-      while (svg.firstChild) svg.removeChild(svg.firstChild);
-      const g = document.createElementNS('http://www.w3.org/2000/svg', 'g');
-      g.setAttribute('transform', 'translate(' + tx + ',' + ty + ') scale(' + scale + ')');
-      svg.appendChild(g);
-      const byId = layout();
-      (data.edges || []).forEach(e => {{
-        if (!byId[e.from] || !byId[e.to]) return;
-        const l = document.createElementNS('http://www.w3.org/2000/svg', 'line');
-        l.setAttribute('x1', byId[e.from].x); l.setAttribute('y1', byId[e.from].y);
-        l.setAttribute('x2', byId[e.to].x); l.setAttribute('y2', byId[e.to].y);
-        l.setAttribute('stroke', '#8a9a8e'); l.setAttribute('stroke-width', '1');
-        l.style.cursor = 'pointer';
-        l.onclick = () => selectEdge(e);
-        g.appendChild(l);
-        const t = document.createElementNS('http://www.w3.org/2000/svg', 'text');
-        t.setAttribute('x', (byId[e.from].x + byId[e.to].x) / 2);
-        t.setAttribute('y', (byId[e.from].y + byId[e.to].y) / 2);
-        t.setAttribute('font-size', '9'); t.setAttribute('fill', '#5a6a5e');
-        t.textContent = e.predicate;
-        g.appendChild(t);
-      }});
-      Object.values(byId).forEach(p => {{
-        const c = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
-        c.setAttribute('cx', p.x); c.setAttribute('cy', p.y);
-        c.setAttribute('r', p.n.id === selected ? 12 : 8);
-        c.setAttribute('fill', colorOf(p.n));
-        if (p.n.id === selected) c.setAttribute('stroke', '#17352a');
-        c.style.cursor = 'pointer';
-        c.onclick = () => selectNode(p.n);
-        g.appendChild(c);
-        const t = document.createElementNS('http://www.w3.org/2000/svg', 'text');
-        t.setAttribute('x', p.x + 11); t.setAttribute('y', p.y + 4);
-        t.setAttribute('font-size', '10'); t.setAttribute('fill', '#e8efe6');
-        t.textContent = (p.n.label || p.n.id).slice(0, 28);
-        g.appendChild(t);
-      }});
-    }}
-    function selectNode(n) {{
-      selected = n.id;
-      document.getElementById('details').textContent =
-        'NODE\\n' + JSON.stringify(n, null, 1);
-      render();
-    }}
-    function selectEdge(e) {{
-      document.getElementById('details').textContent =
-        'EDGE\\n' + JSON.stringify(e, null, 1);
-    }}
-    document.getElementById('zin').onclick = () => {{ scale *= 1.2; render(); }};
-    document.getElementById('zout').onclick = () => {{ scale /= 1.2; render(); }};
-    document.getElementById('focus').onclick = () => {{ tx = 0; ty = 0; scale = 1; render(); }};
-    ['f-world', 'f-mycelium', 'f-conflict'].forEach(id => {{
-      document.getElementById(id).onchange = render;
-    }});
-    let drag = null;
-    svg.addEventListener('mousedown', e => {{ drag = [e.clientX, e.clientY]; }});
-    window.addEventListener('mouseup', () => drag = null);
-    svg.addEventListener('mousemove', e => {{
-      if (!drag) return;
-      tx += e.clientX - drag[0]; ty += e.clientY - drag[1];
-      drag = [e.clientX, e.clientY]; render();
-    }});
-    svg.addEventListener('wheel', e => {{
-      e.preventDefault();
-      scale *= e.deltaY < 0 ? 1.1 : 0.9; render();
-    }}, {{passive: false}});
-    render();
-    </script></body></html>"""
+    flags = {part.strip() for part in show.split(",")}
+    graph, error = ({"nodes": [], "edges": []}, "")
+    if entity_id:
+        graph, error = await _graph_data(entity_id, depth,
+                                         flags)
+    main = f"""<h1>Living Workshop — Graph</h1>
+    <p class="muted">The full explorer lives at <a href="/world">/world</a> — same data, same grammar. WORLD (INVENTory) entities render solid; Mycelium overlays dashed.</p>
+    {_ui.graph_panel(_json.dumps(graph), "/workshop/graph", entity_id, depth, show, error)}"""
+    return _ui.shell("Workshop Graph", "/workshop/graph", main,
+                     "", _ui.command_bar())
 
 
 # =============================================================================
@@ -6315,36 +6171,214 @@ async def _run_write_step(mission, step) -> dict:
 
 
 @app.get("/", response_class=HTMLResponse)
-def dashboard() -> str:
+async def dashboard(entity_id: str = "") -> str:
+    """Living World home: the world graph at the center,
+    missions/nodes/notifications around it, chat below.
+    Same data as the old dashboard, grown into a place."""
+    from . import ui as _ui
+    import json as _json
+    graph: dict = {"nodes": [], "edges": []}
+    error = ""
+    if entity_id:
+        graph, error = await _graph_data(entity_id, 1,
+                                         {"missions", "nodes"})
+    seeds = await _world_seeds()
     with connection() as db:
         node_rows = db.execute(
-            f"SELECT {NODE_PUBLIC_COLUMNS} FROM nodes ORDER BY last_seen DESC").fetchall()
-        tasks = db.execute("SELECT id, kind, status, assigned_node_id FROM tasks ORDER BY id DESC LIMIT 20").fetchall()
-    nodes = []
-    for row in node_rows:
-        record = _node_to_json(row)
-        nodes.append({
-            "node_id": record["node_id"],
-            "hostname": record.get("display_name") or record["hostname"],
-            "tier": record["tier"],
-            "status": record["derived_status"],
-            "last_seen": record["last_seen"],
-            "detail": (f"{len(record['capabilities'])} caps · "
-                       f"{len(record['models'])} modellen · "
-                       f"{len(record['executors'])} executors"),
-        })
-    init_chat_database()
-    with chat_connection() as chat_db:
-        pending = chat_db.execute("SELECT COUNT(*) AS n FROM desktop_actions WHERE status='pending_approval'").fetchone()["n"]
-    def rows(items, fields):
-        return "".join("<tr>" + "".join(f"<td>{escape(str(item[field] or '—'))}</td>" for field in fields) + "</tr>" for item in items) or "<tr><td colspan='5'>Nog geen gegevens</td></tr>"
-    return f"""<!doctype html><html><head><title>Mycelium AI</title><style>
-    body{{font:16px system-ui;max-width:960px;margin:3rem auto;padding:0 1rem;color:#17352a;background:#f4f5ed}} h1{{color:#2f6b45}} table{{width:100%;border-collapse:collapse;background:white;margin-bottom:2rem}} td,th{{padding:.7rem;text-align:left;border-bottom:1px solid #dde5dc}} code{{background:#e5eee2;padding:.15rem .3rem}} nav{{margin:1rem 0}} nav a{{margin-right:1rem;color:#2f6b45}} .warn{{background:#fff3cd;padding:.7rem;border:1px solid #e6c200;margin-bottom:1rem}}</style></head>
-    <body>{_workspace_nav()}
-    <h1>Mycelium AI</h1><p>Lokale coördinator · <code>v0.1.0</code> · redeneren hier, uitvoeren op de desktop-agent, wereldmodel in INVENTory</p>
-    {f"<div class='warn'>⏳ <a href='/agents'>{pending} desktop-actie(s) wachten op goedkeuring</a></div>" if pending else ""}
-    <h2>Nodes</h2><table><tr><th>ID</th><th>Naam</th><th>Type</th><th>Status</th><th>Laatst gezien</th><th>Capaciteit</th></tr>{rows(nodes, ['node_id','hostname','tier','status','last_seen','detail'])}</table>
-    <h2>Taken</h2><table><tr><th>ID</th><th>Soort</th><th>Status</th><th>Node</th></tr>{rows(tasks, ['id','kind','status','assigned_node_id'])}</table></body></html>"""
+            f"SELECT {NODE_PUBLIC_COLUMNS} FROM nodes ORDER BY last_seen DESC LIMIT 12").fetchall()
+        task_rows = db.execute(
+            "SELECT id, kind, status, assigned_node_id FROM tasks ORDER BY id DESC LIMIT 8").fetchall()
+    nodes = [_node_to_json(row) for row in node_rows]
+    try:
+        missions = list_missions(limit=6)
+    except ValueError:
+        missions = []
+    notes = list_notifications_for_report(limit=8)
+    try:
+        status = coordinator_status()
+    except ValueError:
+        status = {}
+    seed_chips = "".join(
+        f"<a class=\"chip\" href=\"/?entity_id={_ui.esc(item['id'])}\">{_ui.esc(item['label'])}</a>"
+        for item in seeds) or _ui.empty("INVENTory unreachable — start it on :8080.")
+    mission_cards = "".join(
+        f"<div class=\"sprout\"><b>{_ui.esc(mission.goal[:80])}</b><br>"
+        f"{_ui.status_dot(mission.status)}{_ui.chip(mission.status)}"
+        f"<br><a href=\"/missions/{_ui.esc(mission.mission_id)}\">Open mission</a></div>"
+        for mission in missions) or _ui.empty("No missions yet.")
+    node_rows_html = "".join(
+        f"<tr><td>{_ui.status_dot(record.get('derived_status', ''))}{_ui.esc(record['node_id'])}</td>"
+        f"<td>{_ui.esc(record.get('tier', ''))}</td>"
+        f"<td>{_ui.esc(str(record.get('last_seen', ''))[:16])}</td></tr>"
+        for record in nodes) or "<tr><td colspan='3'>No nodes yet.</td></tr>"
+    note_items = "".join(
+        f"<li>{_ui.esc(item.title)}</li>" for item in notes)
+    task_items = "".join(
+        f"<li>{_ui.status_dot(row['status'])}{_ui.esc(row['kind'])} "
+        f"<span class=\"muted\">#{row['id']} · {_ui.esc(row['status'])}"
+        f"{' → ' + _ui.esc(row['assigned_node_id']) if row['assigned_node_id'] else ''}</span></li>"
+        for row in task_rows)
+    main = f"""<h1>Living World</h1>
+    <p class="muted">The graph is the center. Everything around it supports it. Memory lives at <a href="/memory">/memory</a>.</p>
+    {_ui.graph_panel(_json.dumps(graph), "/", entity_id, 1, "missions,nodes", error) if entity_id else ""}
+    <h2>Grow from a seed</h2><p class="flowline">{seed_chips}</p>
+    <h2>Active missions</h2><div class="grove">{mission_cards}</div>
+    <h2>Recent Tasks</h2><ul>{task_items or "<li>No tasks yet.</li>"}</ul>"""
+    context = _ui.context_block(
+        "Nodes",
+        f"<table><tr><th>Node</th><th>Tier</th><th>Seen</th></tr>{node_rows_html}</table>") + \
+        _ui.context_block("Status", _ui.kv_list([
+            ("coordinator", status.get("coordinator", "?")),
+            ("nodes online", str((status.get("nodes") or {}).get("online", "?"))),
+            ("pending approvals", str(sum((status.get("pending_approvals") or {}).values()) if isinstance(status.get("pending_approvals"), dict) else "?"))])) + \
+        _ui.context_block("Notifications", f"<ul>{note_items or '<li>Quiet.</li>'}</ul>")
+    return _ui.shell("Living World", "/", main, context,
+                     _ui.command_bar())
+
+
+async def _graph_data(entity_id: str, depth: int,
+                      flags: set) -> tuple:
+    """Shared graph builder for /, /world, /workshop/graph."""
+    from .worldgraph import GRAPH_DEPTHS
+    graph: dict = {"nodes": [], "edges": []}
+    error = ""
+    try:
+        clean_depth = depth if depth in GRAPH_DEPTHS else 1
+        graph = await build_world_graph(
+            _world_reader(), entity_id, clean_depth,
+            include_missions="missions" in flags,
+            agent_nodes=[{"node_id": row["node_id"],
+                          "capabilities": row["capabilities"]}
+                         for row in list_nodes()]
+            if "nodes" in flags else None,
+            observations=([obs.model_dump(mode="json")
+                           for obs in _recent_observations(10)]
+                          if "observations" in flags else None),
+            registry_nodes=list_nodes()
+            if "nodes" in flags else None,
+            printers=([device.model_dump(mode="json")
+                       for device in list_stored_printers()]
+                      if "printers" in flags else None))
+    except (ValueError, InventoryRefusedError) as exc:
+        error = str(exc)
+    except InventoryUnavailable:
+        error = "INVENTory unavailable"
+    return graph, error
+
+
+async def _world_seeds() -> list:
+    """Bounded project/object chips to grow the graph from."""
+    seeds = []
+    try:
+        for kind in ("projects", "objects"):
+            browsed = await _world_reader().browse(kind)
+            for record in (browsed.results or [])[:8]:
+                title = record.entity_id
+                details = record.details \
+                    if isinstance(record.details, dict) else {}
+                for key in ("name", "title", "goal"):
+                    if details.get(key):
+                        title = str(details[key])[:40]
+                        break
+                seeds.append({"id": record.entity_id,
+                              "label": f"{kind[:-1]}: {title}"})
+    except (InventoryRefusedError, InventoryUnavailable,
+            ValueError, AttributeError):
+        pass
+    return seeds[:12]
+
+
+@app.get("/world", response_class=HTMLResponse)
+async def world_page(entity_id: str = "", depth: int = 1,
+                     show: str = "missions,nodes") -> str:
+    """Full world-graph explorer: pan, zoom, select, focus,
+    neighborhood expansion, source + type filters. Real data
+    only, bounded depth, keyboard navigable."""
+    from . import ui as _ui
+    import json as _json
+    flags = {part.strip() for part in show.split(",")}
+    graph, error = ({"nodes": [], "edges": []}, "")
+    if entity_id:
+        graph, error = await _graph_data(entity_id, depth,
+                                         flags)
+    main = f"""<h1>World Graph</h1>
+    <p class="muted">Every node is real: world entities from INVENTory, overlays from Mycelium. Select to inspect, open a neighborhood to grow.</p>
+    {_ui.graph_panel(_json.dumps(graph), "/world", entity_id, depth, show, error)}"""
+    context = _ui.context_block(
+        "Reading the graph",
+        "<ul><li><b>Rings</b> are projects — clusters of work.</li>"
+        "<li><b>Diamonds</b> are ideas — seeds.</li>"
+        "<li><b>Halos</b> are memories and missions — alive.</li>"
+        "<li><b>Squares</b> are technical nodes.</li>"
+        "<li><b>Dashed</b> outlines are Mycelium overlays, not world truth.</li></ul>")
+    return _ui.shell("World Graph", "/world", main, context,
+                     _ui.command_bar())
+
+
+@app.get("/projects", response_class=HTMLResponse)
+async def projects_page(project_id: str = "") -> str:
+    """Projects as visual ecosystems: goal, components,
+    tasks, missions, research, skills. Precise data kept."""
+    from . import ui as _ui
+    items = []
+    error = ""
+    try:
+        browsed = await _world_reader().browse("projects")
+        for record in (browsed.results or [])[:30]:
+            details = record.details \
+                if isinstance(record.details, dict) else {}
+            items.append({"id": record.entity_id,
+                          "title": str(details.get(
+                              "name", details.get(
+                                  "title", record.entity_id)))[:80],
+                          "status": str(details.get(
+                              "status", ""))})
+    except (InventoryRefusedError, InventoryUnavailable,
+            ValueError, AttributeError) as exc:
+        error = str(exc)
+    detail_html = ""
+    if project_id:
+        graph, _ = await _graph_data(project_id, 1,
+                                     {"missions"})
+        names = [f"<li>{_ui.esc(n.get('label', n.get('id', '')))} "
+                 f"<span class=\"muted\">{_ui.esc(n.get('type', ''))}</span></li>"
+                 for n in graph.get("nodes", [])[:20]]
+        detail_html = f"""<div class="panel"><h2>Ecosystem</h2><ul>{"".join(names) or "<li>No linked entities.</li>"}</ul>
+        <p><a href="/world?entity_id={_ui.esc(project_id)}">Open in world graph</a></p></div>"""
+    cards = "".join(
+        f"<div class=\"sprout\"><b>{_ui.esc(item['title'])}</b><br>"
+        f"{_ui.chip(item['status'] or 'unknown')}<br>"
+        f"<a href=\"/projects?project_id={_ui.esc(item['id'])}\">Open ecosystem</a></div>"
+        for item in items) or _ui.empty(
+            "No projects found. " + error if error else
+            "No projects found.")
+    main = f"<h1>Projects</h1>{detail_html}<div class=\"grove\">{cards}</div>"
+    return _ui.shell("Projects", "/projects", main, "",
+                     _ui.command_bar())
+
+
+@app.get("/activity", response_class=HTMLResponse)
+def activity_page() -> str:
+    """Elegant activity stream: observations, memory updates,
+    mission transitions, node changes, integration events,
+    verifications, approvals. Provenance stays visible."""
+    from . import ui as _ui
+    items = []
+    for event in bus_events(limit=30):
+        items.append(
+            f"<tr><td>{_ui.status_dot(event.event_type.split('.')[0])}{_ui.esc(event.event_type)}</td>"
+            f"<td>{_ui.esc(event.summary[:120])}</td>"
+            f"<td class=\"muted\">{_ui.esc(event.created_at[:16])}</td></tr>")
+    notes = "".join(
+        f"<li>{_ui.esc(item.title)} <span class=\"muted\">[{_ui.esc(item.severity)}]</span></li>"
+        for item in list_notifications_for_report(limit=15))
+    main = f"""<h1>Activity</h1>
+    <div class="panel"><h2>Stream</h2><table><tr><th>Event</th><th>What</th><th>When</th></tr>
+    {"".join(items) or "<tr><td colspan='3'>Quiet.</td></tr>"}</table></div>"""
+    context = _ui.context_block("Notifications",
+                                f"<ul>{notes or '<li>None.</li>'}</ul>")
+    return _ui.shell("Activity", "/activity", main, context,
+                     _ui.command_bar())
 
 
 async def _form_fields(request: Request) -> dict[str, str]:
@@ -6355,48 +6389,27 @@ async def _form_fields(request: Request) -> dict[str, str]:
         body, keep_blank_values=True).items() if values}
 
 
-def _workspace_nav() -> str:    return ("""<nav><a href="/">Mycelium</a><a href="/chat">Chat</a>"""
-            """<a href="/agents">Agents</a><a href="/missions">Plans</a>"""
-            """<a href="/cameras">Cameras</a>"""
-            """<a href="/fabrication">Fabrication</a>"""
-            """<a href="/mobile">Mobile</a>"""
-            """<a href="/morning">Morning</a>"""
-            """<a href="/memory">Memory</a>"""
-            """<a href="/health">Health</a>"""
-            """<a href="/skills">Skills</a>"""
-            """<a href="/research">Research</a>"""
-            """<a href="/devices">Devices</a>"""
-            """<a href="/watcher">Watcher</a>"""
-            """<a href="/workshop/graph">Graph</a>"""
-            """<a href="/workshop">Workshop</a>"""
-            """<a href="/workshop/3d">3D</a>"""
-            """<a href="http://127.0.0.1:8080" target="_blank">INVENTory</a>"""
-            """<a href="/api/v1/agent/status">Agent-status (JSON)</a></nav>""")
-
-
-def _cards(title: str, items: list[str]) -> str:
-    body = "".join(f"<li>{escape(str(item))}</li>"
-                   for item in (items or [])[:15])
-    return (f"<div class='card'><h3>{escape(title)}</h3>"
-            f"<ul>{body or '<li>—</li>'}</ul></div>")
-
-
 @app.get("/morning", response_class=HTMLResponse)
 def morning_page() -> str:
     """Mobile-first morning report: cards per section."""
+    from . import ui as _ui
     report = report_morning()
     cards = "".join(
-        _cards(section["title"], section["items"])
+        f"<div class=\"sprout\"><h3>{_ui.esc(section['title'])}</h3><ul>"
+        + "".join(f"<li>{_ui.esc(item)}</li>"
+                  for item in section["items"][:15])
+        + "</ul></div>"
         for section in report.get("sections", []))
-    return f"""<!doctype html><html><head><title>Morning — Mycelium</title><style>
-    body{{font:16px system-ui;max-width:960px;margin:2rem auto;padding:0 1rem;color:#17352a;background:#f4f5ed}} h1{{color:#2f6b45}} nav{{margin:1rem 0}} nav a{{margin-right:1rem;color:#2f6b45}} .card{{background:white;border:1px solid #dde5dc;padding:.8rem 1rem;margin-bottom:1rem}} .card h3{{margin:.2rem 0}} ul{{margin:.4rem 0;padding-left:1.2rem}}</style></head>
-    <body>{_workspace_nav()}<h1>Morning report</h1>
-    <p><small>{escape(str(report.get('generated_at', '')))} · {escape(str(report.get('report_id', '')))}</small></p>
-    {cards}</body></html>"""
+    main = f"""<h1>Morning report</h1>
+    <p class="muted">{_ui.esc(str(report.get('generated_at', '')))} · {_ui.esc(str(report.get('report_id', '')))}</p>
+    <div class="grove">{cards or _ui.empty()}</div>"""
+    return _ui.shell("Morning", "/morning", main, "",
+                     _ui.command_bar())
 
 
 @app.get("/memory", response_class=HTMLResponse)
 def memory_page(memory_type: str = "") -> str:
+    from . import ui as _ui
     from .memory import MEMORY_TYPES, list_memories
     try:
         entries = list_memories(memory_type=memory_type,
@@ -6406,115 +6419,119 @@ def memory_page(memory_type: str = "") -> str:
     options = "".join(
         f"<option value='{kind}'"
         + (" selected" if kind == memory_type else "")
-        + f">{kind}</option>" for kind in ["", *MEMORY_TYPES])
-    rows = "".join(
-        f"<tr><td>{escape(entry.title)}</td>"
-        f"<td>{escape(entry.memory_type)}</td>"
-        f"<td>{escape(entry.truth)}</td>"
-        f"<td>{escape(entry.project_ref or '—')}</td></tr>"
-        for entry in entries) or "<tr><td colspan='4'>—</td></tr>"
-    return f"""<!doctype html><html><head><title>Memory — Mycelium</title><style>
-    body{{font:16px system-ui;max-width:960px;margin:2rem auto;padding:0 1rem;color:#17352a;background:#f4f5ed}} h1{{color:#2f6b45}} table{{width:100%;border-collapse:collapse;background:white}} td,th{{padding:.6rem;text-align:left;border-bottom:1px solid #dde5dc}} nav{{margin:1rem 0}} nav a{{margin-right:1rem;color:#2f6b45}}</style></head>
-    <body>{_workspace_nav()}<h1>Memory</h1>
-    <form method='get' action='/memory'><select name='memory_type' onchange='this.form.submit()'>{options}</select></form>
-    <table><tr><th>Title</th><th>Type</th><th>Truth</th><th>Project</th></tr>{rows}</table></body></html>"""
+        + f">{kind or 'all types'}</option>"
+        for kind in ["", *MEMORY_TYPES])
+    cards = "".join(
+        f"<div class=\"sprout\"><b>{_ui.esc(entry.title)}</b><br>"
+        f"{_ui.chip(entry.memory_type)}{_ui.truth_chip(entry.truth)}"
+        f"<br><span class=\"muted\">importance {entry.importance:.1f} · "
+        f"{_ui.esc(entry.project_ref or 'no project')} · "
+        f"{_ui.esc(entry.observed_at[:10])}</span></div>"
+        for entry in entries) or _ui.empty()
+    main = f"""<h1>Memory</h1>
+    <p class="muted">Truth tiers stay visible: verified and user facts read different from AI suggestions. Health memories only appear with explicit health scope.</p>
+    <form method='get' action='/memory' role="search" aria-label="Filter memories"><select name='memory_type' onchange='this.form.submit()' aria-label="Memory type">{options}</select></form>
+    <div class="grove">{cards}</div>"""
+    return _ui.shell("Memory", "/memory", main, "",
+                     _ui.command_bar())
 
 
 @app.get("/health", response_class=HTMLResponse)
 def health_page() -> str:
+    from . import ui as _ui
     from .health import list_measurements, personal_health_index
     index = personal_health_index()
     dims = "".join(
-        f"<tr><td>{escape(name)}</td>"
-        f"<td>{escape(str(info['value']))}</td>"
-        f"<td>{escape(str(info['completeness']))}</td>"
-        f"<td><small>{escape(str(info['method']))}</small></td></tr>"
+        f"<tr><td>{_ui.esc(name)}</td>"
+        f"<td>{_ui.esc(str(info['value']))}</td>"
+        f"<td>{_ui.esc(str(info['completeness']))}</td>"
+        f"<td><small>{_ui.esc(str(info['method']))}</small></td></tr>"
         for name, info in index["dimensions"].items())
     recent = list_measurements(limit=20)
     rows = "".join(
-        f"<tr><td>{escape(entry.metric)}</td>"
-        f"<td>{escape(str(entry.value))}</td>"
-        f"<td>{escape(entry.unit)}</td>"
-        f"<td>{escape(entry.source)}"
-        f"{' (MOCK: ' + escape(entry.provenance.creator_id) + ')' if 'mock' in entry.provenance.creator_id else ''}</td>"
-        f"<td>{escape(entry.observed_at[:16])}</td></tr>"
+        f"<tr><td>{_ui.esc(entry.metric)}</td>"
+        f"<td>{_ui.esc(str(entry.value))}</td>"
+        f"<td>{_ui.esc(entry.unit)}</td>"
+        f"<td>{_ui.esc(entry.source)}"
+        f"{' (MOCK: ' + _ui.esc(entry.provenance.creator_id) + ')' if 'mock' in entry.provenance.creator_id else ''}</td>"
+        f"<td>{_ui.esc(entry.observed_at[:16])}</td></tr>"
         for entry in recent) or "<tr><td colspan='5'>—</td></tr>"
-    return f"""<!doctype html><html><head><title>Health — Mycelium</title><style>
-    body{{font:16px system-ui;max-width:960px;margin:2rem auto;padding:0 1rem;color:#17352a;background:#f4f5ed}} h1,h2{{color:#2f6b45}} table{{width:100%;border-collapse:collapse;background:white;margin-bottom:2rem}} td,th{{padding:.6rem;text-align:left;border-bottom:1px solid #dde5dc}} nav{{margin:1rem 0}} nav a{{margin-right:1rem;color:#2f6b45}}</style></head>
-    <body>{_workspace_nav()}<h1>Health</h1>
-    <p><small>Tracking only — {escape(str(index['overall_completeness']))} · overall {escape(str(index['overall']))} ({escape(index['overall_method'])})</small></p>
+    main = f"""<h1>Health</h1>
+    <p class="muted">Tracking only — { _ui.esc(str(index['overall_completeness']))} · overall {_ui.esc(str(index['overall']))} ({_ui.esc(index['overall_method'])})</p>
     <h2>Index dimensions</h2><table><tr><th>Dimension</th><th>Value</th><th>Completeness</th><th>Method</th></tr>{dims}</table>
-    <h2>Recent measurements</h2><table><tr><th>Metric</th><th>Value</th><th>Unit</th><th>Source</th><th>Observed</th></tr>{rows}</table></body></html>"""
+    <h2>Recent measurements</h2><table><tr><th>Metric</th><th>Value</th><th>Unit</th><th>Source</th><th>Observed</th></tr>{rows}</table>"""
+    return _ui.shell("Health", "/health", main, "",
+                     _ui.command_bar())
 
 
 @app.get("/skills", response_class=HTMLResponse)
 def skills_page() -> str:
+    from . import ui as _ui
     from .skills import list_candidates, list_skills
     owned = list_skills(limit=100)
     candidates = list_candidates()
-    skill_rows = "".join(
-        f"<tr><td>{escape(skill.name)}</td>"
-        f"<td>{escape(skill.stage)}</td>"
-        f"<td>{escape(skill.proficiency)}</td>"
-        f"<td>{len(skill.evidence)}</td></tr>"
-        for skill in owned) or "<tr><td colspan='4'>—</td></tr>"
+    skill_cards = "".join(
+        f"<div class=\"sprout\"><b>{_ui.esc(skill.name)}</b><br>"
+        f"{_ui.chip(skill.stage)}{_ui.chip(skill.proficiency)}"
+        f"<br><span class=\"muted\">{len(skill.evidence)} evidence</span></div>"
+        for skill in owned) or _ui.empty("No owned skills yet — discover some from a project.")
     cand_rows = "".join(
-        f"<tr><td>{escape(item.name)}</td>"
-        f"<td>{escape(item.project_ref or '—')}</td>"
-        f"<td>{escape(item.status)}</td></tr>"
+        f"<tr><td>{_ui.esc(item.name)}</td>"
+        f"<td>{_ui.esc(item.project_ref or '—')}</td>"
+        f"<td>{_ui.esc(item.status)}</td></tr>"
         for item in candidates) or "<tr><td colspan='3'>—</td></tr>"
-    return f"""<!doctype html><html><head><title>Skills — Mycelium</title><style>
-    body{{font:16px system-ui;max-width:960px;margin:2rem auto;padding:0 1rem;color:#17352a;background:#f4f5ed}} h1,h2{{color:#2f6b45}} table{{width:100%;border-collapse:collapse;background:white;margin-bottom:2rem}} td,th{{padding:.6rem;text-align:left;border-bottom:1px solid #dde5dc}} nav{{margin:1rem 0}} nav a{{margin-right:1rem;color:#2f6b45}}</style></head>
-    <body>{_workspace_nav()}<h1>Skills</h1>
-    <h2>Owned</h2><table><tr><th>Name</th><th>Stage</th><th>Proficiency</th><th>Evidence</th></tr>{skill_rows}</table>
-    <h2>Candidates</h2><table><tr><th>Name</th><th>Project</th><th>Status</th></tr>{cand_rows}</table></body></html>"""
+    main = f"""<h1>Skills</h1>
+    <h2>Owned</h2><div class="grove">{skill_cards}</div>
+    <h2>Candidates</h2><table><tr><th>Name</th><th>Project</th><th>Status</th></tr>{cand_rows}</table>"""
+    return _ui.shell("Skills", "/skills", main, "",
+                     _ui.command_bar())
 
 
 @app.get("/research", response_class=HTMLResponse)
 def research_page() -> str:
+    from . import ui as _ui
     from .research import list_sources
     sources = list_sources(limit=50)
     rows = "".join(
-        f"<tr><td>{escape(item.title)}</td>"
-        f"<td>{escape(item.source_type)}</td>"
-        f"<td>{escape(item.status)}</td></tr>"
+        f"<tr><td>{_ui.esc(item.title)}</td>"
+        f"<td>{_ui.esc(item.source_type)}</td>"
+        f"<td>{_ui.status_dot(item.status)}{_ui.esc(item.status)}</td></tr>"
         for item in sources) or "<tr><td colspan='3'>—</td></tr>"
-    return f"""<!doctype html><html><head><title>Research — Mycelium</title><style>
-    body{{font:16px system-ui;max-width:960px;margin:2rem auto;padding:0 1rem;color:#17352a;background:#f4f5ed}} h1{{color:#2f6b45}} table{{width:100%;border-collapse:collapse;background:white}} td,th{{padding:.6rem;text-align:left;border-bottom:1px solid #dde5dc}} nav{{margin:1rem 0}} nav a{{margin-right:1rem;color:#2f6b45}}</style></head>
-    <body>{_workspace_nav()}<h1>Research sources</h1>
-    <table><tr><th>Title</th><th>Type</th><th>Stage</th></tr>{rows}</table></body></html>"""
+    main = f"""<h1>Research sources</h1>
+    <p class="muted">Every claim cites a source. Synthesis is interpretation, never fact.</p>
+    <table><tr><th>Title</th><th>Type</th><th>Stage</th></tr>{rows}</table>"""
+    return _ui.shell("Research", "/research", main, "",
+                     _ui.command_bar())
 
 
 @app.get("/devices", response_class=HTMLResponse)
 def devices_page() -> str:
+    from . import ui as _ui
     from .drones import list_drones
     from .familiars import list_familiars
     from .robots import list_robots
-    robots = "".join(
-        f"<tr><td>{escape(item.name)}</td>"
-        f"<td>robot</td><td>{escape(item.status)}</td>"
-        f"<td>{escape(item.safety_state)}</td></tr>"
+    cards = "".join(
+        f"<div class=\"sprout\"><b>{_ui.esc(item.name)}</b> {_ui.chip('robot')}<br>"
+        f"{_ui.status_dot(item.status)}{_ui.esc(item.status)} · safety {_ui.esc(item.safety_state)}</div>"
         for item in list_robots())
-    drones = "".join(
-        f"<tr><td>{escape(item.name)}</td>"
-        f"<td>drone</td><td>{escape(item.status)}</td>"
-        f"<td>{escape(item.safety_state)}</td></tr>"
+    cards += "".join(
+        f"<div class=\"sprout\"><b>{_ui.esc(item.name)}</b> {_ui.chip('drone')}<br>"
+        f"{_ui.status_dot(item.status)}{_ui.esc(item.status)} · safety {_ui.esc(item.safety_state)}</div>"
         for item in list_drones())
-    familiars = "".join(
-        f"<tr><td>{escape(item.name)}</td>"
-        f"<td>{escape(item.kind)}</td>"
-        f"<td>{escape(item.status)}</td><td>—</td></tr>"
+    cards += "".join(
+        f"<div class=\"sprout\"><b>{_ui.esc(item.name)}</b> {_ui.chip(item.kind)}<br>"
+        f"{_ui.status_dot(item.status)}{_ui.esc(item.status)}</div>"
         for item in list_familiars())
-    rows = robots + drones + familiars or \
-        "<tr><td colspan='4'>—</td></tr>"
-    return f"""<!doctype html><html><head><title>Devices — Mycelium</title><style>
-    body{{font:16px system-ui;max-width:960px;margin:2rem auto;padding:0 1rem;color:#17352a;background:#f4f5ed}} h1{{color:#2f6b45}} table{{width:100%;border-collapse:collapse;background:white}} td,th{{padding:.6rem;text-align:left;border-bottom:1px solid #dde5dc}} nav{{margin:1rem 0}} nav a{{margin-right:1rem;color:#2f6b45}}</style></head>
-    <body>{_workspace_nav()}<h1>Devices</h1>
-    <table><tr><th>Name</th><th>Kind</th><th>Status</th><th>Safety</th></tr>{rows}</table></body></html>"""
+    main = f"""<h1>Devices</h1>
+    <p class="muted">One capability model for every helper. Physical execution stays behind safety gates — nothing here moves on its own.</p>
+    <div class="grove">{cards or _ui.empty('No devices registered.')}</div>"""
+    return _ui.shell("Devices", "/devices", main, "",
+                     _ui.command_bar())
 
 
 @app.get("/watcher", response_class=HTMLResponse)
 def watcher_page() -> str:
+    from . import ui as _ui
     from datetime import datetime as _dt
     from datetime import timezone as _tz
     current = _dt.now(_tz.utc)
@@ -6532,20 +6549,21 @@ def watcher_page() -> str:
             [dict(row) for row in task_rows], current)
     except WatcherRefusedError:
         pass
-    rows = "".join(
-        f"<tr><td>{escape(item.kind)}</td>"
-        f"<td>{escape(item.summary)}</td></tr>"
+    cards = "".join(
+        f"<div class=\"sprout\"><b>{_ui.esc(item.kind.replace('_', ' '))}</b><br>"
+        f"{_ui.esc(item.summary)}</div>"
         for item in findings[:50]) or \
-        "<tr><td colspan='2'>No findings — all quiet</td></tr>"
-    return f"""<!doctype html><html><head><title>Watcher — Mycelium</title><style>
-    body{{font:16px system-ui;max-width:960px;margin:2rem auto;padding:0 1rem;color:#17352a;background:#f4f5ed}} h1{{color:#2f6b45}} table{{width:100%;border-collapse:collapse;background:white}} td,th{{padding:.6rem;text-align:left;border-bottom:1px solid #dde5dc}} nav{{margin:1rem 0}} nav a{{margin-right:1rem;color:#2f6b45}}</style></head>
-    <body>{_workspace_nav()}<h1>Watcher findings</h1>
-    <p><small>Findings only — the watcher never executes.</small></p>
-    <table><tr><th>Kind</th><th>Finding</th></tr>{rows}</table></body></html>"""
+        _ui.empty("All quiet — the watcher found nothing.")
+    main = f"""<h1>Watcher findings</h1>
+    <p class="muted">Findings only — the watcher never executes. Each card explains why it exists.</p>
+    <div class="grove">{cards}</div>"""
+    return _ui.shell("Watcher", "/watcher", main, "",
+                     _ui.command_bar())
 
 
 @app.get("/chat", response_class=HTMLResponse)
 def chat_page(id: str | None = None) -> str:
+    from . import ui as _ui
     init_chat_database()
     with chat_connection() as db:
         conversations = db.execute(
@@ -6557,45 +6575,44 @@ def chat_page(id: str | None = None) -> str:
     waiting = [row for row in _desktop_list(limit=100,
                                             status="pending_approval")]
     options = "".join(
-        f"<option value='{escape(row['conversation_id'])}'"
+        f"<option value='{_ui.esc(row['conversation_id'])}'"
         + (" selected" if row["conversation_id"] == active else "")
-        + f">{escape(row['title'] or row['conversation_id'])}</option>"
+        + f">{_ui.esc(row['title'] or row['conversation_id'])}</option>"
         for row in conversations)
     turns = "".join(
-        f"<div class='msg {escape(msg['role'])}'><b>{escape(msg['role'])}</b>"
-        f"<p>{escape(msg['content'])}</p></div>"
+        f"<article class='sprout' aria-label='{msg['role']} message'>"
+        f"<b>{_ui.esc(msg['role'])}</b>"
+        f"<p>{_ui.link_entities(msg['content'])}</p></article>"
         for msg in history)
     try:
         live = coordinator_status()
         live_html = (
-            f"<p><small>Interface: web · nodes "
+            f"<p class=\"muted\">Interface: web · nodes "
             f"{live['nodes']['online']} online / "
             f"{live['nodes']['stale']} stale · open approvals: "
             f"desktop {live['pending_approvals']['desktop_actions']}, "
             f"writes {live['pending_approvals']['write_proposals']}, "
             f"missies {live['pending_approvals']['missions']} · "
             f"<a href='/mobile'>mobile</a> · "
-            f"<a href='/api/v1/status'>status (JSON)</a></small></p>")
+            f"<a href='/api/v1/status'>status (JSON)</a></p>")
     except (ValueError, KeyError):
         live_html = ""
-    return f"""<!doctype html><html><head><title>Mycelium Chat</title><style>
-    body{{font:16px system-ui;max-width:860px;margin:2rem auto;padding:0 1rem;color:#17352a;background:#f4f5ed}} h1{{color:#2f6b45}} nav a{{margin-right:1rem;color:#2f6b45}}
-    .msg{{background:white;border:1px solid #dde5dc;padding:.6rem .9rem;margin-bottom:.6rem;border-radius:6px}} .msg.user{{border-left:4px solid #2f6b45}} .msg.assistant{{border-left:4px solid #6b5ca5}} .msg.agent{{border-left:4px solid #b5892e}} .msg.system{{border-left:4px solid #888}}
-    form{{background:white;padding:1rem;border:1px solid #dde5dc;border-radius:6px}} textarea{{width:100%;min-height:4rem}} button{{background:#2f6b45;color:white;border:0;padding:.5rem 1rem;border-radius:4px}}</style></head>
-    <body>{_workspace_nav()}<h1>Mycelium Chat</h1>
-    <p><label>Gesprek: <select onchange="location='/chat?id='+this.value">{options}</select></label>
-    <a href="/chat">+ nieuw gesprek</a></p>
+    main = f"""<h1>Mycelium Chat</h1>
     {live_html}
-    {f"<p>⏳ <a href='/agents'>{len(waiting)} desktop-actie(s) wachten op goedkeuring</a> — de Desktop Agent voert ze pas uit na jouw YES.</p>" if waiting else ""}
+    <p><label>Conversation: <select onchange="location='/chat?id='+this.value" aria-label="Conversation">{options}</select></label>
+    <a href="/chat">+ new conversation</a></p>
+    {f"<div class='panel'>⏳ <a href='/agents'>{len(waiting)} desktop action(s) waiting for approval</a> — the Desktop Agent only acts after your YES.</div>" if waiting else ""}
     <form method="post" action="/web/missions">
-    <input type="hidden" name="conversation_id" value="{escape(active or '')}">
-    <input type="text" name="goal" placeholder="Start missie, bijv. Bekijk mijn project en kijk wat er nog moet gebeuren" style="width:70%">
-    <button type="submit">Start missie</button></form>
-    {turns or "<p>Nog geen berichten. Stel een vraag — Mycelium gebruikt INVENTory als context en lokaal AI-advies.</p>"}
+    <input type="hidden" name="conversation_id" value="{_ui.esc(active or '')}">
+    <input type="text" name="goal" placeholder="Start a mission…" style="width:70%" aria-label="Mission goal">
+    <button type="submit">Start mission</button></form>
+    {turns or "<p>Ask anything — entity references like obj_… or mem_… become clickable and focus the world.</p>"}
     <form method="post" action="/web/chat">
-    <input type="hidden" name="conversation_id" value="{escape(active or '')}">
-    <textarea name="message" placeholder="Bijv. Wat kan ik maken met mijn onderdelen?"></textarea><br><br>
-    <button type="submit">Verstuur</button></form></body></html>"""
+    <input type="hidden" name="conversation_id" value="{_ui.esc(active or '')}">
+    <textarea name="message" placeholder="What can I make with my parts?" aria-label="Message"></textarea><br><br>
+    <button type="submit">Send</button></form>"""
+    return _ui.shell("Chat", "/chat", main, "",
+                     _ui.command_bar())
 
 
 @app.post("/web/chat")
@@ -6613,63 +6630,59 @@ async def web_chat(request: Request) -> RedirectResponse:
 
 @app.get("/agents", response_class=HTMLResponse)
 def agents_page() -> str:
+    from . import ui as _ui
     status = agent_status()
-    online = "● online" if status["agents_online"] else "○ offline"
+    online = status["agents_online"] > 0
     current = status["current_action"]
     if current:
         current_html = (
-            f"<p>Huidige actie: <code>{escape(current['action_type'])}</code> "
-            f"met {escape(str(current['parameters']))}</p>"
-            f"<p>Status: {escape(current['status'])}"
-            + (f" · goedgekeurd door {escape(current['decided_by'])}"
+            f"<p>Current action: <code>{_ui.esc(current['action_type'])}</code> "
+            f"with {_ui.esc(str(current['parameters']))}</p>"
+            f"<p>Status: {_ui.status_dot(current['status'])}{_ui.esc(current['status'])}"
+            + (f" · approved by {_ui.esc(current['decided_by'])}"
                if current["decided_by"] else "")
-            + (f" · uitgevoerd door {escape(current['dispatched_by'])}"
+            + (f" · dispatched by {_ui.esc(current['dispatched_by'])}"
                if current["dispatched_by"] else "")
             + "</p>")
     else:
-        current_html = "<p>Geen lopende actie.</p>"
+        current_html = "<p>No running action.</p>"
     nodes_html = "".join(
-        f"<li>{escape(node['node_id'])} ({escape(node['status'])}, "
-        f"gezien {escape(str(node['last_seen']))})<br><small>"
-        f"{escape(', '.join(node['capabilities']))}</small></li>"
-        for node in status["desktop_nodes"]) or "<li>○ geen desktop-agent</li>"
+        f"<li>{_ui.status_dot(node['status'])}{_ui.esc(node['node_id'])} "
+        f"({_ui.esc(node['status'])}, seen {_ui.esc(str(node['last_seen']))})<br><small>"
+        f"{_ui.esc(', '.join(node['capabilities']))}</small></li>"
+        for node in status["desktop_nodes"]) or "<li>No desktop agent</li>"
     waiting = sum(1 for entry in status["waiting"]
                   if entry["status"] == "pending_approval")
     done = sum(1 for entry in status["activity"]
                if entry["status"] == "completed")
-    icons = {"completed": "✓", "failed": "✗", "blocked": "■",
-             "cancelled": "■", "rejected": "■", "approved": "⏳",
-             "pending_approval": "⏳", "dispatched": "▶"}
     items = "".join(
-        f"<li>{icons.get(entry['status'], '○')} "
-        f"<code>{escape(entry['action_type'])}</code> "
-        f"{escape(entry['action_id'])} — {escape(entry['status'])}"
-        + (f" · decided_by {escape(entry['decided_by'])}"
+        f"<li>{_ui.status_dot(entry['status'])}"
+        f"<code>{_ui.esc(entry['action_type'])}</code> "
+        f"{_ui.esc(entry['action_id'])} — {_ui.esc(entry['status'])}"
+        + (f" · decided_by {_ui.esc(entry['decided_by'])}"
            if entry["decided_by"] else "")
-        + (f" · dispatched_by {escape(entry['dispatched_by'])}"
+        + (f" · dispatched_by {_ui.esc(entry['dispatched_by'])}"
            if entry["dispatched_by"] else "")
         + (_result_suffix(entry) or "")
-        + (f" <form style='display:inline' method='post' action=\"/web/desktop/{escape(entry['action_id'])}/decision\">"
+        + (f" <form style='display:inline' method='post' action=\"/web/desktop/{_ui.esc(entry['action_id'])}/decision\">"
            f"<input type='hidden' name='response' value='YES'>"
            f"<button>Approve</button></form>"
-           f" <form style='display:inline' method='post' action=\"/web/desktop/{escape(entry['action_id'])}/decision\">"
+           f" <form style='display:inline' method='post' action=\"/web/desktop/{_ui.esc(entry['action_id'])}/decision\">"
            f"<input type='hidden' name='response' value='NO'>"
            f"<button>Reject</button></form>"
-           f" <form style='display:inline' method='post' action=\"/web/desktop/{escape(entry['action_id'])}/cancel\">"
+           f" <form style='display:inline' method='post' action=\"/web/desktop/{_ui.esc(entry['action_id'])}/cancel\">"
            f"<button>Stop</button></form>" if entry["status"] == "pending_approval" else "")
         + "</li>"
         for entry in status["activity"])
-    return f"""<!doctype html><html><head><title>Mycelium Agents</title><style>
-    body{{font:16px system-ui;max-width:860px;margin:2rem auto;padding:0 1rem;color:#17352a;background:#f4f5ed}} h1{{color:#2f6b45}} nav a{{margin-right:1rem;color:#2f6b45}}
-    .panel{{background:white;border:1px solid #dde5dc;padding:1rem;border-radius:6px;margin-bottom:1rem}} button{{background:#2f6b45;color:white;border:0;padding:.3rem .7rem;border-radius:4px;margin:.1rem}} small{{color:#5a6b5f}}</style></head>
-    <body>{_workspace_nav()}<h1>Agent-paneel</h1>
-    <div class="panel"><p>Desktop Agent: <b>{online}</b> ({status["agents_online"]} desktop-node(s))</p>
-    <p><b>AI DENKT</b> · <b>AGENT HANDELT</b> · <b>MENSELIJKE APPROVAL BESLIST</b></p>
-    <p>Wachtend op goedkeuring: <b>{waiting}</b> · voltooid: <b>{done}</b> ·
-    voortgang via <a href="/chat">Chat</a></p>
+    main = f"""<h1>Agents</h1>
+    <div class="panel"><p>Desktop Agent: <b>{"online" if online else "offline"}</b> ({status["agents_online"]} desktop node(s))</p>
+    <p class="muted"><b>AI thinks</b> · <b>agent acts</b> · <b>human approval decides</b></p>
+    <p>Waiting approval: <b>{waiting}</b> · completed: <b>{done}</b> · progress via <a href="/chat">Chat</a></p>
     {current_html}</div>
-    <h2>Desktop-agents</h2><ul>{nodes_html}</ul>
-    <h2>Activiteit</h2><ul>{items or "<li>○ nog geen acties</li>"}</ul></body></html>"""
+    <h2>Desktop agents</h2><ul>{nodes_html}</ul>
+    <h2>Activity</h2><ul>{items or "<li>No actions yet</li>"}</ul>"""
+    return _ui.shell("Agents", "/agents", main, "",
+                     _ui.command_bar())
 
 
 def _result_suffix(entry: dict) -> str:
@@ -6686,58 +6699,65 @@ def _result_suffix(entry: dict) -> str:
 
 @app.get("/missions", response_class=HTMLResponse)
 def missions_page() -> str:
-    items = "".join(
-        f"<li><a href='/missions/{escape(m['mission_id'])}'>"
-        f"{escape(m['goal'])}</a> — {escape(m['status'])} "
-        f"({m['current_step']}/{len(m['steps'])})</li>"
+    from . import ui as _ui
+    cards = "".join(
+        f"<div class=\"sprout\"><b>{_ui.esc(m['goal'][:90])}</b><br>"
+        f"{_ui.status_dot(m['status'])}{_ui.chip(m['status'])}"
+        f"<span class=\"muted\">step {m['current_step']}/{len(m['steps'])}</span><br>"
+        f"<a href='/missions/{_ui.esc(m['mission_id'])}'>Open process</a></div>"
         for m in [_mission_to_json(mission)
                   for mission in list_missions()])
-    return f"""<!doctype html><html><head><title>Mycelium Plans</title><style>
-    body{{font:16px system-ui;max-width:860px;margin:2rem auto;padding:0 1rem;color:#17352a;background:#f4f5ed}} h1{{color:#2f6b45}} nav a{{margin-right:1rem;color:#2f6b45}}
-    .panel{{background:white;border:1px solid #dde5dc;padding:1rem;border-radius:6px;margin-bottom:1rem}} button{{background:#2f6b45;color:white;border:0;padding:.4rem .9rem;border-radius:4px}}</style></head>
-    <body>{_workspace_nav()}<h1>Missies &amp; plannen</h1>
-    <div class="panel"><p>Autonomie bestaat alleen <b>binnen</b> een goedgekeurd plan. Desktop-input blijft per stap approval-gated.</p>
+    main = f"""<h1>Missions</h1>
+    <div class="panel"><p>Autonomy exists only <b>inside</b> an approved plan. Approved is not executed — execution is a separate, visible step.</p>
     <form method="post" action="/web/missions/from-template">
-    <select name="template_id">
-    <option value="inspect_project">Project verkennen</option>
-    <option value="investigate_inventory">INVENTory onderzoeken</option>
-    <option value="analyze_problem">Probleem analyseren</option>
-    <option value="prepare_build_plan">Bouwplan voorbereiden</option>
-    <option value="inspect_desktop_project">Desktop-project bekijken</option>
+    <select name="template_id" aria-label="Template">
+    <option value="inspect_project">Explore project</option>
+    <option value="investigate_inventory">Investigate INVENTory</option>
+    <option value="analyze_problem">Analyze problem</option>
+    <option value="prepare_build_plan">Prepare build plan</option>
+    <option value="inspect_desktop_project">View desktop project</option>
     </select>
-    <input type="text" name="goal" placeholder="Doel" style="width:40%">
-    <button type="submit">Start van template</button></form>
-    <p><small>Tip: start eerst een <a href="/chat">chat</a> — een missie hoort bij een gesprek.
-    Vanaf dit formulier wordt de missie gekoppeld aan het laatste gesprek.</small></p></div>
-    <ul>{items or "<li>○ nog geen missies — start er een vanuit <a href='/chat'>Chat</a></li>"}</ul></body></html>"""
+    <input type="text" name="goal" placeholder="Goal" style="width:40%" aria-label="Goal">
+    <button type="submit">Start from template</button></form>
+    <p class="muted">Tip: start from <a href="/chat">chat</a> — a mission belongs to a conversation.</p></div>
+    <div class="grove">{cards or _ui.empty("No missions yet — start one from Chat.")}</div>"""
+    return _ui.shell("Missions", "/missions", main, "",
+                     _ui.command_bar())
 
 
 @app.get("/missions/{mission_id}", response_class=HTMLResponse)
 def mission_page(mission_id: str) -> str:
+    from . import ui as _ui
     mission = load_mission(mission_id)
     if mission is None:
-        return HTMLResponse("Missie niet gevonden", status_code=404)
+        return HTMLResponse("Mission not found", status_code=404)
     done = sum(1 for step in mission.steps
                if step.status in ("completed", "skipped"))
     total = len(mission.steps)
     percent = int(100 * done / total) if total else 0
-    bar = "█" * (percent // 10) + "░" * (10 - percent // 10)
-    icons = {"completed": "✓", "failed": "✗", "blocked": "■",
-             "waiting_approval": "⏳", "dispatched": "▶",
-             "pending": "○", "skipped": "–"}
+    path = []
+    for index, step in enumerate(mission.steps):
+        cls = "done" if step.status in ("completed", "skipped") \
+            else "now" if index == mission.current_step and \
+            mission.status in ("approved", "running") else ""
+        if step.status in ("failed", "blocked"):
+            cls = "blocked"
+        path.append(
+            f"<span class=\"step {cls}\">{_ui.esc(step.kind)} · "
+            f"{_ui.esc(step.status)}</span>")
     steps = "".join(
-        f"<li>{icons.get(step.status, '?')} <b>{escape(step.kind)}</b> "
-        f"{escape(step.description)} — {escape(step.status)}"
-        + (f" · obs {escape(step.observation_reference)}"
+        f"<li>{_ui.status_dot(step.status)}<b>{_ui.esc(step.kind)}</b> "
+        f"{_ui.esc(step.description)} — {_ui.esc(step.status)}"
+        + (f" · obs {_ui.esc(step.observation_reference)}"
            if step.observation_reference else "")
-        + (f" · actie {escape(step.desktop_action_id)}"
+        + (f" · action {_ui.esc(step.desktop_action_id)}"
            if step.desktop_action_id else "")
-        + (f" · <i>{escape(step.error[:160])}</i>" if step.error else "")
+        + (f" · <i>{_ui.esc(step.error[:160])}</i>" if step.error else "")
         + "</li>"
         for step in mission.steps)
     events = "".join(
-        f"<li><small>{escape(event.created_at)}</small> "
-        f"<b>{escape(event.event_type)}</b> {escape(event.message[:200])}</li>"
+        f"<li><small>{_ui.esc(event.created_at)}</small> "
+        f"<b>{_ui.esc(event.event_type)}</b> {_ui.esc(event.message[:200])}</li>"
         for event in list_events(mission_id=mission_id)[-20:])
     first_entity = ""
     for record in (mission.context_records or []):
@@ -6746,31 +6766,32 @@ def mission_page(mission_id: str) -> str:
             break
     buttons = ""
     if mission.status == "pending_approval":
-        buttons += (f"<form style='display:inline' method='post' action='/web/missions/{escape(mission_id)}/approve'>"
+        buttons += (f"<form style='display:inline' method='post' action='/web/missions/{_ui.esc(mission_id)}/approve'>"
                     "<button>APPROVE plan</button></form> ")
     if mission.status in ("approved", "running"):
-        buttons += (f"<form style='display:inline' method='post' action='/web/missions/{escape(mission_id)}/tick'>"
-                    "<button>Volgende stap</button></form> ")
+        buttons += (f"<form style='display:inline' method='post' action='/web/missions/{_ui.esc(mission_id)}/tick'>"
+                    "<button>Next step</button></form> ")
     if mission.status == "running":
-        buttons += (f"<form style='display:inline' method='post' action='/web/missions/{escape(mission_id)}/pause'>"
-                    "<button>Pauzeer</button></form> ")
+        buttons += (f"<form style='display:inline' method='post' action='/web/missions/{_ui.esc(mission_id)}/pause'>"
+                    "<button>Pause</button></form> ")
     if mission.status == "paused":
-        buttons += (f"<form style='display:inline' method='post' action='/web/missions/{escape(mission_id)}/resume'>"
-                    "<button>Hervat</button></form> ")
+        buttons += (f"<form style='display:inline' method='post' action='/web/missions/{_ui.esc(mission_id)}/resume'>"
+                    "<button>Resume</button></form> ")
     if mission.status not in ("completed", "failed", "cancelled",
                               "blocked"):
-        buttons += (f"<form style='display:inline' method='post' action='/web/missions/{escape(mission_id)}/cancel'>"
+        buttons += (f"<form style='display:inline' method='post' action='/web/missions/{_ui.esc(mission_id)}/cancel'>"
                     "<button>STOP</button></form>")
-    return f"""<!doctype html><html><head><title>Missie</title><style>
-    body{{font:16px system-ui;max-width:860px;margin:2rem auto;padding:0 1rem;color:#17352a;background:#f4f5ed}} h1{{color:#2f6b45}} nav a{{margin-right:1rem;color:#2f6b45}}
-    .panel{{background:white;border:1px solid #dde5dc;padding:1rem;border-radius:6px;margin-bottom:1rem}} button{{background:#2f6b45;color:white;border:0;padding:.4rem .9rem;border-radius:4px;margin:.1rem}}</style></head>
-    <body>{_workspace_nav()}<h1>MISSION</h1>
-    <div class="panel"><p>{escape(mission.goal)}</p>
-    <p><code>{bar}</code> {percent}% · status <b>{escape(mission.status)}</b> · stap {mission.current_step}/{total}</p>
+    main = f"""<h1>MISSION</h1>
+    <div class="panel"><p>{_ui.esc(mission.goal)}</p>
+    <p>{percent}% · {_ui.status_dot(mission.status)}<b>{_ui.esc(mission.status)}</b> · step {mission.current_step}/{total}</p>
+    <div class="path" aria-label="Mission steps">{"<span class='arrow'>→</span>".join(path)}</div>
+    <p class="muted">Proposed and approved are not executed. Execution shows as its own step with its own result.</p>
     <p>{buttons}</p>
-    {f"<p><small>Wereldgrafiek (JSON-foundation): <a href='/api/v1/graph?entity_id={escape(first_entity)}&depth=1&include_missions=true'>graph rond eerste context</a></small></p>" if first_entity else ""}</div>
-    <h2>Stappen</h2><ul>{steps}</ul>
-    <h2>Gebeurtenissen</h2><ul>{events or "<li>○</li>"}</ul></body></html>"""
+    {f"<p class=\"muted\">World: <a href='/world?entity_id={_ui.esc(first_entity)}'>graph around first context entity</a></p>" if first_entity else ""}</div>
+    <h2>Steps</h2><ul>{steps}</ul>
+    <h2>Events</h2><ul>{events or "<li>—</li>"}</ul>"""
+    return _ui.shell("Mission", "/missions", main, "",
+                     _ui.command_bar())
 
 
 @app.post("/web/missions/from-template")
@@ -6832,43 +6853,42 @@ async def web_mission_op(mission_id: str, op: str) -> RedirectResponse:
 
 @app.get("/cameras", response_class=HTMLResponse)
 def cameras_page() -> str:
+    from . import ui as _ui
     rows = []
     for device in list_devices():
         latest = list_observations(device.device_id, limit=1)
         last = (f"{latest[0].observation_id} "
-                f"({latest[0].created_at})" if latest else "	 geen")
+                f"({latest[0].created_at})" if latest else "— none")
         test_badge = ""
         if latest and "test-only" in str(
                 latest[0].provenance.notes or ""):
-            test_badge = " <b>[TEST]</b>"
+            test_badge = _ui.chip("[TEST]", "state-TEST")
         rows.append(
-            f"<li><b>{escape(device.name)}</b> "
-            f"({escape(device.device_id)}, {escape(device.source)}){test_badge} - "
-            f"{escape(', '.join(device.kinds))} � "
-            f"<a href='/api/v1/cameras/{escape(device.device_id)}/availability'>"
-            "beschikbaarheid (JSON)</a> � "
-            f"<a href='/api/v1/cameras/{escape(device.device_id)}/observations'>"
-            "observaties (JSON)</a> � laatste: "
-            f"{escape(last)}</li>")
+            f"<li><b>{_ui.esc(device.name)}</b> "
+            f"({_ui.esc(device.device_id)}, {_ui.esc(device.source)}){test_badge} — "
+            f"{_ui.esc(', '.join(device.kinds))} · "
+            f"<a href='/api/v1/cameras/{_ui.esc(device.device_id)}/availability'>"
+            "availability (JSON)</a> · "
+            f"<a href='/api/v1/cameras/{_ui.esc(device.device_id)}/observations'>"
+            "observations (JSON)</a> · latest: "
+            f"{_ui.esc(last)}</li>")
     devices = "".join(rows)
     detected = detect_local_imaging_devices()
     found = "".join(
-        f"<li><small>{escape(str(entry.get('path', '?')))}</small></li>"
+        f"<li><small>{_ui.esc(str(entry.get('path', '?')))}</small></li>"
         for entry in detected.get("devices", []))
-    return f"""<!doctype html><html><head><title>Mycelium Cameras</title><style>
-    body{{font:16px system-ui;max-width:860px;margin:2rem auto;padding:0 1rem;color:#17352a;background:#f4f5ed}} h1{{color:#2f6b45}} nav a{{margin-right:1rem;color:#2f6b45}}
-    .panel{{background:white;border:1px solid #dde5dc;padding:1rem;border-radius:6px;margin-bottom:1rem}} button{{background:#2f6b45;color:white;border:0;padding:.4rem .9rem;border-radius:4px}} input,select{{margin:.2rem}}</style></head>
-    <body>{_workspace_nav()}<h1>Camera's</h1>
-    <div class="panel"><p>Camera's zijn <b>observatiebronnen</b>, geen actuatoren. Snapshots vereisen een
-    capture-runtime; zonder runtime weigert de API (409) in plaats van beeld te verzinnen. Insta360-fases: zie
-    <code>docs/camera-architecture.md</code>.</p></div>
-    <h2>Geregistreerd</h2><ul>{devices or "<li>○ geen camera's</li>"}</ul>
-    <h2>Lokaal gedetecteerd (alleen namen, read-only)</h2><ul>{found or "<li>○ niets gevonden / niet ondersteund</li>"}</ul>
-    <h2>Registreer</h2><form method="post" action="/web/cameras/register">
-    <input type="text" name="name" placeholder="Naam, bijv. Insta360 X4">
-    <select name="kinds"><option value="snapshot">snapshot</option><option value="snapshot,webcam">snapshot+webcam</option><option value="snapshot,webcam,stream,p360">alles (Insta360)</option></select>
-    <select name="source"><option value="manual">manual</option><option value="usb">usb</option><option value="insta360">insta360</option></select>
-    <button type="submit">Registreer</button></form></body></html>"""
+    main = f"""<h1>Cameras</h1>
+    <div class="panel"><p>Cameras are <b>observation sources</b>, never actuators. Snapshots need a
+    capture runtime; without one the API refuses (409) instead of inventing pixels.</p></div>
+    <h2>Registered</h2><ul>{devices or "<li>No cameras</li>"}</ul>
+    <h2>Detected locally (names only, read-only)</h2><ul>{found or "<li>Nothing found / unsupported</li>"}</ul>
+    <h2>Register</h2><form method="post" action="/web/cameras/register">
+    <input type="text" name="name" placeholder="Name, e.g. Insta360 X4" aria-label="Camera name">
+    <select name="kinds" aria-label="Kinds"><option value="snapshot">snapshot</option><option value="snapshot,webcam">snapshot+webcam</option><option value="snapshot,webcam,stream,p360">all (Insta360)</option></select>
+    <select name="source" aria-label="Source"><option value="manual">manual</option><option value="usb">usb</option><option value="insta360">insta360</option></select>
+    <button type="submit">Register</button></form>"""
+    return _ui.shell("Cameras", "/cameras", main, "",
+                     _ui.command_bar())
 
 
 @app.post("/web/cameras/register")
@@ -6906,30 +6926,30 @@ def _printer_is_simulated(printer_id: str) -> bool:
 
 @app.get("/fabrication", response_class=HTMLResponse)
 def fabrication_page() -> str:
+    from . import ui as _ui
     runs = "".join(
-        f"<li><b>{escape(record.fabrication_id)}</b> — "
-        f"{escape(record.status)} · mesh "
-        f"{escape(record.mesh_ref or '○')} "
-        f"({escape(record.mesh_validation or '?')}) · gcode "
-        f"{escape(record.gcode_ref or '○')} "
-        f"({escape(record.gcode_safety or '?')}) · job "
-        f"{escape(record.job_id or '○')}</li>"
+        f"<div class=\"sprout\"><b>{_ui.esc(record.fabrication_id)}</b> "
+        f"{_ui.status_dot(record.status)}{_ui.chip(record.status)}<br>"
+        f"<span class=\"muted\">mesh {_ui.esc(record.mesh_ref or '—')} "
+        f"({_ui.esc(record.mesh_validation or '?')}) · gcode "
+        f"{_ui.esc(record.gcode_ref or '—')} "
+        f"({_ui.esc(record.gcode_safety or '?')}) · job "
+        f"{_ui.esc(record.job_id or '—')}</span></div>"
         for record in list_fabrications(20))
     printers = "".join(
-        f"<li><b>{escape(device.name)}</b> "
-        f"({escape(device.printer_id)}) - "
-        f"{escape(', '.join(device.capabilities))}"
-        f"{' <b>[SIMULATED]</b>' if _printer_is_simulated(device.printer_id) else ''}</li>"
+        f"<li><b>{_ui.esc(device.name)}</b> "
+        f"({_ui.esc(device.printer_id)}) — "
+        f"{_ui.esc(', '.join(device.capabilities))}"
+        f"{' ' + _ui.chip('[SIMULATED]', 'state-SIMULATED') if _printer_is_simulated(device.printer_id) else ''}</li>"
         for device in list_stored_printers())
-    return f"""<!doctype html><html><head><title>Mycelium Fabrication</title><style>
-    body{{font:16px system-ui;max-width:860px;margin:2rem auto;padding:0 1rem;color:#17352a;background:#f4f5ed}} h1{{color:#2f6b45}} nav a{{margin-right:1rem;color:#2f6b45}}
-    .panel{{background:white;border:1px solid #dde5dc;padding:1rem;border-radius:6px;margin-bottom:1rem}}</style></head>
-    <body>{_workspace_nav()}<h1>Fabrication</h1>
-    <div class="panel"><p>Digitaal → fysiek via voorstel → <b>exact YES (fysieke approval)</b> →
-    uitvoering → observatie → verificatie. Telemetrie verifieert nooit het object; een software-cancel is
-    geen fysieke e-stop. Details: <code>docs/3d-architecture.md</code>.</p></div>
-    <h2>Runs</h2><ul>{runs or "<li>○ geen runs</li>"}</ul>
-    <h2>Printers</h2><ul>{printers or "<li>○ geen printers</li>"}</ul></body></html>"""
+    main = f"""<h1>Fabrication</h1>
+    <div class="panel"><p class="muted">Digital → physical through proposal → <b>exact YES (physical approval)</b> →
+    execution → observation → verification. Telemetry never verifies the object; a software cancel is
+    not a physical e-stop.</p></div>
+    <h2>Pipeline runs</h2><div class="grove">{runs or _ui.empty("No runs yet.")}</div>
+    <h2>Printers</h2><ul>{printers or "<li>No printers</li>"}</ul>"""
+    return _ui.shell("Fabrication", "/fabrication", main, "",
+                     _ui.command_bar())
 
 
 @app.get("/workshop", response_class=HTMLResponse)
@@ -6938,12 +6958,13 @@ def workshop_page(fabrication_id: str = "") -> str:
     mesh → sliced file → G-code → printer → execution →
     observation → verification. Read-only chain display; every
     transition still runs through its own gates."""
+    from . import ui as _ui
     records = list_fabrications(20)
     chain_html = ""
     if fabrication_id:
         record = load_fabrication(fabrication_id)
         if record is None:
-            chain_html = "<p>Onbekende fabrication.</p>"
+            chain_html = "<p>Unknown fabrication.</p>"
         else:
             data = record.model_dump(mode="json")
             stages = [
@@ -6959,35 +6980,32 @@ def workshop_page(fabrication_id: str = "") -> str:
                 ("Observatie", data.get("observation_id") or "○"),
                 ("Status", data.get("status") or "?"),
             ]
-            chain_html = "<ol>" + "".join(
-                f"<li><b>{escape(title)}</b>: {escape(value)}</li>"
-                for title, value in stages) + "</ol>"
+            chain_html = "<div class=\"path\" aria-label=\"Fabrication chain\">" + \
+                "<span class='arrow'>→</span>".join(
+                    f"<span class=\"step{' done' if value not in ('○', '?', '') else ''}\">{_ui.esc(title)}: {_ui.esc(value)}</span>"
+                    for title, value in stages) + "</div>"
             history = "".join(
-                f"<li><small>{escape(str(entry.get('at', '')))}</small> "
-                f"<b>{escape(str(entry.get('stage', '')))}</b> — "
-                f"{escape(str(entry.get('detail', ''))[:160])}</li>"
+                f"<li><small>{_ui.esc(str(entry.get('at', '')))}</small> "
+                f"<b>{_ui.esc(str(entry.get('stage', '')))}</b> — "
+                f"{_ui.esc(str(entry.get('detail', ''))[:160])}</li>"
                 for entry in data.get("history", [])[-20:])
             chain_html += f"<h2>History</h2><ul>{history}</ul>"
     runs = "".join(
         f"<li><a href='/workshop?fabrication_id="
-        f"{escape(record.fabrication_id)}'>"
-        f"{escape(record.fabrication_id)}</a> — "
-        f"{escape(record.status)}</li>"
+        f"{_ui.esc(record.fabrication_id)}'>"
+        f"{_ui.esc(record.fabrication_id)}</a> — "
+        f"{_ui.status_dot(record.status)}{_ui.esc(record.status)}</li>"
         for record in records)
-    return f"""<!doctype html><html><head><title>Mycelium Workshop</title>
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <style>
-    body{{font:16px system-ui;max-width:860px;margin:0 auto;padding:0 1rem;color:#17352a;background:#f4f5ed}}
-    h1{{color:#2f6b45}} nav a{{margin-right:.7rem;color:#2f6b45}}
-    .panel{{background:white;border:1px solid #dde5dc;padding:.8rem;border-radius:6px;margin-bottom:.8rem}}</style></head>
-    <body>{_workspace_nav()}<h1>Living Workshop</h1>
+    main = f"""<h1>Living Workshop</h1>
     <div class="panel"><p>Project → object → mesh → G-code → printer →
-    uitvoering → observatie → verificatie. Deze view <b>toont</b> waar een
-    proces staat; elke overgang loopt via voorstel → approval → uitvoering →
-    verificatie. Geen printeractie vanuit deze pagina.</p></div>
-    <div class="panel"><h2>Keten</h2>{chain_html or "<p>Kies een run.</p>"}</div>
-    <div class="panel"><h2>Runs</h2><ul>{runs or "<li>○ geen runs</li>"}</ul></div>
-    </body></html>"""
+    execution → observation → verification. This view <b>shows</b> where a
+    process stands; every transition runs through proposal → approval → execution →
+    verification. No printer action from this page.</p></div>
+    <div class="panel"><h2>Keten</h2>{chain_html or "<p>Pick a run.</p>"}</div>
+    <div class="panel"><h2>Runs</h2><ul>{runs or "<li>No runs</li>"}</ul></div>
+    <p><a href="/fabrication">All fabrication runs</a> · <a href="/workshop/3d">3D view</a></p>"""
+    return _ui.shell("Workshop", "/workshop", main, "",
+                     _ui.command_bar())
 
 
 @app.get("/workshop/3d", response_class=HTMLResponse)
@@ -6999,127 +7017,121 @@ def workshop_3d_page(artifact: str = "") -> str:
     file returns a file_payload for the BIG #5 proposal flow —
     registration still needs approval. No CAD kernel, no
     scripting, no printer commands."""
-    return f"""<!doctype html><html><head><title>Mycelium 3D Workshop</title>
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <style>
-    body{{font:14px system-ui;margin:0 auto;padding:0 1rem;max-width:1000px;color:#17352a;background:#f4f5ed}}
-    h1{{color:#2f6b45;font-size:1.3rem}} nav a{{margin-right:.7rem;color:#2f6b45}}
-    .panel{{background:white;border:1px solid #dde5dc;padding:.7rem;border-radius:6px;margin-bottom:.7rem}}
-    #view{{width:100%;height:420px;background:#101a14;border-radius:6px;cursor:grab}}
-    #info{{white-space:pre-wrap;font-size:.85rem}}</style></head>
-    <body>{_workspace_nav()}<h1>3D Workshop</h1>
+    from . import ui as _ui
+    main = f"""<h1>3D Workshop</h1>
     <div class="panel"><form id="loadform">
-    <input type="text" id="ref" placeholder="artifact_ref, bijv. fab-test-cube.stl"
-    value="{escape(artifact)}" style="width:50%">
-    <button type="submit">Laad</button>
+    <input type="text" id="ref" placeholder="artifact_ref, e.g. fab-test-cube.stl"
+    value="{_ui.esc(artifact)}" style="width:50%" aria-label="Artifact reference">
+    <button type="submit">Load</button>
     <span id="meta"></span></form></div>
-    <canvas id="view" width="960" height="420"></canvas>
+    <canvas id="view" width="960" height="420" style="width:100%;height:420px;background:var(--soil-2);border:1px solid var(--line);border-radius:var(--r)" role="img" aria-label="Mesh wireframe preview"></canvas>
     <div class="panel"><h2>Transformatie-voorstel</h2>
     <form id="tform">
-    <select id="op"><option value="rotate">rotate</option>
+    <select id="op" aria-label="Operation"><option value="rotate">rotate</option>
     <option value="translate">translate</option><option value="scale">scale</option></select>
-    <input type="text" id="params" placeholder='bijv. {{"axis":"z","degrees":90}}' style="width:50%">
-    <label><input type="checkbox" id="persist"> lokaal bewaren (derived file)</label>
+    <input type="text" id="params" placeholder='e.g. {{"axis":"z","degrees":90}}' style="width:50%" aria-label="Parameters">
+    <label><input type="checkbox" id="persist"> persist locally (derived file)</label>
     <button type="submit">Preview</button></form>
-    <p><small>Roteer/draai/schaal tonen een preview. Bewaren maakt een lokaal
-    abgeleid bestand + file_payload voor het bestaande
-    voorstel/approval-pad — registratie in INVENTory gebeurt nooit automatisch.</small></p>
-    <div id="info">Laad een mesh-artefact.</div></div>
+    <p class="muted">Rotate/pan/scale show a preview. Persisting makes a local
+    derived file + file_payload for the existing
+    proposal/approval path — INVENTory registration never happens automatically.</p>
+    <div id="info">Load a mesh artifact.</div></div>
     <script>
     let tris = [], rotX = 0.5, rotY = 0.6, scale = 1, ox = 0, oy = 0;
     const canvas = document.getElementById('view');
     const ctx = canvas.getContext('2d');
     function project(p) {{
-      const [x, y, z] = p;
-      const cx = Math.cos(rotY), sx = Math.sin(rotY);
-      const cy = Math.cos(rotX), sy = Math.sin(rotX);
-      const x1 = x * cx - z * sx, z1 = x * sx + z * cx;
-      const y1 = y * cy - z1 * sy;
-      return [480 + (x1 * scale) + ox, 210 - (y1 * scale) + oy];
+        const [x, y, z] = p;
+        const cx = Math.cos(rotY), sx = Math.sin(rotY);
+        const cy = Math.cos(rotX), sy = Math.sin(rotX);
+        const x1 = x * cx - z * sx, z1 = x * sx + z * cx;
+        const y1 = y * cy - z1 * sy;
+        return [480 + (x1 * scale) + ox, 210 - (y1 * scale) + oy];
     }}
     function draw() {{
-      ctx.clearRect(0, 0, 960, 420);
-      ctx.strokeStyle = '#7fc97f'; ctx.lineWidth = 1;
-      ctx.beginPath();
-      tris.forEach(t => {{
-        const [a, b, c] = t.map(project);
-        ctx.moveTo(a[0], a[1]); ctx.lineTo(b[0], b[1]);
-        ctx.lineTo(c[0], c[1]); ctx.closePath();
-      }});
-      ctx.stroke();
+        ctx.clearRect(0, 0, 960, 420);
+        ctx.strokeStyle = '#a5c48a'; ctx.lineWidth = 1;
+        ctx.beginPath();
+        tris.forEach(t => {{
+            const [a, b, c] = t.map(project);
+            ctx.moveTo(a[0], a[1]); ctx.lineTo(b[0], b[1]);
+            ctx.lineTo(c[0], c[1]); ctx.closePath();
+        }});
+        ctx.stroke();
     }}
     async function loadPreview(ref) {{
-      const r = await fetch('/api/v1/fab/mesh/preview?artifact_ref=' + encodeURIComponent(ref));
-      if (!r.ok) {{ document.getElementById('info').textContent = 'Preview mislukt: ' + r.status; return; }}
-      const j = await r.json();
-      tris = j.tris || [];
-      document.getElementById('meta').textContent =
-        j.format + ' · ' + j.total_tris + ' tris' + (j.truncated ? ' (afgekapt)' : '');
-      document.getElementById('info').textContent =
-        'ref=' + j.artifact_ref + '\\nformat=' + j.format + '\\ntris=' + j.total_tris;
-      draw();
+        const r = await fetch('/api/v1/fab/mesh/preview?artifact_ref=' + encodeURIComponent(ref));
+        if (!r.ok) {{ document.getElementById('info').textContent = 'Preview failed: ' + r.status; return; }}
+        const j = await r.json();
+        tris = j.tris || [];
+        document.getElementById('meta').textContent =
+            j.format + ' · ' + j.total_tris + ' tris' + (j.truncated ? ' (capped)' : '');
+        document.getElementById('info').textContent =
+            'ref=' + j.artifact_ref + '\\nformat=' + j.format + '\\ntris=' + j.total_tris;
+        draw();
     }}
     document.getElementById('loadform').onsubmit = e => {{
-      e.preventDefault();
-      loadPreview(document.getElementById('ref').value);
+        e.preventDefault();
+        loadPreview(document.getElementById('ref').value);
     }};
     document.getElementById('tform').onsubmit = async e => {{
-      e.preventDefault();
-      const ref = document.getElementById('ref').value;
-      let params = {{}};
-      try {{ params = JSON.parse(document.getElementById('params').value || '{{}}'); }}
-      catch (err) {{ document.getElementById('info').textContent = 'Params moeten JSON zijn.'; return; }}
-      const r = await fetch('/api/v1/fab/transform', {{
-        method: 'POST', headers: {{'Content-Type': 'application/json'}},
-        body: JSON.stringify({{artifact_ref: ref,
-          op: document.getElementById('op').value, params,
-          persist: document.getElementById('persist').checked}})
-      }});
-      const j = await r.json();
-      if (!r.ok) {{ document.getElementById('info').textContent = 'Geweigerd: ' + JSON.stringify(j); return; }}
-      tris = j.preview_tris || tris;
-      document.getElementById('info').textContent =
-        'op=' + j.op + ' total_tris=' + j.total_tris +
-        (j.executed ? '\\nderived=' + j.derived_ref + '\\nsha256=' + j.sha256 +
-         '\\nfile_payload klaar voor voorstel-flow (niet geregistreerd)' : '\\npreview only');
-      draw();
+        e.preventDefault();
+        const ref = document.getElementById('ref').value;
+        let params = {{}};
+        try {{ params = JSON.parse(document.getElementById('params').value || '{{}}'); }}
+        catch (err) {{ document.getElementById('info').textContent = 'Params must be JSON.'; return; }}
+        const r = await fetch('/api/v1/fab/transform', {{
+            method: 'POST', headers: {{'Content-Type': 'application/json'}},
+            body: JSON.stringify({{artifact_ref: ref,
+                op: document.getElementById('op').value, params,
+                persist: document.getElementById('persist').checked}})
+        }});
+        const j = await r.json();
+        if (!r.ok) {{ document.getElementById('info').textContent = 'Refused: ' + JSON.stringify(j); return; }}
+        tris = j.preview_tris || tris;
+        document.getElementById('info').textContent =
+            'op=' + j.op + ' total_tris=' + j.total_tris +
+            (j.executed ? '\\nderived=' + j.derived_ref + '\\nsha256=' + j.sha256 +
+             '\\nfile_payload ready for proposal flow (not registered)' : '\\npreview only');
+        draw();
     }};
     let drag = null;
-    canvas.addEventListener('mousedown', e => {{ drag = [e.clientX, e.clientY, e.button]; }});
-    window.addEventListener('mouseup', () => drag = null);
-    canvas.addEventListener('mousemove', e => {{
-      if (!drag) return;
-      if (drag[2] === 2) {{ ox += e.clientX - drag[0]; oy += e.clientY - drag[1]; }}
-      else {{ rotY += (e.clientX - drag[0]) * 0.01; rotX += (e.clientY - drag[1]) * 0.01; }}
-      drag = [e.clientX, e.clientY, drag[2]]; draw();
+    canvas.addEventListener('pointerdown', e => {{ drag = [e.clientX, e.clientY]; canvas.setPointerCapture(e.pointerId); }});
+    canvas.addEventListener('pointerup', () => drag = null);
+    canvas.addEventListener('pointermove', e => {{
+        if (!drag) return;
+        rotY += (e.clientX - drag[0]) * 0.01; rotX += (e.clientY - drag[1]) * 0.01;
+        drag = [e.clientX, e.clientY]; draw();
     }});
-    canvas.addEventListener('contextmenu', e => e.preventDefault());
     canvas.addEventListener('wheel', e => {{
-      e.preventDefault(); scale *= e.deltaY < 0 ? 1.1 : 0.9; draw();
+        e.preventDefault(); scale *= e.deltaY < 0 ? 1.1 : 0.9; draw();
     }}, {{passive: false}});
     const initial = document.getElementById('ref').value;
     if (initial) loadPreview(initial);
     draw();
-    </script></body></html>"""
+    </script>"""
+    return _ui.shell("3D Workshop", "/workshop/3d", main, "",
+                     _ui.command_bar())
 
 
 @app.get("/mobile", response_class=HTMLResponse)
 def mobile_page(node: str = "") -> str:
-    """Mobile-first interface foundation: chat, status, missions,
-    approvals, notifications, nodes. Server-rendered, no
-    framework, no secrets, usable from a phone browser on the
-    local network."""
+    """Deliberate mobile view: chat first, then approvals,
+    status, missions, notifications, nodes, events. Same
+    backend, priority order for small screens — not the
+    desktop page squeezed."""
+    from . import ui as _ui
     status = coordinator_status()
     approvals = status["pending_approvals"]
     nodes_html = "".join(
-        f"<li><b>{escape(record['node_id'])}</b> — "
-        f"{escape(record['derived_status'])} · "
+        f"<li>{_ui.status_dot(record['derived_status'])}<b>{_ui.esc(record['node_id'])}</b> — "
+        f"{_ui.esc(record['derived_status'])} · "
         f"{len(record['capabilities'])} caps</li>"
         for record in list_nodes()[:20])
     events_html = "".join(
-        f"<li><small>{escape(event.created_at)}</small> "
-        f"<b>{escape(event.event_type)}</b> — "
-        f"{escape(event.summary[:120])}</li>"
+        f"<li><small>{_ui.esc(event.created_at)}</small> "
+        f"<b>{_ui.esc(event.event_type)}</b> — "
+        f"{_ui.esc(event.summary[:120])}</li>"
         for event in bus_events(limit=10))
     notifications_html = ""
     if node:
@@ -7128,37 +7140,31 @@ def mobile_page(node: str = "") -> str:
         except ValueError:
             items = []
         notifications_html = "".join(
-            f"<li><b>{escape(item.title)}</b> "
-            f"[{escape(item.type)}] — "
-            f"{escape(item.body[:120])}</li>"
-            for item in items) or "<li>○ geen notificaties</li>"
-    return f"""<!doctype html><html><head><title>Mycelium Mobile</title>
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <style>
-    body{{font:16px system-ui;margin:0 auto;padding:0 1rem;max-width:640px;color:#17352a;background:#f4f5ed}}
-    h1{{color:#2f6b45;font-size:1.4rem}} nav a{{margin-right:.7rem;color:#2f6b45}}
-    .panel{{background:white;border:1px solid #dde5dc;padding:.8rem;border-radius:6px;margin-bottom:.8rem}}
-    ul{{padding-left:1.2rem}} button{{background:#2f6b45;color:white;border:0;padding:.5rem 1rem;border-radius:4px}}
-    textarea{{width:100%;min-height:3rem}}</style></head>
-    <body>{_workspace_nav()}<h1>Mycelium</h1>
-    <div class="panel"><b>Status:</b> nodes {status['nodes']['online']} online /
-    {status['nodes']['stale']} stale · taken {escape(str(status['tasks']))}<br>
-    <b>Open approvals:</b> desktop {approvals['desktop_actions']} ·
-    writes {approvals['write_proposals']} · missies {approvals['missions']}</div>
+            f"<li><b>{_ui.esc(item.title)}</b> "
+            f"[{_ui.esc(item.type)}] — "
+            f"{_ui.esc(item.body[:120])}</li>"
+            for item in items) or "<li>No notifications</li>"
+    main = f"""<h1>Mycelium</h1>
     <div class="panel"><h2>Chat</h2>
     <form method="post" action="/web/chat">
-    <textarea name="message" placeholder="Bijv. Wat ligt er op mijn werkbank?"></textarea><br><br>
-    <button type="submit">Verstuur</button></form>
-    <p><small>Spraak, taken en missies lopen via dezelfde
-    coordinator — deze pagina is interface, geen tweede
-    coordinator.</small></p></div>
-    <div class="panel"><h2>Missies</h2>
-    <p><a href="/missions">Plannen bekijken</a></p></div>
-    <div class="panel"><h2>Notificaties{escape(' voor ' + node) if node else ''}</h2>
-    <ul>{notifications_html or "<li>koppel ?node=&lt;node_id&gt; voor notificaties</li>"}</ul></div>
-    <div class="panel"><h2>Nodes</h2><ul>{nodes_html or "<li>○ geen nodes</li>"}</ul></div>
-    <div class="panel"><h2>Events</h2><ul>{events_html or "<li>○ geen events</li>"}</ul></div>
-    </body></html>"""
+    <textarea name="message" placeholder="What is on my workbench?" aria-label="Message"></textarea><br><br>
+    <button type="submit">Send</button></form>
+    <p class="muted">Voice, tasks and missions run through the same
+    coordinator — this page is interface, never a second
+    coordinator.</p></div>
+    <div class="panel"><h2>Approvals</h2>
+    <p>Desktop {approvals['desktop_actions']} · writes {approvals['write_proposals']} · missions {approvals['missions']}</p>
+    <p><a href="/agents">Review desktop actions</a> · <a href="/missions">Review missions</a></p></div>
+    <div class="panel"><b>Status:</b> nodes {status['nodes']['online']} online /
+    {status['nodes']['stale']} stale · tasks {_ui.esc(str(status['tasks']))}</div>
+    <div class="panel"><h2>Missions</h2>
+    <p><a href="/missions">View plans</a> · <a href="/morning">Morning report</a></p></div>
+    <div class="panel"><h2>Notifications{_ui.esc(' for ' + node) if node else ''}</h2>
+    <ul>{notifications_html or "<li>link ?node=&lt;node_id&gt; for notifications</li>"}</ul></div>
+    <div class="panel"><h2>Nodes</h2><ul>{nodes_html or "<li>No nodes</li>"}</ul></div>
+    <div class="panel"><h2>Events</h2><ul>{events_html or "<li>No events</li>"}</ul></div>"""
+    return _ui.shell("Mobile", "/mobile", main, "",
+                     _ui.command_bar())
 
 
 @app.post("/web/desktop/{action_id}/decision")

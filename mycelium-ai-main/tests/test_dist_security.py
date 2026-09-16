@@ -273,7 +273,11 @@ def test_no_cloud_no_public_bind_no_shell():
                   "0.0.0.0", "port_forward", "public"):
         assert token not in source, f"forbidden token: {token}"
     main_source = (APP / "main.py").read_text(encoding="utf-8")
-    assert "127.0.0.1" in main_source
+    ui_source = (APP / "ui.py").read_text(encoding="utf-8")
+    # The only loopback surface is the INVENTory link in the
+    # shared shell; no public bind anywhere in UI or routing.
+    assert "127.0.0.1" in main_source or "127.0.0.1" in ui_source
+    assert "0.0.0.0" not in ui_source
 
 
 def test_no_privilege_escalation_surface():

@@ -328,8 +328,8 @@ def test_cameras_page_shows_availability(tmp_path, monkeypatch):
         register_camera(test_client)
         page = test_client.get("/cameras")
         assert page.status_code == 200
-        assert "beschikbaarheid" in page.text
-        assert "laatste:" in page.text
+        assert "availability" in page.text
+        assert "latest:" in page.text
 
 
 def test_project_package_carries_observations(tmp_path, monkeypatch):

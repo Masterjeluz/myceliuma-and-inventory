@@ -481,7 +481,7 @@ def test_mission_pages(tmp_path, monkeypatch, fakes):
         home = test_client.get("/")
         assert "/missions" in home.text
         chat_page = test_client.get("/chat")
-        assert "Start missie" in chat_page.text
+        assert "Start mission" in chat_page.text
         agents = test_client.get("/agents")
         assert "/missions" in agents.text or "Agents" in agents.text
 

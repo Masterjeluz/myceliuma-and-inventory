@@ -380,4 +380,4 @@ def test_fabrication_page(tmp_path, monkeypatch):
         page = test_client.get("/fabrication")
         assert page.status_code == 200
         assert "Fabrication" in page.text
-        assert "fysieke approval" in page.text
+        assert "physical approval" in page.text

@@ -369,7 +369,7 @@ def test_mobile_page_and_chat_panel(tmp_path, monkeypatch):
         page = test_client.get("/mobile")
         assert page.status_code == 200
         assert 'name="viewport"' in page.text
-        assert "Notificaties" in page.text
+        assert "Notifications" in page.text
         chat = test_client.get("/chat")
         assert chat.status_code == 200
         assert "Interface: web" in chat.text
