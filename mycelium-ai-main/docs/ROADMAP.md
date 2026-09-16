@@ -60,14 +60,21 @@ Zie `docs/controlled-writes-and-verification.md`.
 - Sterkere audit-trail (wie/wat/waarom per mutatie, exporteerbaar) — PARTIAL
   (before/after + write/result/verification-events; export volgt later)
 
-## PHASE D — VISION (FUTURE)
+## PHASE D — VISION (PARTIAL als BIG #6)
 
-Van registreren naar waarnemen — altijd met menselijke verificatie.
+Zie `docs/vision-architecture.md` en `docs/camera-architecture.md`.
 
-- Camera-ingestie (lokaal, tijdelijk, retentie-begrensd zoals screenshots) — FUTURE
-- VLM-adapter (lokaal eerst; extern alleen via provider-beleid) — FUTURE
-- Object-identificatie → voorstel → menselijke verificatie → INVENTory — FUTURE
-- Beeld-provenance (bron, tijd, model, verificatiestatus) — FUTURE
+- Camera-ingestie (lokaal, tijdelijk, retentie-begrensd zoals screenshots) — DONE
+  (snapshot-ingestie met hash/size-caps; webcam/stream als contract + stub)
+- VLM-adapter (lokaal eerst; extern alleen via provider-beleid) — DONE
+  (Ollama loopback, `VISION_MODEL`, geen downloads, geen cloud)
+- Object-identificatie → voorstel → menselijke verificatie → INVENTory — DONE
+  (generieke keten via BIG #5; onzekerheid behouden, 0.99 autoriseert niets)
+- Beeld-provenance (bron, tijd, model, verificatiestatus) — DONE
+- Echte Windows-capture-runtime — FUTURE (stub + vereisten gedocumenteerd)
+- Echte Insta360-capture (webcam-driver of file-ingest) — FUTURE
+  (foundation zonder gegokte SDK; expliciet unavailable)
+- Live-stream-transport naar lokale consumer — FUTURE (alleen lifecycle)
 
 ## PHASE E — CREATION / 3D (FUTURE)
 

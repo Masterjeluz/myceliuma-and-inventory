@@ -6,14 +6,16 @@ is a separate, explicitly approved capability.
 
 Supported mutations (closed — anything else is refused):
 
-- ``inventory.create`` — POST one of object/project/idea
-- ``inventory.update`` — PATCH one existing object/project/idea
+- ``inventory.create`` — POST one of object/project/idea/file
+- ``inventory.update`` — PATCH one existing object/project/idea/file
 - ``inventory.create_relationship`` — POST one relationship
 
-Deletes, events, FTS writes and every M3+ entity type beyond the
-three curated ones are out of scope and refused: the writer only
-covers the entity shapes whose API/database semantics were
-verified against ``inventory/app/main.py`` + ``schemas.py``.
+Deletes, events and every M3+ entity type beyond the curated
+ones are out of scope and refused: the writer only covers the
+entity shapes whose API/database semantics were verified
+against ``inventory/app/main.py`` + ``schemas.py`` (files added
+in BIG #6 for camera-media registration: FileCreate needs a
+name, a file_kind, a sha256 and a size).
 
 Safety properties (enforced by construction, tested):
 
@@ -85,6 +87,21 @@ ENTITY_CONTRACTS: dict[str, dict[str, Any]] = {
         "status_values": ("raw", "considered", "planned", "rejected",
                           "converted"),
         "capability": "inventory.ideas.write",
+    },
+    "file": {
+        "collection": "files",
+        "prefix": "file_",
+        "create_required": ("name", "sha256"),
+        "create_optional": ("description", "file_kind", "mime_type",
+                            "size_bytes", "status", "metadata"),
+        "update_fields": ("name", "description", "file_kind",
+                          "mime_type", "size_bytes", "status",
+                          "metadata"),
+        "file_kinds": ("cad", "mesh", "gcode", "image", "document",
+                       "data", "other"),
+        "file_statuses": ("available", "in_use", "maintenance",
+                          "retired", "unknown"),
+        "capability": "inventory.files.write",
     },
 }
 
@@ -176,6 +193,68 @@ def _check_status(value, allowed) -> str:
     return value
 
 
+def _check_sha256(value) -> str:
+    if not isinstance(value, str):
+        raise InventoryWriteRefusedError("sha256 must be text")
+    text = value.strip().lower()
+    if len(text) != 64 or any(
+            char not in "0123456789abcdef" for char in text):
+        raise InventoryWriteRefusedError(
+            "sha256 must be a 64-char hex digest")
+    return text
+
+
+def _check_mime_type(value) -> str:
+    if not isinstance(value, str):
+        raise InventoryWriteRefusedError("mime_type must be text")
+    text = value.strip()
+    if len(text) > 200:
+        raise InventoryWriteRefusedError("mime_type too long")
+    if any(char in text for char in ("<>\"'")) or "\n" in text:
+        raise InventoryWriteRefusedError("mime_type is not plain text")
+    return text
+
+
+def _check_size_bytes(value) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise InventoryWriteRefusedError("size_bytes must be an integer")
+    if value < 0:
+        raise InventoryWriteRefusedError("size_bytes must be >= 0")
+    return value
+
+
+def _check_file_kind(value, allowed) -> str:
+    if value not in allowed:
+        raise InventoryWriteRefusedError(
+            f"file_kind '{value}' unknown; expected one of "
+            f"{sorted(allowed)}")
+    return value
+
+
+def _check_metadata(value) -> dict:
+    if not isinstance(value, dict):
+        raise InventoryWriteRefusedError("metadata must be an object")
+    return dict(value)
+
+
+def _apply_file_fields(body: dict, fields: dict, contract: dict,
+                       for_update: bool) -> None:
+    """Shared file-kind/status/mime/size/sha/metadata handling."""
+    if "sha256" in fields:
+        body["sha256"] = _check_sha256(fields["sha256"])
+    elif not for_update and "sha256" in contract["create_required"]:
+        raise InventoryWriteRefusedError("sha256 is required")
+    if "file_kind" in fields:
+        body["file_kind"] = _check_file_kind(fields["file_kind"],
+                                             contract["file_kinds"])
+    if "mime_type" in fields:
+        body["mime_type"] = _check_mime_type(fields["mime_type"])
+    if "size_bytes" in fields:
+        body["size_bytes"] = _check_size_bytes(fields["size_bytes"])
+    if "metadata" in fields:
+        body["metadata"] = _check_metadata(fields["metadata"])
+
+
 def _check_provenance(value) -> dict:
     """Provenance supplied with a write. AI output can never smuggle
     human_verified=True through here."""
@@ -215,15 +294,20 @@ def build_create_payload(entity_type: str, fields: dict) -> dict:
     for field in contract["create_required"]:
         if field == "name":
             body["name"] = _check_name(fields.get("name", ""))
-        else:  # pragma: no cover - current contracts require only name
+        elif field == "sha256":
+            body["sha256"] = _check_sha256(fields.get("sha256", ""))
+        else:  # pragma: no cover - current contracts require name/sha256
             body[field] = fields[field]
     if "description" in fields:
         body["description"] = _check_description(fields["description"])
     if "quantity" in fields and "quantity" in allowed:
         body["quantity"] = _check_quantity(fields["quantity"])
     if "status" in fields and "status" in allowed:
-        body["status"] = _check_status(fields["status"],
-                                       contract["status_values"])
+        status_values = (contract.get("status_values")
+                         or contract.get("file_statuses", ()))
+        body["status"] = _check_status(fields["status"], status_values)
+    if "file_kinds" in contract:
+        _apply_file_fields(body, fields, contract, for_update=False)
     body["provenance"] = _write_provenance(fields.get("provenance"))
     return body
 
@@ -251,8 +335,11 @@ def build_update_payload(entity_type: str, fields: dict) -> dict:
     if "quantity" in fields:
         body["quantity"] = _check_quantity(fields["quantity"])
     if "status" in fields:
-        body["status"] = _check_status(fields["status"],
-                                       contract["status_values"])
+        status_values = (contract.get("status_values")
+                         or contract.get("file_statuses", ()))
+        body["status"] = _check_status(fields["status"], status_values)
+    if "file_kinds" in contract:
+        _apply_file_fields(body, fields, contract, for_update=True)
     if "provenance" in fields:
         body["provenance"] = _write_provenance(fields["provenance"])
     else:

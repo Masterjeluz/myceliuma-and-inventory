@@ -113,6 +113,8 @@ class ChatRequest(BaseModel):
     project_ref: str = Field(default="", max_length=200)
     provider: str = Field(default="ollama", min_length=1, max_length=40)
     mode: str = Field(default="hybrid", min_length=1, max_length=20)
+    observation_ids: list[str] = Field(default_factory=list,
+                                       max_length=3)
 
 
 class ChatResponse(BaseModel):
@@ -263,3 +265,30 @@ class GitCommitBody(BaseModel):
 class WriteDecisionBody(BaseModel):
     response: str = Field(min_length=1, max_length=80)
     decided_by: str = Field(default="human", min_length=1, max_length=80)
+
+
+class VisionAnalyzeBody(BaseModel):
+    """One VLM analysis over a stored observation (BIG #6). Advice."""
+
+    observation_id: str = Field(min_length=3, max_length=80)
+    question: str = Field(default="Wat zie je op deze foto?",
+                          min_length=1, max_length=500)
+    provider: str = Field(default="ollama", min_length=1, max_length=40)
+
+
+class VisionProposeBody(BaseModel):
+    """One inert inventory proposal from a stored vision analysis."""
+
+    analysis_id: str = Field(min_length=3, max_length=80)
+    kind: str = Field(default="object", min_length=1, max_length=20)
+    proposal_id: str | None = Field(default=None, min_length=3,
+                                    max_length=80)
+    actor: str = Field(default="mycelium", min_length=1, max_length=80)
+
+
+class StreamStartBody(BaseModel):
+    """One bounded local-only stream session (BIG #6)."""
+
+    device_id: str = Field(min_length=3, max_length=80)
+    max_frames: int = Field(default=100, ge=1, le=10000)
+    max_seconds: int = Field(default=300, ge=1, le=3600)

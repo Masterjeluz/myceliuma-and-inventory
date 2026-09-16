@@ -25,7 +25,10 @@ artifact, approval happens outside the mission through the
 existing gate — never automatic), write (one bound controlled
 write proposal: executes only with its own exact human YES plus
 fingerprint revalidation, then records result + independent
-verification — never automatic, never a bypass).
+verification — never automatic, never a bypass), camera_observe
+(one bound camera device: captures through the injected observe
+capability into a stored observation; metadata result only,
+never pixels, never an automatic write).
 
 Rules (tested, all fail-closed):
 
@@ -70,9 +73,9 @@ TERMINAL_MISSION_STATUSES = frozenset(
     {"completed", "failed", "cancelled", "blocked"})
 
 StepKind = Literal["readout", "desktop", "analysis", "proposal",
-                   "write"]
+                   "write", "camera_observe"]
 VALID_STEP_KINDS = frozenset({"readout", "desktop", "analysis",
-                              "proposal", "write"})
+                              "proposal", "write", "camera_observe"})
 
 StepStatus = Literal[
     "pending", "waiting_approval", "dispatched", "completed",
@@ -97,7 +100,7 @@ VALID_EVENT_TYPES = frozenset({
     "action_proposed", "action_result", "observation", "note",
     "write_proposed", "write_approved", "write_executed",
     "write_result", "verification_started", "verification_passed",
-    "verification_failed",
+    "verification_failed", "camera_observed", "vision_analyzed",
 })
 
 MAX_STEPS = 20
@@ -233,6 +236,18 @@ def _check_step_definition(index: int, data: dict) -> MissionStep:
                 raise ValueError(
                     f"Step {index}: write steps carry only proposal_id; "
                     f"unexpected: {sorted(unknown)}")
+        elif kind == "camera_observe":
+            device_id = parameters.get("device_id", "")
+            if (not isinstance(device_id, str)
+                    or not 3 <= len(device_id) <= 80):
+                raise ValueError(
+                    f"Step {index}: camera_observe steps bind to one "
+                    "device_id (3..80 chars)")
+            unknown = set(parameters) - {"device_id"}
+            if unknown:
+                raise ValueError(
+                    f"Step {index}: camera_observe steps carry only "
+                    f"device_id; unexpected: {sorted(unknown)}")
         elif kind == "readout":
             source = str(parameters.get("source", ""))
             if source not in READOUT_SOURCES:

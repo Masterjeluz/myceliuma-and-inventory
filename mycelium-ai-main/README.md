@@ -24,6 +24,12 @@ persoonlijke computer-agent (verticale slice, live bewezen):
   `docs/controlled-writes-and-verification.md`
 - **Project-pakketten** (`/api/v1/project/package`): bounded,
   project-bewuste context zonder secrets of dumps
+- **Vision** (`/api/v1/cameras/*/ingest`, `/api/v1/vision/*`):
+  camera → lokale media → observatie → lokale VLM-analyse
+  (advies) → inert voorstel → exact YES → controlled write →
+  verificatie; observatie ≠ feit, zie
+  `docs/vision-architecture.md` (Insta360: foundation zonder
+  gegokte SDK, echte capture expliciet unavailable)
 - **Desktop-agent** (`/agents`): standalone proces (outbound-only)
   dat goedgekeurde acties claimt, hervalideert en uitvoert via
   scherm/muis/toetsenbord — observe → act → observe, begrensd,
@@ -231,7 +237,7 @@ coordinator/app/controlled_writes.py, inventory_writes.py,
 desktop_agent/   standalone lokale agent (poll, claim, voer uit, rapporteer)
 node_client/     lichte client voor seed/worker/core nodes (alleen read-only loop)
 docs/            architectuurstatus, roadmap, principes, oorsprong
-tests/           629 tests (pytest -v)
+tests/           696 tests (pytest -v)
 ```
 
 Zie `docs/ARCHITECTURE_STATUS.md` (wat het systeem is),
@@ -239,7 +245,7 @@ Zie `docs/ARCHITECTURE_STATUS.md` (wat het systeem is),
 `docs/controlled-writes-and-verification.md` (schrijven + bewijzen),
 `docs/first-node-blueprint.md` (eerste externe node),
 `docs/semantic-world-model.md`, `docs/camera-architecture.md` en
-`docs/ROADMAP.md` (wat volgt). Teststatus: **629 passed**.
+`docs/ROADMAP.md` (wat volgt). Teststatus: **696 passed**.
 
 ## Bijdragen
 

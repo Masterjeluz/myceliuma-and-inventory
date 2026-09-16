@@ -131,6 +131,17 @@ Zonder gekoppelde capability BLOCKt de stap. Nieuwe events:
 - `POST /api/v1/writes/{id}/verify` — onafhankelijke verificatie
 - `GET /api/v1/project/package` — bounded project-context
 
+## Vision-keten (BIG #6)
+
+Vision-voorstellen (`POST /api/v1/vision/propose`) landen als
+inerte records in dezelfde store en volgen exact dezelfde
+approve/execute/verify-routes hierboven — er bestaat geen
+apart vision-schrijfpad. File-media registreert via
+`inventory.create`/`file` met dezelfde binding en readback
+(methode `inventory.readback`). Observatie-verificatie
+(`camera.readback`) bevestigt het capture-record, nooit de
+afgebeelde identiteit. Zie `docs/vision-architecture.md`.
+
 ## Security-regels (getest in `test_write_security.py`)
 
 Geen shell/RCE · geen SQL · geen directe DB-writes (alleen

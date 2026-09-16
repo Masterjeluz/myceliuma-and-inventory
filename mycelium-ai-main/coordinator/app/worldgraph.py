@@ -57,7 +57,9 @@ def _inventory_edge(edge) -> dict:
 
 async def build_world_graph(reader, entity_id: str, depth: int = 1, *,
                             include_missions: bool = False,
-                            agent_nodes: list[dict] | None = None) -> dict:
+                            agent_nodes: list[dict] | None = None,
+                            observations: list[dict] | None = None
+                            ) -> dict:
     """Project inventory graph + optional Mycelium overlay."""
     if isinstance(depth, bool) or depth not in GRAPH_DEPTHS:
         raise ValueError("Graph depth must be 1 or 2")
@@ -76,6 +78,8 @@ async def build_world_graph(reader, entity_id: str, depth: int = 1, *,
         edges.append(_inventory_edge(edge))
     if include_missions:
         _overlay_missions(nodes, edges)
+    if observations:
+        _overlay_observations(nodes, edges, observations)
     for agent in (agent_nodes or [])[:50]:
         node_id = str(agent.get("node_id", ""))
         if not node_id or node_id in nodes:
@@ -121,6 +125,74 @@ def _overlay_missions(nodes: dict, edges: list) -> None:
                 "provenance": {"source_type": "user-created",
                                "creator_id": "mission-control",
                                "human_verified": True},
+            })
+        if len(nodes) >= MAX_NODES:
+            return
+
+
+MAX_OBSERVATION_NODES = 20
+
+
+def _overlay_observations(nodes: dict, edges: list,
+                          observations: list[dict]) -> None:
+    """Camera observations as Mycelium-owned overlay nodes.
+
+    Camera -captured-> observation, plus -describes-> inventory
+    entity edges only when the caller supplies an explicit
+    entity link (e.g. from a verified write). Observations are
+    never a second source of truth: INVENTory nodes stay
+    authoritative, these nodes carry sensor-observed,
+    unverified provenance.
+    """
+    for item in list(observations or [])[:MAX_OBSERVATION_NODES]:
+        if not isinstance(item, dict):
+            continue
+        obs_id = str(item.get("observation_id", ""))
+        device_id = str(item.get("device_id", ""))
+        if not obs_id or obs_id in nodes:
+            continue
+        provenance = item.get("provenance", {})
+        if hasattr(provenance, "model_dump"):
+            provenance = provenance.model_dump(mode="json")
+        if not isinstance(provenance, dict):
+            provenance = {}
+        nodes[obs_id] = {
+            "id": obs_id,
+            "type": "observation",
+            "label": f"observatie {obs_id} ({device_id})",
+            "source": "mycelium",
+            "metadata": {
+                "device_id": device_id,
+                "media_ref": str(item.get("media_ref", "")),
+                "created_at": str(item.get("created_at", "")),
+                "human_verified": bool(provenance.get(
+                    "human_verified", False)),
+                "source_type": str(provenance.get(
+                    "source_type", "sensor-observed")),
+            },
+        }
+        if len(edges) >= MAX_EDGES:
+            return
+        if device_id:
+            edges.append({
+                "from": device_id,
+                "predicate": "captured",
+                "to": obs_id,
+                "provenance": {"source_type": "sensor-observed",
+                               "creator_id": f"camera:{device_id}",
+                               "human_verified": False},
+            })
+        describes = str(item.get("describes_entity_id", "") or "")
+        if describes and describes in nodes:
+            if len(edges) >= MAX_EDGES:
+                return
+            edges.append({
+                "from": obs_id,
+                "predicate": "describes",
+                "to": describes,
+                "provenance": {"source_type": "ai-generated",
+                               "creator_id": "vision-flow",
+                               "human_verified": False},
             })
         if len(nodes) >= MAX_NODES:
             return

@@ -40,6 +40,7 @@ MAX_ENTITIES = 10
 MAX_MISSIONS = 5
 MAX_EVENTS = 10
 MAX_FILES = 10
+MAX_OBSERVATIONS = 5
 MAX_TEXT_CHARS = 500
 
 
@@ -123,6 +124,40 @@ def _clean_event(event: dict, repo_root: str = "") -> dict:
     }
 
 
+def _clean_observation(observation: dict,
+                       repo_root: str = "") -> dict:
+    """One observation summary: identity + camera + timestamp +
+    vision labels only. Never pixels, never media contents."""
+    provenance = observation.get("provenance", {})
+    if hasattr(provenance, "model_dump"):
+        provenance = provenance.model_dump(mode="json")
+    if not isinstance(provenance, dict):
+        provenance = {}
+    analyses = observation.get("analyses", [])
+    labels: list[str] = []
+    if isinstance(analyses, list):
+        for analysis in analyses[:3]:
+            if isinstance(analysis, dict):
+                for label in list(analysis.get("labels", []))[:5]:
+                    if (isinstance(label, str) and label
+                            and label not in labels):
+                        labels.append(label[:120])
+    _ = repo_root
+    return {
+        "observation_id": str(observation.get("observation_id", "")),
+        "device_id": str(observation.get("device_id", "")),
+        "media_ref": str(observation.get("media_ref", "")),
+        "created_at": str(observation.get("created_at", "")),
+        "vision_labels": labels,
+        "provenance": {
+            "source_type": str(provenance.get(
+                "source_type", "sensor-observed")),
+            "human_verified": bool(provenance.get(
+                "human_verified", False)),
+        },
+    }
+
+
 def _clean_git(git: dict, repo_root: str = "") -> dict:
     if not isinstance(git, dict):
         return {}
@@ -146,6 +181,7 @@ def build_project_package(project, *, entities: list[dict] | None = None,
                           events: list[dict] | None = None,
                           git: dict | None = None,
                           files: list[dict] | None = None,
+                          observations: list[dict] | None = None,
                           retrieval_mode: str = "lexical") -> dict:
     """Assemble one bounded, read-only project package (pure)."""
     if hasattr(project, "model_dump"):
@@ -169,6 +205,9 @@ def build_project_package(project, *, entities: list[dict] | None = None,
         "git": _clean_git(git or {}, repo_root),
         "files": [{"name": str(item.get("name", ""))[:200]}
                   for item in list(files or [])[:MAX_FILES]],
+        "observations": [_clean_observation(item, repo_root)
+                         for item in
+                         list(observations or [])[:MAX_OBSERVATIONS]],
         "provenance": {
             "source_type": "user-created",
             "human_verified": False,
@@ -203,6 +242,15 @@ def summarize_for_chat(package: dict) -> str:
         state = "schoon" if git.get("clean") else (
             f"{git.get('changed_files', 0)} gewijzigde bestanden")
         lines.append(f"Git ({git.get('branch', '?')}): {state}.")
+    observations = package.get("observations", [])
+    if observations:
+        lines.append("Recente observaties:")
+        for item in observations[:3]:
+            labels = ", ".join(item.get("vision_labels", [])[:3])
+            suffix = f" — VLM: {labels}" if labels else ""
+            lines.append(f"- {item.get('observation_id', '?')} via "
+                         f"{item.get('device_id', '?')} "
+                         f"({item.get('created_at', '?')}){suffix}")
     lines.append("Details staan in INVENTory; dit is context, "
                  "geen toestemming.")
     return "\n".join(lines)
@@ -213,6 +261,7 @@ async def assemble_project_package(project, reader, *,
                                    missions: list | None = None,
                                    events: list[dict] | None = None,
                                    git: dict | None = None,
+                                   observations: list[dict] | None = None,
                                    embedder=None,
                                    mode: str = "hybrid",
                                    limit: int = 10) -> dict:
@@ -237,4 +286,5 @@ async def assemble_project_package(project, reader, *,
             entities = []
     return build_project_package(
         project, entities=entities, missions=missions, events=events,
-        git=git, retrieval_mode=used_mode)
+        git=git, observations=observations,
+        retrieval_mode=used_mode)

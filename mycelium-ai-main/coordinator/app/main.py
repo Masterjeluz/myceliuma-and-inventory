@@ -52,6 +52,32 @@ from .verification import (
     new_verification_request,
     verify_inventory_write,
 )
+from .vision_flow import (
+    VisionAnalysisRecord,
+    identification_candidates,
+    list_analyses,
+    load_analysis,
+    save_analysis,
+    verify_observation,
+    vision_to_file_proposal,
+    vision_to_object_proposal,
+)
+from .vision_ingest import (
+    IngestRefusedError,
+    StreamManager,
+    adapter_for,
+    file_payload_for,
+    ingest_snapshot,
+    media_facts,
+    probe_availability,
+)
+from .vision_provider import (
+    VisionRefusedError,
+    VisionRequest,
+    VisionResult,
+    VisionUnavailable,
+    get_vision_provider,
+)
 from .cameras import (
     CameraRefusedError,
     CameraUnavailable,
@@ -109,7 +135,7 @@ from .ollama_advisor import (
     OllamaRefusedError,
     OllamaUnavailable,
 )
-from .schemas import AdviseRequest, AdviseResponse, CameraRegisterBody, ChatMissionBody, ChatRequest, ChatResponse, ClaimedTask, DecideApprovalBody, DesktopActionBody, DesktopClaimBody, DesktopDecisionBody, DesktopDispatchBody, DesktopResultBody, GitCommitBody, Heartbeat, InventoryWriteBody, MissionApproveBody, MissionCreateBody, MissionStepBody, NodeRegistration, PlanBody, PlanToProposalBody, SuggestStepsBody, TaskCreate, TaskFromProposalBody, TaskResult, TemplateMissionBody, WriteDecisionBody
+from .schemas import AdviseRequest, AdviseResponse, CameraRegisterBody, ChatMissionBody, ChatRequest, ChatResponse, ClaimedTask, DecideApprovalBody, DesktopActionBody, DesktopClaimBody, DesktopDecisionBody, DesktopDispatchBody, DesktopResultBody, GitCommitBody, Heartbeat, InventoryWriteBody, MissionApproveBody, MissionCreateBody, MissionStepBody, NodeRegistration, PlanBody, PlanToProposalBody, StreamStartBody, SuggestStepsBody, TaskCreate, TaskFromProposalBody, TaskResult, TemplateMissionBody, VisionAnalyzeBody, VisionProposeBody, WriteDecisionBody
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 logger = logging.getLogger("mycelium.coordinator")
@@ -636,6 +662,21 @@ async def chat(body: ChatRequest) -> ChatResponse:
         dump(user_message.provenance.model_dump(mode="json")), "[]")
     records, inventory_error, retrieval = await _chat_world_context(
         body.message, mode=body.mode)
+    if body.observation_ids:
+        try:
+            extra = []
+            for observation_id in body.observation_ids[:3]:
+                observation = _observation_load(observation_id)
+                if observation is None:
+                    raise HTTPException(
+                        status_code=422,
+                        detail=f"Observation '{observation_id}' not found")
+                extra.append(observation)
+            records = records + _observation_summaries(extra)
+        except HTTPException:
+            raise
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail=str(error))
     sources = [
         {"entity_id": record["entity_id"],
          "source_type": record["provenance"].get("source_type", "unknown"),
@@ -1102,6 +1143,32 @@ def _executor() -> MissionExecutor:
     def _project_read() -> dict:
         return default_context().model_dump()
 
+    async def _observe_camera(mission, step) -> dict:
+        device_id = str(step.parameters.get("device_id", ""))
+        device = get_device(device_id)
+        if device is None:
+            raise ExecutorError(
+                f"Camera '{device_id}' unknown; observe steps bind "
+                "to a registered device")
+        adapter = adapter_for(device_id)
+        test_origin = getattr(adapter, "name", "") in (
+            "synthetic-test", "test-only")
+        try:
+            result = ingest_snapshot(device, adapter,
+                                     test_origin=test_origin)
+        except IngestRefusedError as error:
+            raise ExecutorError(str(error)) from error
+        except CameraUnavailable as error:
+            raise ExecutorError(str(error)) from error
+        save_observation(result.observation)
+        return {"status": "completed",
+                "observation_id":
+                    result.observation.observation_id,
+                "detail": (f"media {result.media.media_ref} "
+                           f"({result.media.size_bytes} bytes, local "
+                           "only); geen automatische write."),
+                "verified": False}
+
     def _propose_desktop(action_id: str, action_type: str,
                          parameters: dict):
         try:
@@ -1137,6 +1204,7 @@ def _executor() -> MissionExecutor:
         git_read=_git_read,
         project_read=_project_read,
         run_write=_run_write_step,
+        observe_camera=_observe_camera,
     ))
 
 
@@ -1437,22 +1505,281 @@ def camera_snapshot(device_id: str) -> dict:
 
 
 # =============================================================================
+# VISION INGESTION + OBSERVATIONS + LOCAL VLM (BIG #6) — camera to
+# verified world change. Chain: ingest (observation + local media)
+# -> VLM analysis (ADVICE) -> inert proposal -> exact-YES approval
+# -> BIG #5 controlled write -> independent verification.
+# Observations are sensor-observed, never FACT; VLM output never
+# self-verifies; no write ever follows automatically.
+# =============================================================================
+
+_STREAMS = StreamManager()
+
+
+def _observation_load(observation_id: str):
+    """Load one stored camera observation by id (any device)."""
+    from .cameras import CameraObservation
+    init_chat_database()
+    with chat_connection() as db:
+        row = db.execute("SELECT record FROM camera_observations "
+                         "WHERE observation_id=?",
+                         (observation_id,)).fetchone()
+    if row is None:
+        return None
+    return CameraObservation.model_validate(load(row["record"]))
+
+
+def _observation_summaries(observations) -> list[dict]:
+    """Bounded metadata summaries for chat/context. No pixels."""
+    summaries = []
+    for observation in list(observations or [])[:5]:
+        record = (observation.model_dump(mode="json")
+                  if hasattr(observation, "model_dump")
+                  else dict(observation))
+        labels: list[str] = []
+        try:
+            for analysis in list_analyses(
+                    str(record.get("observation_id", "")), limit=1):
+                labels = list(analysis.result.get("labels", []))[:5]
+        except ValueError:
+            labels = []
+        summaries.append({
+            "entity_type": "camera-observation",
+            "entity_id": str(record.get("observation_id", "")),
+            "title": (f"Observatie via "
+                      f"{record.get('device_id', '?')}"),
+            "snippet": (
+                f"{record.get('created_at', '?')}; media "
+                f"{record.get('media_ref', '?')}"
+                + (f"; VLM: {', '.join(str(label) for label in labels)}"
+                   if labels else "; nog geen VLM-analyse")),
+            "provenance": {"source_type": "sensor-observed",
+                           "human_verified": False},
+            "match_type": "observation",
+            "score": 0.0,
+        })
+    return summaries
+
+
+def _recent_observations(limit: int = 5) -> list:
+    """Latest stored observations across devices (metadata only)."""
+    init_chat_database()
+    with chat_connection() as db:
+        rows = db.execute(
+            """SELECT record FROM camera_observations
+            ORDER BY created_at DESC LIMIT ?""",
+            (max(1, min(limit, 20)),)).fetchall()
+    from .cameras import CameraObservation
+    return [CameraObservation.model_validate(load(row["record"]))
+            for row in rows]
+
+
+@app.get("/api/v1/cameras/{device_id}/availability")
+def camera_availability(device_id: str) -> dict:
+    """Honest state of one camera: registered/detected/connected/
+    capturable/unavailable. Never claims capturable without proof."""
+    device = get_device(device_id)
+    if device is None:
+        raise HTTPException(404, "Camera not found")
+    try:
+        detected = bool(detect_local_imaging_devices().get("devices"))
+    except Exception:
+        detected = False
+    try:
+        return probe_availability(device, adapter_for(device_id),
+                                  detected=detected)
+    except IngestRefusedError as error:
+        raise HTTPException(status_code=422, detail=str(error))
+
+
+@app.post("/api/v1/cameras/{device_id}/ingest", status_code=201)
+def camera_ingest(device_id: str) -> dict:
+    """Capture + ingest one still: stored observation, media facts
+    (hash/size, local only) and an INERT File payload for the BIG #5
+    approval flow. No adapter (or a failing one) refuses."""
+    device = get_device(device_id)
+    if device is None:
+        raise HTTPException(404, "Camera not found")
+    adapter = adapter_for(device_id)
+    test_origin = getattr(adapter, "name", "") in (
+        "synthetic-test", "test-only")
+    try:
+        result = ingest_snapshot(device, adapter,
+                                 test_origin=test_origin)
+    except IngestRefusedError as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    except CameraUnavailable as error:
+        raise HTTPException(status_code=409, detail=str(error))
+    save_observation(result.observation)
+    logger.info("camera_ingested device_id=%s observation_id=%s",
+                device_id, result.observation.observation_id)
+    return result.model_dump(mode="json")
+
+
+@app.get("/api/v1/observations/recent")
+def observations_recent(limit: int = 5) -> list[dict]:
+    """Latest observations, metadata only. No pixels leave the host."""
+    return _observation_summaries(_recent_observations(limit))
+
+
+@app.post("/api/v1/vision/analyze", status_code=201)
+async def vision_analyze(body: VisionAnalyzeBody) -> dict:
+    """Run the local VLM over one stored observation. The result is
+    structured ADVICE (labels + confidences + description), stored
+    beside the observation — never a fact, never verified."""
+    observation = _observation_load(body.observation_id)
+    if observation is None:
+        raise HTTPException(404, "Observation not found")
+    try:
+        provider = get_vision_provider(body.provider)
+    except VisionRefusedError as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    request = VisionRequest(
+        observation_id=observation.observation_id,
+        device_id=observation.device_id,
+        media_ref=observation.media_ref or "",
+        question=body.question)
+    if not request.media_ref:
+        raise HTTPException(
+            status_code=422,
+            detail="Observation carries no local media; refusing")
+    try:
+        result = await provider.analyze(request)
+    except VisionRefusedError as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    except VisionUnavailable as error:
+        raise HTTPException(status_code=502, detail=str(error))
+    record = VisionAnalysisRecord(
+        analysis_id=result.analysis_id,
+        observation_id=observation.observation_id,
+        device_id=observation.device_id,
+        result=result.model_dump(mode="json"),
+        created_at=result.observed_at)
+    try:
+        save_analysis(record)
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    logger.info("vision_analyzed observation_id=%s analysis_id=%s",
+                observation.observation_id, result.analysis_id)
+    return {"analysis": result.model_dump(mode="json"),
+            "candidates": [{"label": label, "confidence": confidence}
+                           for label, confidence in
+                           identification_candidates(result)]}
+
+
+@app.post("/api/v1/vision/propose", status_code=201)
+def vision_propose(body: VisionProposeBody) -> dict:
+    """One INERT inventory proposal from a stored vision analysis.
+    kind=object (top candidate label) or kind=file (captured media).
+    Nothing executes here; approval + BIG #5 write flow decide."""
+    import secrets as _secrets
+    analysis = load_analysis(body.analysis_id)
+    if analysis is None:
+        raise HTTPException(404, "Vision analysis not found")
+    proposal_id = (body.proposal_id
+                   or f"wrt-{_secrets.token_hex(4)}")
+    try:
+        if body.kind == "object":
+            result = VisionResult.model_validate(analysis.result)
+            observation = _observation_load(analysis.observation_id)
+            if observation is None:
+                raise HTTPException(
+                    404, "Observation for this analysis not found")
+            proposal = vision_to_object_proposal(
+                result, observation, proposal_id=proposal_id)
+        elif body.kind == "file":
+            observation = _observation_load(analysis.observation_id)
+            if observation is None or not observation.media_ref:
+                raise HTTPException(
+                    404, "Observation carries no local media")
+            media = media_facts(observation.media_ref,
+                                width=observation.width,
+                                height=observation.height)
+            payload = file_payload_for(
+                media,
+                f"{observation.device_id}-"
+                f"{observation.observation_id}",
+                observation.device_id)
+            proposal = vision_to_file_proposal(
+                payload, proposal_id=proposal_id)
+        else:
+            raise HTTPException(
+                status_code=422,
+                detail="kind must be 'object' or 'file'")
+    except IngestRefusedError as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    except (InventoryWriteRefusedError, ValueError) as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    _write_save(proposal, "proposed")
+    logger.info("vision_proposed analysis_id=%s proposal_id=%s kind=%s",
+                body.analysis_id, proposal_id, body.kind)
+    return _write_to_json(_write_load(proposal.proposal_id))
+
+
+@app.post("/api/v1/streams/start", status_code=201)
+def stream_start(body: StreamStartBody) -> dict:
+    """Start one bounded local-only stream session. Explicit stop
+    required; budgets cap frames/seconds; expiry stops the rest."""
+    device = get_device(body.device_id)
+    if device is None:
+        raise HTTPException(404, "Camera not found")
+    try:
+        session = _STREAMS.start(
+            body.device_id, list(device.kinds),
+            max_frames=body.max_frames, max_seconds=body.max_seconds)
+    except IngestRefusedError as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    return session.model_dump(mode="json")
+
+
+@app.post("/api/v1/streams/{session_id}/tick")
+def stream_tick(session_id: str) -> dict:
+    """Record one captured frame interval. Expired or stopped
+    sessions refuse instead of running on."""
+    try:
+        session = _STREAMS.tick(session_id)
+    except IngestRefusedError as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    return session.model_dump(mode="json")
+
+
+@app.post("/api/v1/streams/{session_id}/stop")
+def stream_stop(session_id: str) -> dict:
+    try:
+        session = _STREAMS.stop(session_id)
+    except IngestRefusedError as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    return session.model_dump(mode="json")
+
+
+@app.get("/api/v1/streams")
+def streams_list() -> list[dict]:
+    return [session.model_dump(mode="json")
+            for session in _STREAMS.list()]
+
+
+# =============================================================================
 # WORLD GRAPH (BIG #4) — uniform projection, no new source of truth.
 # =============================================================================
 
 @app.get("/api/v1/graph")
 async def world_graph_unified(entity_id: str, depth: int = 1,
-                              include_missions: bool = False) -> dict:
+                              include_missions: bool = False,
+                              include_observations: bool = False) -> dict:
     try:
         with connection() as db:
             agent_rows = db.execute(
                 "SELECT node_id, capabilities FROM nodes").fetchall()
         agents = [{"node_id": row["node_id"],
-                   "capabilities": load(row["capabilities"])}
-                  for row in agent_rows]
+                    "capabilities": load(row["capabilities"])}
+                    for row in agent_rows]
+        observations = ([obs.model_dump(mode="json")
+                         for obs in _recent_observations(20)]
+                        if include_observations else None)
         graph = await build_world_graph(
             _world_reader(), entity_id, depth,
-            include_missions=include_missions, agent_nodes=agents)
+            include_missions=include_missions, agent_nodes=agents,
+            observations=observations)
     except ValueError as error:
         raise HTTPException(status_code=422, detail=str(error))
     except InventoryRefusedError as error:
@@ -2159,12 +2486,21 @@ async def web_mission_op(mission_id: str, op: str) -> RedirectResponse:
 
 @app.get("/cameras", response_class=HTMLResponse)
 def cameras_page() -> str:
-    devices = "".join(
-        f"<li><b>{escape(device.name)}</b> ({escape(device.device_id)}, "
-        f"{escape(device.source)}) — {escape(', '.join(device.kinds))} · "
-        f"<a href='/api/v1/cameras/{escape(device.device_id)}/observations'>"
-        "observaties (JSON)</a></li>"
-        for device in list_devices())
+    rows = []
+    for device in list_devices():
+        latest = list_observations(device.device_id, limit=1)
+        last = (f"{latest[0].observation_id} "
+                f"({latest[0].created_at})" if latest else "○ geen")
+        rows.append(
+            f"<li><b>{escape(device.name)}</b> "
+            f"({escape(device.device_id)}, {escape(device.source)}) — "
+            f"{escape(', '.join(device.kinds))} · "
+            f"<a href='/api/v1/cameras/{escape(device.device_id)}/availability'>"
+            "beschikbaarheid (JSON)</a> · "
+            f"<a href='/api/v1/cameras/{escape(device.device_id)}/observations'>"
+            "observaties (JSON)</a> · laatste: "
+            f"{escape(last)}</li>")
+    devices = "".join(rows)
     detected = detect_local_imaging_devices()
     found = "".join(
         f"<li><small>{escape(str(entry.get('path', '?')))}</small></li>"

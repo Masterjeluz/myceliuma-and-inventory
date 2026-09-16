@@ -38,11 +38,12 @@ MAX_TIMEOUT_SECONDS = 5.0
 MAX_QUERY_LENGTH = 200
 LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
 ENTITY_ID_PREFIXES = ("obj_", "proj_", "idea_", "rel_", "evt_",
-                      "hw_", "sns_", "cam_", "loc_", "mod_", "task_", "act_")
+                      "hw_", "sns_", "cam_", "loc_", "mod_", "task_", "act_",
+                      "file_")
 GET_TYPES = {"object": "objects", "project": "projects", "idea": "ideas",
              "hardware": "hardware", "sensor": "sensors", "camera": "cameras",
              "location": "locations", "model": "models", "task": "tasks",
-             "actuator": "actuators"}
+             "actuator": "actuators", "file": "files"}
 SEARCH_TYPES = frozenset({"objects", "projects", "ideas", "relationships",
                           "hardware", "sensors", "cameras", "locations",
                           "models", "tasks", "actuators"})

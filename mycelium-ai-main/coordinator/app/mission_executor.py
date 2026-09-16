@@ -69,6 +69,7 @@ class ExecutorDeps:
     project_read: Callable[[], dict]
     default_steps: list[dict] = field(default_factory=list)
     run_write: Callable[[Any, Any], Awaitable[dict]] | None = None
+    observe_camera: Callable[[Any, Any], Awaitable[dict]] | None = None
 
 
 class ExecutorError(RuntimeError):
@@ -300,6 +301,8 @@ class MissionExecutor:
             return self._run_proposal(mission, step)
         if step.kind == "write":
             return await self._run_write(mission, step)
+        if step.kind == "camera_observe":
+            return await self._run_camera_observe(mission, step)
         return self._block_step(
             mission, step, f"Onbekend stap-type '{step.kind}'")
 
@@ -599,6 +602,66 @@ class MissionExecutor:
         return self._block_step(
             mission, step,
             f"Write {proposal_id} geblokkeerd: {result_text[:500]}")
+
+    async def _run_camera_observe(self, mission: Mission,
+                                  step: MissionStep) -> Mission:
+        """Observe through one bound camera device.
+
+        Delegates to the injected ``observe_camera`` capability
+        (wired in main.py to device + adapter registry). Without
+        that wiring the step BLOCKs — a camera step without a
+        capture path can never run. The result is metadata only
+        (observation id, device, timestamp); pixels never enter
+        mission state, and no write ever follows automatically.
+        """
+        device_id = str(step.parameters.get("device_id", ""))
+        if self.deps.observe_camera is None:
+            return self._block_step(
+                mission, step,
+                f"Camera-stap '{device_id}' geblokkeerd: geen "
+                "observe-capability gekoppeld. Observaties lopen "
+                "alleen via geregistreerde adapters.")
+        try:
+            outcome = await self.deps.observe_camera(mission, step)
+        except ExecutorError as error:
+            return self._block_step(mission, step, str(error))
+        except Exception as error:
+            return self._block_step(
+                mission, step, f"Observatie mislukt: {error}")
+        if not isinstance(outcome, dict):
+            return self._block_step(
+                mission, step, "Observe-capability gaf onleesbaar "
+                "resultaat; scope gebroken")
+        status = str(outcome.get("status", "blocked"))
+        observation_id = str(outcome.get("observation_id", ""))
+        detail = str(outcome.get("detail", ""))[:1000]
+        if status == "completed" and observation_id:
+            mission = set_step(
+                mission, step.step_id, status="completed",
+                observation_reference=observation_id,
+                result_text=f"Observatie {observation_id} via "
+                            f"{device_id} (metadata alleen). {detail}",
+                completed_at=_now())
+            save_mission(mission)
+            save_event(new_event(
+                mission.conversation_id, "camera_observed",
+                f"Stap {step.sequence + 1}: observatie "
+                f"{observation_id} vastgelegd.",
+                mission_id=mission.mission_id, step_id=step.step_id,
+                metadata={"observation_id": observation_id,
+                          "device_id": device_id}))
+            save_event(new_event(
+                mission.conversation_id, "step_completed",
+                f"Stap {step.sequence + 1} voltooid (observatie).",
+                mission_id=mission.mission_id, step_id=step.step_id))
+            return mission
+        if status == "failed":
+            return self._fail_step(
+                mission, step,
+                f"Observatie via {device_id} faalde: {detail[:500]}")
+        return self._block_step(
+            mission, step,
+            f"Observatie via {device_id} geblokkeerd: {detail[:500]}")
 
     def _advance(self, mission: Mission, step: MissionStep) -> Mission:
         updated = mission.model_copy(

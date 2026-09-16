@@ -43,14 +43,24 @@ Andere platformen melden eerlijk `supported: false`.
 
 - **Phase 1** (DONE): device-abstractie, capability-model, adapter-
   contract, source-metadata (`source=insta360`), observatie-contract.
-- **Phase 2**: photo/snapshot-ingestie via beoordeelde runtime.
-- **Phase 3**: webcam-modus (detectie bestaat al).
-- **Phase 4**: lokale live stream naar geautoriseerde consumer.
+- **Phase 2** (DONE als foundation in BIG #6): `Insta360Adapter`
+  (`coordinator/app/vision_ingest.py`) — identiteit, expliciete
+  staten (registered/detected/connected/capturable), capability-
+  claims alleen per implementatie, heuristische detectie-
+  kandidaten, gedocumenteerde integratie-eisen. Echte capture:
+  expliciet unavailable, nooit fake bytes.
+- **Phase 3**: webcam-modus — vereist vendor-driver PLUS een
+  reviewed Windows capture-runtime (`WindowsWebcamAdapter` is
+  nog een stub; vereisten in code).
+- **Phase 4**: lokale live stream naar geautoriseerde consumer
+  (lifecycle-foundation `StreamSession` bestaat; transport niet).
 - **Phase 5**: 360-viewer.
-- **Phase 6**: vision/VLM over observaties (mens verifieert).
+- **Phase 6**: vision/VLM over observaties (mens verifieert) —
+  DONE als generieke keten in BIG #6 (`docs/vision-architecture.md`).
 - **Phase 7**: camera-bewuste missies ("bekijk mijn werkbank via
   de Insta360 en vertel wat je ziet" → observatie → VLM →
-  context → advies → missie).
+  context → advies → missie) — DONE als `camera_observe`-stap;
+  echte Insta360-capture wacht op fasen 2–3.
 
 ## Security
 
@@ -60,8 +70,11 @@ exposure · geen open inbound ports · AI verandert nooit zelfstandig
 privacy-grenzen · captures blijven lokaal tot een expliciete
 toekomstige provider-interface anders toestaat.
 
-## Binding (voorbereid, niet automatisch)
+## Binding (BIG #6: via controlled writes)
 
-camera → capture → file (`file_`-id, optioneel) → observation →
-AI-analyse. Schrijven naar INVENTory gebeurt niet automatisch;
-daarvoor geldt ROADMAP-fase C (voorstel → approval → uitvoering).
+camera → capture → file (`file_`-id, via inerte File-proposal
++ exact-YES + BIG #5-verificatie) → observation → AI-analyse
+→ proposal → approval → write → verification. Zie
+`docs/vision-architecture.md`. Observaties zonder write-pad
+blijven sensor-observed metadata; geen enkele stap is
+automatisch.

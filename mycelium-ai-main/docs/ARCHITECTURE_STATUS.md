@@ -1,4 +1,4 @@
-# Architecture Status (september 2026, na BIG #5)
+# Architecture Status (september 2026, na BIG #6)
 
 Momentopname van wat het systeem IS. Voor flows, zie
 `chat-agent-architecture.md`; voor richting, zie `ROADMAP.md`.
@@ -67,6 +67,11 @@ Momentopname van wat het systeem IS. Voor flows, zie
 | Semantische retrieval | `embeddings.py`, `semantic_store.py`, `retrieval.py` | DONE (lexicaal fallback) |
 | Missie-sjablonen | `mission_templates.py` | DONE (5 stuks) |
 | Camera-abstractie | `cameras.py` | DONE (contract + detectie) |
+| Camera-ingestie | `vision_ingest.py` | DONE (states, snapshot, streams-lifecycle, insta360-foundation, webcam-stub) |
+| Local VLM | `vision_provider.py` | DONE (Ollama loopback, test/unavailable providers) |
+| Vision→proposal→verificatie | `vision_flow.py` | DONE (geen uitvoeringspad) |
+| File controlled writes | `inventory_writes.py` | DONE (file create/update; object/project/idea/relatie intact) |
+| Camera-missiestap | `missions.py`, `mission_executor.py` | DONE (`camera_observe`) |
 | Wereldgrafiek | `worldgraph.py` | DONE (projectie) |
 | Project-/git-context (read-only) | `project_context.py`, `git_context.py` | DONE |
 | Controlled writes (generiek) | `controlled_writes.py` | DONE |
@@ -84,10 +89,9 @@ Momentopname van wat het systeem IS. Voor flows, zie
 
 ## Teststatus (gemeten, niet geschat)
 
-- Mycelium: **629 passed** (`pytest -v` in `mycelium-ai-main/`)
-  (547 vóór BIG #5 + 82 nieuwe write/verification/git/package/
-  missie/security/API-tests; camera-ctypes geeft dezelfde
-  pre-existing access-violation-meldingen als vóór BIG #5)
+- Mycelium: **696 passed** (`pytest -v` in `mycelium-ai-main/`)
+  (629 vóór BIG #6 + 67 nieuwe vision-tests; camera-ctypes geeft
+  dezelfde pre-existing access-violation-meldingen als altijd)
 - INVENTory: **178 passed, 1 failed** — de faal is pre-existing:
   `test_real_inventory_db_untouched` pint de exacte byte-grootte van
   de gitignored lokale `data/inventory.db`; inhoud groeit bij normaal
