@@ -333,7 +333,7 @@ from .routing import (
     requirements_from_payload,
     route_task,
 )
-from .schemas import AdviseRequest, AdviseResponse, AdvancedOpBody, CadDocumentBody, CadOpBody, CadPartBody, CampaignBody, CameraRegisterBody, CaptureCloseBody, CaptureOpenBody, ChatMissionBody, ChatRequest, ChatResponse, ClaimedTask, DecideApprovalBody, DesktopActionBody, DesktopClaimBody, DesktopDecisionBody, DesktopDispatchBody, DesktopResultBody,     DistEnvelopeBody, DroneCreateBody, DroneMissionApproveBody, DroneMissionBody,     FabGenerateBody, FabSliceBody, FamiliarCreateBody, FoodCreateBody, GarminImportBody, GitCommitBody, HealthMeasureBody, Heartbeat, InstagramImportBody,     InterfaceChatBody, IntegrationEnvelopeBody, IntegrationKeyBody, IntegrationTriggerBody, InventoryWriteBody, JobRunBody, LiveContextBody, LiveProposeBody, LiveSessionBody, MealCreateBody, MealItemBody, MemoryConsolidateBody, MemoryCreateBody, MemoryRetrieveBody, MemoryVerifyBody,     MissionApproveBody, MissionCreateBody, MissionStepBody, NodeRegistration, NodeRotateBody,     NotifyBody, OperatorBody, OutboxAckBody, OutboxEnqueueBody, PhoneCameraBody,     PlanBody, PlanToProposalBody, PipelinePlanBody, PrintCancelBody, PrintProposeBody, PrinterRegisterBody, PrinterSelectBody, PromptEditBody, ResearchAdvanceBody, ResearchClaimBody, ResearchRecordBody, ResearchSourceBody, RobotActionBody, RobotApproveBody, RobotCreateBody, RobotSafetyBody, RobotTelemetryBody, SessionOpenBody,     StreamStartBody, SuggestStepsBody, SkillAcceptBody, SkillAdvanceBody, SkillCreateBody, SkillDiscoverBody, SkillEvidenceBody, SpoolCreateBody, SyncApplyBody, TaskAssignBody, TaskCreate, TaskFromProposalBody, TaskResult, TaskRouteBody,     TemplateMissionBody, TransformBody, TwinLinkBody, VisionAnalyzeBody, VisionProposeBody, VoiceApprovalRequestBody, VoiceApproveBody, VoiceChatBody, VoiceSynthesizeBody, VoiceTranscribeBody, WriteDecisionBody
+from .schemas import AdviseRequest, AdviseResponse, AdvancedOpBody, CadDocumentBody, CadOpBody, CadPartBody, CampaignBody, CameraRegisterBody, CaptureCloseBody, CaptureOpenBody, ChatMissionBody, ChatRequest, ChatResponse, ClaimedTask, DecideApprovalBody, DesktopActionBody, DesktopClaimBody, DesktopDecisionBody, DesktopDispatchBody, DesktopResultBody,     DistEnvelopeBody, DroneCreateBody, DroneMissionApproveBody, DroneMissionBody,     FabGenerateBody, FabSliceBody, FamiliarCreateBody, FoodCreateBody, GarminImportBody, GitCommitBody, HealthMeasureBody, Heartbeat, InstagramImportBody,     InterfaceChatBody, IntegrationEnvelopeBody, IntegrationKeyBody, IntegrationTriggerBody, InventoryWriteBody, JobRunBody, LiveContextBody, LiveProposeBody, LiveSessionBody, MealCreateBody, MealItemBody, MemoryConsolidateBody, MemoryCreateBody, MemoryRetrieveBody, MemoryVerifyBody,     MissionApproveBody, MissionCreateBody, MissionRunBody, MissionStepBody, NodeRegistration, NodeRotateBody,     NotifyBody, OperatorBody, OutboxAckBody, OutboxEnqueueBody, PhoneCameraBody,     PlanBody, PlanToProposalBody, PipelinePlanBody, PrintCancelBody, PrintProposeBody, PrinterRegisterBody, PrinterSelectBody, PromptEditBody, ResearchAdvanceBody, ResearchClaimBody, ResearchRecordBody, ResearchSourceBody, RobotActionBody, RobotApproveBody, RobotCreateBody, RobotSafetyBody, RobotTelemetryBody, SessionOpenBody,     StreamStartBody, SuggestStepsBody, SkillAcceptBody, SkillAdvanceBody, SkillCreateBody, SkillDiscoverBody, SkillEvidenceBody, SpoolCreateBody, SyncApplyBody, TaskAssignBody, TaskCreate, TaskFromProposalBody, TaskResult, TaskRouteBody,     TemplateMissionBody, TransformBody, TwinLinkBody, VisionAnalyzeBody, VisionProposeBody, VoiceApprovalRequestBody, VoiceApproveBody, VoiceChatBody, VoiceSynthesizeBody, VoiceTranscribeBody, WriteDecisionBody
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 logger = logging.getLogger("mycelium.coordinator")
@@ -2221,6 +2221,25 @@ async def mission_tick(mission_id: str) -> dict:
         return await _executor().tick(mission_id)
     except ExecutorError as error:
         raise _mission_error(error)
+
+
+@app.post("/api/v1/missions/{mission_id}/run")
+async def mission_run(mission_id: str,
+                      body: MissionRunBody) -> dict:
+    """Drive one bounded autonomous loop run (BIG #21).
+    Advances approved work to the next gate, reports the
+    exact stop reason, stores one memory on terminal
+    states. Never approves, never invents steps, never
+    executes beyond the existing executor."""
+    from .mission_loop import (
+        MissionLoopRefusedError,
+        run_loop,
+    )
+    try:
+        return await run_loop(mission_id,
+                              max_rounds=body.max_rounds)
+    except MissionLoopRefusedError as error:
+        raise HTTPException(status_code=422, detail=str(error))
 
 
 @app.post("/api/v1/chat/{conversation_id}/missions", status_code=201)
@@ -6776,6 +6795,9 @@ def mission_page(mission_id: str) -> str:
     if mission.status in ("approved", "running"):
         buttons += (f"<form style='display:inline' method='post' action='/web/missions/{_ui.esc(mission_id)}/tick'>"
                     "<button>Next step</button></form> ")
+    if mission.status in ("approved", "running"):
+        buttons += (f"<form style='display:inline' method='post' action='/web/missions/{_ui.esc(mission_id)}/run'>"
+                    "<button>Run loop</button></form> ")
     if mission.status == "running":
         buttons += (f"<form style='display:inline' method='post' action='/web/missions/{_ui.esc(mission_id)}/pause'>"
                     "<button>Pause</button></form> ")
@@ -6851,7 +6873,12 @@ async def web_mission_op(mission_id: str, op: str) -> RedirectResponse:
             _executor().cancel(mission_id)
         elif op == "tick":
             await _executor().tick(mission_id)
+        elif op == "run":
+            from .mission_loop import run_loop
+            await run_loop(mission_id)
     except ExecutorError:
+        pass
+    except ValueError:
         pass
     return RedirectResponse(f"/missions/{mission_id}", status_code=303)
 

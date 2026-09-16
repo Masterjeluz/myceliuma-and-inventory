@@ -275,7 +275,19 @@ API's, nieuwe ervaring.
 - Project-ecosystemen, entity-details, activity stream — DONE
 - Physical/fabrication met LIVE/SIMULATED/TEST-states — DONE
 - Bewuste mobile-volgorde, reduced-motion, focus, landmarks — DONE
-- Testbasis: 944+ Mycelium-tests — DONE
+- Testbasis: 944 Mycelium-tests — DONE
+
+## PHASE M — AUTONOMOUS MISSION LOOP (DONE als BIG #21)
+
+Zie `docs/autonomous-mission-loop.md`. Eén veilige
+continue runner over de bestaande executor: chat →
+missie → tick → observeer → evalueer → vervolg →
+verifieer → rond af. Stopt bij elke gate (plan-,
+desktop-, proposal-, write- en physical-approvals),
+vindt nooit stappen uit, voert nooit fysiek uit
+zonder bestaande approvals. Terminale missies
+schrijven één episodic memory (observed, nooit fact).
+Testbasis: 951 Mycelium-tests + 12-checks live smoke.
 
 ## Expliciet niet op de kaart
 

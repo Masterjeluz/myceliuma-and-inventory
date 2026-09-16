@@ -507,6 +507,14 @@ class CampaignBody(BaseModel):
     node_id: str = Field(min_length=3, max_length=80)
 
 
+class MissionRunBody(BaseModel):
+    """Drive one autonomous loop run (BIG #21). Bounded;
+    stops at every gate, never approves, never executes
+    beyond the existing executor."""
+
+    max_rounds: int = Field(default=10, ge=1, le=10)
+
+
 class DistEnvelopeBody(BaseModel):
     """One distributed change envelope for sync apply."""
 
