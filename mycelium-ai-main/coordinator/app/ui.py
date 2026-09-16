@@ -39,13 +39,13 @@ TOKENS = """
 BASE_CSS = TOKENS + """
 *{box-sizing:border-box}
 html{-webkit-text-size-adjust:100%}
-body{margin:0;background:var(--soil);color:var(--ink);font-family:var(--font);font-size:15px;line-height:1.55}
+body{margin:0;background:var(--soil);background-image:radial-gradient(1100px 420px at 50% -120px, #1b231b 0%, var(--soil) 70%);color:var(--ink);font-family:var(--font);font-size:15px;line-height:1.55}
 a{color:var(--moss-bright)}
 a:focus-visible,button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible,[tabindex]:focus-visible{outline:2px solid var(--amber);outline-offset:2px;border-radius:4px}
 .shell{min-height:100vh;display:grid;grid-template-columns:230px minmax(0,1fr) 300px;grid-template-rows:auto minmax(0,1fr) auto;grid-template-areas:"top top top" "nav main aside" "cmd cmd cmd"}
 .topbar{grid-area:top;display:flex;align-items:center;gap:var(--space-2);padding:.55rem var(--space-3);background:var(--soil-2);border-bottom:1px solid var(--line)}
 .topbar .spacer{flex:1}
-.topbar .ext{font-size:.8rem;color:var(--ink-dim)}
+.topbar .ext{font-size:.8rem;color:var(--ink-dim);white-space:nowrap}
 .brand{font-weight:700;letter-spacing:.14em;font-size:.85rem;color:var(--spore)}
 .brand small{color:var(--ink-faint);letter-spacing:.04em;font-weight:400}
 .sidenav{grid-area:nav;border-right:1px solid var(--line);padding:var(--space-2);background:var(--soil-2)}
@@ -63,8 +63,8 @@ h2{font-size:1.02rem;margin:var(--space-3) 0 var(--space-1);color:var(--moss-bri
 h3{font-size:.92rem;margin:var(--space-2) 0 .4rem}
 .panel{background:var(--surface);border:1px solid var(--line);border-radius:var(--r);padding:var(--space-2) var(--space-3);margin-bottom:var(--space-2)}
 .grove{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:var(--space-2)}
-.sprout{background:var(--surface);border:1px solid var(--line);border-radius:var(--r);padding:var(--space-2);transition:border-color .25s var(--ease),transform .25s var(--ease)}
-.sprout:hover{border-color:var(--fern)}
+.sprout{background:var(--surface);border:1px solid var(--line);border-top:2px solid var(--fern);border-radius:var(--r);padding:var(--space-2);transition:border-color .25s var(--ease),transform .25s var(--ease)}
+.sprout:hover{border-color:var(--moss);border-top-color:var(--moss);transform:translateY(-2px)}
 table{width:100%;border-collapse:collapse;background:var(--surface);border:1px solid var(--line);border-radius:var(--r);overflow:hidden;margin-bottom:var(--space-2)}
 td,th{padding:.55rem .7rem;text-align:left;border-bottom:1px solid var(--line-soft);font-size:.9rem}
 th{color:var(--ink-faint);font-weight:600;font-size:.75rem;letter-spacing:.08em;text-transform:uppercase}
@@ -105,7 +105,7 @@ svg.world text{fill:var(--ink-dim);font-size:11px;font-family:var(--font)}
 .pulse{animation:pulse 2.2s ease-out infinite}
 @keyframes pulse{0%{opacity:.9}70%{opacity:.35}100%{opacity:.9}}
 @media (max-width:1080px){.shell{grid-template-columns:200px minmax(0,1fr);grid-template-areas:"top top" "nav main" "cmd cmd"}.context{display:none}}
-@media (max-width:720px){.shell{grid-template-columns:minmax(0,1fr);grid-template-areas:"top" "main" "cmd"}.sidenav{display:flex;overflow-x:auto;gap:.2rem;border-right:none;border-bottom:1px solid var(--line)}.sidenav h4{display:none}.sidenav a{white-space:nowrap}.workspace{padding:var(--space-2)}}
+@media (max-width:720px){.shell{grid-template-columns:minmax(0,1fr);grid-template-areas:"top" "nav" "main" "cmd"}.sidenav{grid-area:nav;display:flex;overflow-x:auto;gap:.2rem;border-right:none;border-bottom:1px solid var(--line);align-items:center}.sidenav h4{display:none}.sidenav a{white-space:nowrap;border:none}.brand{font-size:.75rem}.brand small{display:none}.workspace{padding:var(--space-2)}}
 """
 
 NAV = [
@@ -383,8 +383,32 @@ def graph_panel(data_json: str, form_action: str, entity_id: str = "",
                 depth: int = 1, show: str = "missions,nodes",
                 error: str = "") -> str:
     """Interactive world graph: form + SVG stage + details.
-    `data_json` is the already-serialized graph dict."""
+    `data_json` is the already-serialized graph dict. An
+    empty graph renders guidance plus a static mycelium
+    figure (decorative, aria-hidden) instead of a void."""
+    import json as _json
     safe_data = data_json.replace("</", "<\\/")
+    try:
+        node_count = len(_json.loads(data_json).get("nodes",
+                                                    []))
+    except ValueError:
+        node_count = -1
+    empty_html = ""
+    if node_count == 0:
+        empty_html = """<div class="panel"><h2>A quiet patch of soil</h2>
+<p class="muted">Nothing grows here yet. Pick a seed above, open a project, or check that INVENTory is running — the graph only ever shows real data.</p>
+<p><a href="/projects">Browse projects</a> · <a href="/memory">Browse memory</a></p>
+<svg viewBox="0 0 400 120" width="100%" height="120" aria-hidden="true">
+<g fill="none" stroke="var(--fern)" stroke-width="1.5" opacity=".55">
+<path d="M20 100 C 90 90, 120 60, 200 62 S 330 40, 385 55"/>
+<path d="M200 62 C 190 40, 170 30, 150 28"/>
+<path d="M200 62 C 220 45, 250 42, 275 30"/>
+<path d="M90 92 C 80 75, 60 70, 45 60"/>
+<circle cx="150" cy="28" r="3.5" fill="var(--moss)" stroke="none" opacity=".8"/>
+<circle cx="275" cy="30" r="3.5" fill="var(--spore)" stroke="none" opacity=".8"/>
+<circle cx="45" cy="60" r="3" fill="var(--moss)" stroke="none" opacity=".7"/>
+<circle cx="385" cy="55" r="2.5" fill="var(--ink-faint)" stroke="none" opacity=".7"/>
+</g></svg></div>"""
     return f"""<div class="panel"><form method="get" action="{esc(form_action)}" role="search" aria-label="Graph focus">
 <label>Entity <input type="text" name="entity_id" placeholder="obj_… / proj_… / mem_…" value="{esc(entity_id)}" style="width:16rem"></label>
 <label>Depth <input type="number" name="depth" value="{esc(depth)}" min="1" max="2" style="width:3.5rem"></label>
@@ -401,6 +425,7 @@ def graph_panel(data_json: str, form_action: str, entity_id: str = "",
 <span id="wcount" class="muted" role="status"></span></p>
 <p style="color:var(--danger)">{esc(error)}</p></div>
 <svg id="wstage" class="world" viewBox="0 0 1000 480" role="application" aria-label="World graph. Tab to move between nodes, Enter to select."></svg>
+{empty_html}
 <div class="panel"><h2>Details</h2><div id="wdetails">Select a node or relation. Keyboard: Tab to a node, Enter to open.</div></div>
 <script>const WGDATA = {safe_data};
 {GRAPH_JS.replace("constWGDATA;", "")}</script>"""

@@ -6209,7 +6209,7 @@ async def dashboard(entity_id: str = "") -> str:
     node_rows_html = "".join(
         f"<tr><td>{_ui.status_dot(record.get('derived_status', ''))}{_ui.esc(record['node_id'])}</td>"
         f"<td>{_ui.esc(record.get('tier', ''))}</td>"
-        f"<td>{_ui.esc(str(record.get('last_seen', ''))[:16])}</td></tr>"
+        f"<td style=\"white-space:nowrap\">{_ui.esc(str(record.get('last_seen', ''))[:10])}</td></tr>"
         for record in nodes) or "<tr><td colspan='3'>No nodes yet.</td></tr>"
     note_items = "".join(
         f"<li>{_ui.esc(item.title)}</li>" for item in notes)
@@ -6267,7 +6267,9 @@ async def _graph_data(entity_id: str, depth: int,
 
 
 async def _world_seeds() -> list:
-    """Bounded project/object chips to grow the graph from."""
+    """Bounded project/object chips to grow the graph from.
+    Human titles where the bridge provides them, short ids
+    otherwise — never raw 40-char identifiers."""
     seeds = []
     try:
         for kind in ("projects", "objects"):
@@ -6276,10 +6278,13 @@ async def _world_seeds() -> list:
                 title = record.entity_id
                 details = record.details \
                     if isinstance(record.details, dict) else {}
-                for key in ("name", "title", "goal"):
+                for key in ("name", "title", "goal",
+                            "description"):
                     if details.get(key):
                         title = str(details[key])[:40]
                         break
+                else:
+                    title = record.entity_id[:12] + "…"
                 seeds.append({"id": record.entity_id,
                               "label": f"{kind[:-1]}: {title}"})
     except (InventoryRefusedError, InventoryUnavailable,
@@ -6592,7 +6597,7 @@ def chat_page(id: str | None = None) -> str:
             f"{live['nodes']['stale']} stale · open approvals: "
             f"desktop {live['pending_approvals']['desktop_actions']}, "
             f"writes {live['pending_approvals']['write_proposals']}, "
-            f"missies {live['pending_approvals']['missions']} · "
+            f"missions {live['pending_approvals']['missions']} · "
             f"<a href='/mobile'>mobile</a> · "
             f"<a href='/api/v1/status'>status (JSON)</a></p>")
     except (ValueError, KeyError):

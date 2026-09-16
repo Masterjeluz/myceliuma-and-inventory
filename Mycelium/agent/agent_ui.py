@@ -23,10 +23,11 @@ body {
     max-width: 1200px;
     margin: 30px auto;
     padding: 0 20px;
-    background: #f5f6f8;
-    color: #222;
+    background: #101410;
+    color: #ece7d8;
 }
-h1 { margin-bottom: 5px; }
+h1 { margin-bottom: 5px; color: #ece7d8; }
+a { color: #a5c48a; }
 .stats {
     display: flex;
     gap: 12px;
@@ -34,14 +35,14 @@ h1 { margin-bottom: 5px; }
     margin: 20px 0;
 }
 .stat {
-    background: white;
-    border: 1px solid #ddd;
+    background: #1b221b;
+    border: 1px solid #2e3a2c;
     border-radius: 10px;
     padding: 15px 20px;
 }
 .card {
-    background: white;
-    border: 1px solid #ddd;
+    background: #1b221b;
+    border: 1px solid #2e3a2c;
     border-radius: 10px;
     padding: 16px;
     margin: 12px 0;
@@ -56,30 +57,40 @@ h1 { margin-bottom: 5px; }
     padding: 4px 8px;
     margin: 2px;
     border-radius: 6px;
-    background: #eee;
+    background: #222b22;
+    border: 1px solid #2e3a2c;
     font-size: 13px;
 }
 .git {
-    background: #dff5df;
+    background: #22301f;
+    border-color: #4c6b4f;
 }
 .warn {
-    background: #fff3cd;
+    background: #2b2416;
+    border-color: #8a6a2c;
 }
 .info {
-    background: #e7f1ff;
+    background: #1b2430;
+    border-color: #3a4a5a;
 }
 button {
     padding: 10px 18px;
-    border: 0;
+    border: 1px solid #2e3a2c;
     border-radius: 8px;
     cursor: pointer;
     font-size: 15px;
+    background: #4c6b4f;
+    color: #ece7d8;
+}
+button:focus-visible {
+    outline: 2px solid #d9a441;
+    outline-offset: 2px;
 }
 button:hover {
     opacity: .85;
 }
 .meta {
-    color: #666;
+    color: #8a9184;
     font-size: 13px;
 }
 </style>

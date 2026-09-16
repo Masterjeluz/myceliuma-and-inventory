@@ -1,8 +1,12 @@
-# Living Workshop UI (BIG #19) — IMPLEMENTED
+# Living Workshop UI (BIG #19, polished BIG #20) — IMPLEMENTED
 
 From functional dashboard to living digital workshop:
 one dark-earth SolarPunk visual system over unchanged
-APIs. The UI visualizes and interacts; it duplicates no
+APIs. Visually validated with real Chrome screenshots
+(desktop 1440px + mobile 390px, seeded world, genuine
+local model replies) — see BIG #20 report.
+
+The UI visualizes and interacts; it duplicates no
 domain truth.
 
 ## Visual philosophy
@@ -96,3 +100,33 @@ Pages call the same backend functions as before;
 no new endpoints except `/world`, `/projects`,
 `/activity` (all read-only projections). Health,
 approval, verification and fencing flows untouched.
+
+## Visual QA findings (BIG #20, real screenshots)
+
+Fixed from screenshot review: mobile grid placed the
+nav in an implicit column that squeezed all content
+(now an explicit nav row with horizontal scroll);
+topbar wraps gracefully with nowrap utility links;
+world seeds show human titles with short-id fallback
+instead of raw 40-char identifiers; node timestamps
+render date-only without wrapping; empty graph shows
+guidance plus a static mycelium figure instead of a
+void; entity cards lift with a fern accent (panels
+stay flat); workspace carries a faint top light;
+agent UI palette aligned to soil/moss (CSS only).
+
+Deliberately unchanged: activity stays an honest
+table (a timeline would prettify without adding
+meaning); the 3D viewer keeps its technical canvas;
+browse details without titles show short ids rather
+than invented names.
+
+## What stays basic / future work
+
+Browser QA covered layout, states and interaction
+markers — not taste subtleties like label density
+above 50 nodes or empty-state illustration. Later:
+project progress meters, denser graph label
+strategy, mobile bottom nav if the scroll nav proves
+awkward, agent-page structural merge (palette is
+aligned; layout still separate).
