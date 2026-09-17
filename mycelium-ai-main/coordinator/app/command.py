@@ -44,7 +44,7 @@ INTENTS = (
 
 #: intent -> safe template used to build the mission.
 INTENT_TEMPLATES = {
-    "research_project": "investigate_inventory",
+    "research_project": "research_topic",
     "inventory_status": "investigate_inventory",
     "project_overview": "inspect_project",
 }
@@ -52,7 +52,7 @@ INTENT_TEMPLATES = {
 _RESEARCH = re.compile(
     r"(onderzoek|research|onderzocht|zoek|verdiep|analyseer|analyse|"
     r"bekijk|kijk|inventariseer|uitzoek|controleer|check|toon|lijst|"
-    r"vertel .* (over|overzicht)|"
+    r"nieuw|nieuwe|update|vertel .* (over|overzicht)|"
     r"wat .* (open|loopt|speelt)|overzicht|status|voortgang)",
     re.IGNORECASE)
 _MORNING = re.compile(

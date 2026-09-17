@@ -1,4 +1,4 @@
-# Architecture Status (september 2026, na BIG #23–#28 / V1)
+# Architecture Status (september 2026, na BIG #29)
 
 Momentopname van wat het systeem IS. Voor flows, zie
 `chat-agent-architecture.md`; voor richting, zie `ROADMAP.md`.
@@ -111,6 +111,7 @@ Momentopname van wat het systeem IS. Voor flows, zie
 | Health/nutrition | `health.py`, `nutrition.py` | DONE (tracking; geen diagnose-engine) |
 | Garmin | `garmin.py` | MOCK (live UNAVAILABLE, import-pipeline echt) |
 | Research/ingestie | `research.py` | DONE (claims-met-bron; Instagram manual-export) |
+| Research Engine | `research_transport.py`, `research_extract.py`, `research_engine.py` | DONE (BIG #29: runs/dossiers, REAL/TEST/UNAVAILABLE, missie+chat+morning+UI; Wikipedia vanaf dit netwerk UNAVAILABLE, direct-fetch REAL, Ollama DOWN→fallback) |
 | Skills | `skills.py` | DONE (evidence-progressie, discovery) |
 | Advanced 3D/CAD | `meshops.py`, `cad.py` | DONE/PARTIAL (procedural bouwt; extern UNAVAILABLE) |
 | Fabricatie-orkestratie | `fabrication.py` | PARTIAL (plant/selecteert; start blijft gated) |

@@ -263,6 +263,20 @@ def get_source(source_id: str) -> SourceRecord | None:
     return _row_to_source(row) if row is not None else None
 
 
+def get_source_by_hash(content_hash: str) -> SourceRecord | None:
+    """Find a stored source by content hash (repeat-research
+    reuse). Empty hash never matches."""
+    if not content_hash:
+        return None
+    from .database import chat_connection, init_chat_database
+    init_chat_database()
+    with chat_connection() as db:
+        row = db.execute("SELECT * FROM research_sources WHERE "
+                         "content_hash=? LIMIT 1",
+                         (content_hash,)).fetchone()
+    return _row_to_source(row) if row is not None else None
+
+
 def list_sources(*, source_type: str = "",
                  limit: int = 50) -> list[SourceRecord]:
     from .database import chat_connection, init_chat_database

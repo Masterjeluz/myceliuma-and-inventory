@@ -73,6 +73,7 @@ class ExecutorDeps:
     fabricate_runner: Callable[[Any, Any], Awaitable[dict]] | None = None
     slice_runner: Callable[[Any, Any], Awaitable[dict]] | None = None
     print_runner: Callable[[Any, Any], Awaitable[dict]] | None = None
+    research_runner: Callable[[Any, Any], Awaitable[dict]] | None = None
 
 
 class ExecutorError(RuntimeError):
@@ -316,6 +317,9 @@ class MissionExecutor:
         if step.kind == "physical_print":
             return await self._run_delegated(
                 mission, step, "print_runner", "print-stap")
+        if step.kind == "research":
+            return await self._run_delegated(
+                mission, step, "research_runner", "research-stap")
         return self._block_step(
             mission, step, f"Onbekend stap-type '{step.kind}'")
 

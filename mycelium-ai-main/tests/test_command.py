@@ -23,7 +23,7 @@ def test_all_intents_known():
 def test_research_camper():
     command = parse_command("Onderzoek mijn camper.")
     assert command.intent == "research_project"
-    assert command.template_id == "investigate_inventory"
+    assert command.template_id == "research_topic"
     assert command.confidence == "high"
 
 

@@ -321,6 +321,24 @@ fysieke matrix (`GET /physical/status`, nooit fake LIVE);
 Windows-startup via Task Scheduler zonder admin
 (`docs/startup.md`, `scripts/`).
 
+## PHASE P — RESEARCH ENGINE (DONE als BIG #29)
+
+Zie `docs/research-engine.md`. Eerste echte zintuig:
+vraag → queries → search → fetch → extract → claims →
+tegenstrijdigheden → Ollama-synthesis → dossier → research
+memory → morning/UI/chat. SSRF-geharde GET-only transport
+(httpx, timeouts, caps, allowlists) met providers
+wikipedia (REAL-poging) / test (TEST-fixtures) /
+unavailable (eerlijk wachten) + expliciete `source_urls`
+(REAL direct fetch). Deterministische claim-extractie en
+contradictie-groepen (onopgelost, nooit arbitrage),
+prompt-injectie als gelabelde data, health-isolatie,
+`research`-missiestap + template, `/research`-werkplaats +
+dossierpagina + graph-overlay, ochtend-Research-sectie.
+Omgevingswaarheid: direct fetch REAL (live bewezen),
+Wikipedia vanaf dit netwerk UNAVAILABLE (edge-403),
+Ollama momenteel DOWN (extractive fallback actief).
+
 ## Expliciet niet op de kaart
 
 Autonome ongelimiteerde computerbediening, credential-automatisering,

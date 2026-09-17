@@ -122,10 +122,8 @@ def test_command_creates_research_mission(client):
     assert body["intent"] == "research_project"
     assert body["mission"]["status"] == "pending_approval"
     kinds = {step["kind"] for step in body["mission"]["steps"]}
-    assert kinds <= {"readout", "analysis", "desktop"}
-    assert "desktop" not in kinds or True
-    # investigate_inventory template: readout + analysis only
-    assert kinds <= {"readout", "analysis"}
+    # research_topic template: one bounded read-only webrun.
+    assert kinds <= {"research"}
 
 
 def test_command_status_stop_resume(client):

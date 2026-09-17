@@ -34,7 +34,11 @@ fabricate capability; artifact metadata only), slice (one
 bounded slicing run through the injected slice capability;
 G-code metadata only), physical_print (one bound print
 proposal: executes only with its own exact human YES plus
-full revalidation — mission YES never starts the machine).
+full revalidation — mission YES never starts the machine),
+research (one bounded read-only web-research run through the
+injected research runner: question or existing run id,
+REAL/TEST/UNAVAILABLE labelled, dossier + research memory
+on completion).
 
 Rules (tested, all fail-closed):
 
@@ -80,10 +84,11 @@ TERMINAL_MISSION_STATUSES = frozenset(
 
 StepKind = Literal["readout", "desktop", "analysis", "proposal",
                    "write", "camera_observe", "fabricate", "slice",
-                   "physical_print"]
+                   "physical_print", "research"]
 VALID_STEP_KINDS = frozenset({"readout", "desktop", "analysis",
                               "proposal", "write", "camera_observe",
-                              "fabricate", "slice", "physical_print"})
+                              "fabricate", "slice", "physical_print",
+                              "research"})
 
 StepStatus = Literal[
     "pending", "waiting_approval", "dispatched", "completed",
@@ -309,6 +314,43 @@ def _check_step_definition(index: int, data: dict) -> MissionStep:
             if source not in READOUT_SOURCES:
                 raise ValueError(
                     f"Step {index} has unknown readout source '{source}'")
+        elif kind == "research":
+            question = parameters.get("question", "")
+            run_id = parameters.get("research_run_id", "")
+            has_question = (isinstance(question, str)
+                            and question.strip()
+                            and len(question) <= 500)
+            has_run = (isinstance(run_id, str)
+                       and 3 <= len(run_id) <= 80)
+            if has_question == has_run:
+                raise ValueError(
+                    f"Step {index}: research steps carry exactly one "
+                    "of question / research_run_id")
+            unknown = set(parameters) - {"question",
+                                         "research_run_id",
+                                         "max_sources", "project_ref",
+                                         "source_urls"}
+            if unknown:
+                raise ValueError(
+                    f"Step {index}: research steps carry only "
+                    f"question/research_run_id/max_sources/project_ref/source_urls; "
+                    f"unexpected: {sorted(unknown)}")
+            for key in ("max_sources", "project_ref"):
+                value = parameters.get(key, "")
+                if value and (not isinstance(value, str)
+                              or len(value) > 100):
+                    raise ValueError(
+                        f"Step {index}: research '{key}' must be "
+                        "short text")
+            seed_urls = parameters.get("source_urls", [])
+            if seed_urls:
+                if not isinstance(seed_urls, list) or len(
+                        seed_urls) > 6 or any(
+                        not isinstance(item, str) or not item.strip()
+                        or len(item) > 2000 for item in seed_urls):
+                    raise ValueError(
+                        f"Step {index}: research source_urls must be "
+                        "0..6 URL strings")
     return MissionStep(
         step_id=str(data.get("step_id", "") or generate_step_id()),
         sequence=index,

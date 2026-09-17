@@ -46,7 +46,8 @@ DECISIONS = (
 
 #: Step kinds the loop may retry or continue on its own. Anything
 #: gated (desktop input, writes, physical) always waits for a human.
-SAFE_KINDS = frozenset({"readout", "analysis", "camera_observe"})
+SAFE_KINDS = frozenset({"readout", "analysis", "camera_observe",
+                         "research"})
 
 #: Kinds that always need an explicit human YES somewhere.
 GATED_KINDS = frozenset(

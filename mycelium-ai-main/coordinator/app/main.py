@@ -333,7 +333,7 @@ from .routing import (
     requirements_from_payload,
     route_task,
 )
-from .schemas import AdviseRequest, AdviseResponse, AdvancedOpBody, CadDocumentBody, CadOpBody, CadPartBody, CampaignBody, CameraRegisterBody, CaptureCloseBody, CaptureOpenBody, ChatMissionBody, ChatRequest, ChatResponse, ClaimedTask, DecideApprovalBody, DesktopActionBody, DesktopClaimBody, DesktopDecisionBody, DesktopDispatchBody, DesktopResultBody,     DistEnvelopeBody, DroneCreateBody, DroneMissionApproveBody, DroneMissionBody,     FabGenerateBody, FabSliceBody, FamiliarCreateBody, FoodCreateBody, GarminImportBody, GitCommitBody, HealthMeasureBody, Heartbeat, InstagramImportBody,     InterfaceChatBody, IntegrationEnvelopeBody, IntegrationKeyBody, IntegrationTriggerBody, InventoryWriteBody, JobRunBody, LiveContextBody, LiveProposeBody, LiveSessionBody, MealCreateBody, MealItemBody, MemoryConsolidateBody, MemoryCreateBody, MemoryRetrieveBody, MemoryVerifyBody,     MissionApproveBody, MissionCreateBody, MissionRunBody, MissionStepBody, NodeRegistration, NodeRotateBody,     NotifyBody, OperatorBody, OutboxAckBody, OutboxEnqueueBody, PhoneCameraBody,     PlanBody, PlanToProposalBody, PipelinePlanBody, PrintCancelBody, PrintProposeBody, PrinterRegisterBody, PrinterSelectBody, PromptEditBody, ResearchAdvanceBody, ResearchClaimBody, ResearchRecordBody, ResearchSourceBody, RobotActionBody, RobotApproveBody, RobotCreateBody, RobotSafetyBody, RobotTelemetryBody, SessionOpenBody,     StreamStartBody, SuggestStepsBody, SkillAcceptBody, SkillAdvanceBody, SkillCreateBody, SkillDiscoverBody, SkillEvidenceBody, SpoolCreateBody, SyncApplyBody, TaskAssignBody, TaskCreate, TaskFromProposalBody, TaskResult, TaskRouteBody,     TemplateMissionBody, TransformBody, TwinLinkBody, VisionAnalyzeBody, VisionProposeBody, VoiceApprovalRequestBody, VoiceApproveBody, VoiceChatBody,     VoiceSynthesizeBody, VoiceTranscribeBody, WriteDecisionBody, CommandBody, RecoverBody, AgendaImportBody, BootstrapBody
+from .schemas import AdviseRequest, AdviseResponse, AdvancedOpBody, CadDocumentBody, CadOpBody, CadPartBody, CampaignBody, CameraRegisterBody, CaptureCloseBody, CaptureOpenBody, ChatMissionBody, ChatRequest, ChatResponse, ClaimedTask, DecideApprovalBody, DesktopActionBody, DesktopClaimBody, DesktopDecisionBody, DesktopDispatchBody, DesktopResultBody,     DistEnvelopeBody, DroneCreateBody, DroneMissionApproveBody, DroneMissionBody,     FabGenerateBody, FabSliceBody, FamiliarCreateBody, FoodCreateBody, GarminImportBody, GitCommitBody, HealthMeasureBody, Heartbeat, InstagramImportBody,     InterfaceChatBody, IntegrationEnvelopeBody, IntegrationKeyBody, IntegrationTriggerBody, InventoryWriteBody, JobRunBody, LiveContextBody, LiveProposeBody, LiveSessionBody, MealCreateBody, MealItemBody, MemoryConsolidateBody, MemoryCreateBody, MemoryRetrieveBody, MemoryVerifyBody,     MissionApproveBody, MissionCreateBody, MissionRunBody, MissionStepBody, NodeRegistration, NodeRotateBody,     NotifyBody, OperatorBody, OutboxAckBody, OutboxEnqueueBody, PhoneCameraBody,     PlanBody, PlanToProposalBody, PipelinePlanBody, PrintCancelBody, PrintProposeBody, PrinterRegisterBody, PrinterSelectBody, PromptEditBody, ResearchAdvanceBody, ResearchClaimBody, ResearchRecordBody, ResearchSourceBody, RobotActionBody, RobotApproveBody, RobotCreateBody, RobotSafetyBody, RobotTelemetryBody, SessionOpenBody,     StreamStartBody, SuggestStepsBody, SkillAcceptBody, SkillAdvanceBody, SkillCreateBody, SkillDiscoverBody, SkillEvidenceBody, SpoolCreateBody, SyncApplyBody, TaskAssignBody, TaskCreate, TaskFromProposalBody, TaskResult, TaskRouteBody,     TemplateMissionBody, TransformBody, TwinLinkBody, VisionAnalyzeBody, VisionProposeBody, VoiceApprovalRequestBody, VoiceApproveBody, VoiceChatBody,     VoiceSynthesizeBody, VoiceTranscribeBody, WriteDecisionBody, CommandBody, RecoverBody, AgendaImportBody, BootstrapBody, ResearchRunBody, ResearchExecuteBody
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 logger = logging.getLogger("mycelium.coordinator")
@@ -390,6 +390,12 @@ def _v1_startup_scan() -> None:
     init_chat_database()
     with chat_connection() as db:
         init_agenda_tables(db)
+    try:
+        from .research_engine import init_engine_tables
+        with chat_connection() as db:
+            init_engine_tables(db)
+    except Exception as error:
+        logger.warning("engine_tables_skipped cause=%s", error)
     from .missions import bindings_for_mission, list_missions
     from .recovery import scan
     missions = list_missions(limit=100)
@@ -2171,6 +2177,110 @@ def _executor() -> MissionExecutor:
             dump(sources))
         return message.message_id
 
+    async def _research_runner(mission, step) -> dict:
+        """One bounded read-only research run (BIG #29). Creates
+        or resumes the run, drives it through the engine with
+        the Wikipedia provider (REAL attempt) + Ollama
+        synthesis when available, and reports the dossier.
+        Completes UNVERIFIED: research is interpretation with
+        cited sources, never fact."""
+        from .research_engine import (
+            EngineRefusedError as _EngineRefused,
+            execute_run as _execute_run,
+            load_run as _load_run,
+            load_dossier as _load_dossier,
+            new_run as _new_run,
+            save_run as _save_run,
+        )
+        from .research_transport import (
+            TransportUnavailableError as _TransportDown,
+            WikipediaSearchProvider as _Wiki,
+        )
+        run_id = str(step.parameters.get("research_run_id", ""))
+        run = _load_run(run_id) if run_id else None
+        try:
+            max_sources = int(
+                step.parameters.get("max_sources", 6) or 6)
+        except (TypeError, ValueError):
+            max_sources = 6
+        max_sources = max(1, min(max_sources, 6))
+        if run is None:
+            question = str(step.parameters.get("question", ""))
+            if not question.strip():
+                raise ExecutorError(
+                    "Research step needs a question or an "
+                    "existing research_run_id")
+            try:
+                run = _new_run(
+                    question.strip()[:500],
+                    project_ref=str(step.parameters.get(
+                        "project_ref", ""))[:100],
+                    mission_id=mission.mission_id,
+                    requested_by="mission",
+                    metadata={"step_id": step.step_id})
+                _save_run(run)
+            except _EngineRefused as error:
+                raise ExecutorError(str(error)) from error
+        try:
+            provider = _Wiki(language="nl")
+        except _EngineRefused as error:
+            raise ExecutorError(str(error)) from error
+        try:
+            from .memory import retrieve_memories as _recall
+
+            def _memory_search(query: str):
+                return _recall(query, limit=10)
+
+            finished = await _execute_run(
+                run.run_id, search_provider=provider,
+                advise_fn=_advise,
+                inventory_search=_inventory_search,
+                list_memories_fn=_memory_search,
+                project_read_fn=_project_read,
+                max_sources=max_sources,
+                seed_urls=[str(item or "")[:2000] for item in (
+                    step.parameters.get("source_urls", "") or [])][:6])
+        except _EngineRefused as error:
+            raise ExecutorError(str(error)) from error
+        except _TransportDown as error:
+            return {"status": "blocked",
+                    "result_text": (
+                        "Ik heb geen echte bronnen kunnen ophalen: "
+                        f"{error}. Geen findings, geen dossier."),
+                    "verification": "no sources; no verification",
+                    "verified": False}
+        if finished.status == "completed" and finished.dossier_id:
+            dossier = _load_dossier(finished.dossier_id)
+            summary = (dossier.summary if dossier
+                       else "")[:2000]
+            return {"status": "completed",
+                    "result_text": (
+                        f"Onderzoek '{finished.question[:160]}' "
+                        f"[{finished.execution_state}]: "
+                        f"{len(finished.source_ids)} bronnen, "
+                        f"{len(finished.claims)} claims, "
+                        f"{len(finished.contradictions)} "
+                        f"tegenstrijdigheden. Dossier "
+                        f"{finished.dossier_id}. Samenvatting: "
+                        f"{summary}"),
+                    "verification": (
+                        "research is interpretatie met "
+                        "bronverwijzingen; nooit FACT"),
+                    "verified": False}
+        if finished.status == "unavailable":
+            return {"status": "blocked",
+                    "result_text": (
+                        finished.error or "Ik heb geen echte "
+                        "bronnen kunnen ophalen."),
+                    "verification": "no sources; no verification",
+                    "verified": False}
+        return {"status": "blocked",
+                "result_text": (
+                    finished.error or
+                    f"Research {finished.status}; review nodig."),
+                "verification": "no verification",
+                "verified": False}
+
     return MissionExecutor(ExecutorDeps(
         propose_desktop=_propose_desktop,
         load_desktop=_load_desktop,
@@ -2184,6 +2294,7 @@ def _executor() -> MissionExecutor:
         fabricate_runner=_fabricate_runner,
         slice_runner=_slice_runner,
         print_runner=_print_runner,
+        research_runner=_research_runner,
     ))
 
 
@@ -2665,6 +2776,8 @@ async def command_center(body: CommandBody) -> dict:
                 "waiting": waiting}
     # research_project / inventory_status / project_overview:
     # build a mission from the existing safe template.
+    # research_project uses the research_topic template: one
+    # bounded read-only webrun (REAL/TEST/UNAVAILABLE labelled).
     conversation_id = _v1_conversation(
         body.conversation_id, command.target or command.raw[:80])
     goal = (f"Onderzoek {command.target}" if command.target
@@ -2683,11 +2796,21 @@ async def command_center(body: CommandBody) -> dict:
         raise HTTPException(status_code=422, detail=str(error))
     except ExecutorError as error:
         raise _mission_error(error)
+    is_web = any(step.kind == "research" for step in mission.steps)
+    if is_web:
+        reply = (f"RESEARCH_STARTED — ik ga '{goal[:120]}' "
+                 f"onderzoeken op basis van je project-context. "
+                 f"Alleen read-only bronnen; bronnen en "
+                 f"onzekerheden toon ik apart. Geef YES op het plan, "
+                 f"dan start de webrun (REAL/TEST/UNAVAILABLE gelabeld).")
+    else:
+        reply = (f"Ik heb een onderzoeksplan gemaakt voor "
+                 f"'{goal[:120]}' ({len(mission.steps)} stappen, "
+                 "alleen lezen). Geef YES op het plan, dan ga ik "
+                 "zelfstandig verder tot ik je nodig heb.")
     return {"intent": intent, "confidence": command.confidence,
-            "reply": (f"Ik heb een onderzoeksplan gemaakt voor "
-                      f"'{goal[:120]}' ({len(mission.steps)} stappen, "
-                      "alleen lezen). Geef YES op het plan, dan ga ik "
-                      "zelfstandig verder tot ik je nodig heb."),
+            "reply": reply,
+            "research_state": ("RESEARCH_STARTED" if is_web else ""),
             "mission": _mission_to_json(mission),
             "conversation_id": conversation_id}
 
@@ -2792,6 +2915,18 @@ async def research_capability(probe: bool = False) -> dict:
             "model": DEFAULT_MODEL,
             "available": available,
             "detail": detail,
+            "search": {
+                "provider": "wikipedia",
+                "execution_state": "REAL-when-reachable",
+                "hosts": ["nl/en/de/fr.wikipedia.org"],
+                "budgets": {"max_queries": 3, "max_sources": 6,
+                            "max_bytes": 200000}},
+            "fetch": {"mode": "GET-only, SSRF-hardened",
+                      "timeout_seconds": 10,
+                      "redirects": 3, "posts": False,
+                      "credentials": False},
+            "test_provider": "provider=test met expliciete "
+                             "test_pages (TEST-label)",
             "note": ("Bootstrap-missies wachten als "
                      "WAITING_FOR_RESEARCH_CAPABILITY tot een echte "
                      "transportlaag draait; voltooiing wordt nooit "
@@ -4909,6 +5044,27 @@ def report_morning() -> dict:
         f"{str(event.get('start', '?'))} — "
         f"{str(event.get('title', '?'))[:100]}"
         for event in _agenda_upcoming]
+    try:
+        from .research_engine import list_dossiers as _dossiers
+        _recent_dossiers = _dossiers(limit=5)
+    except Exception:
+        _recent_dossiers = []
+    _research_lines = []
+    for dossier in _recent_dossiers:
+        domains = sorted({str(meta.get("url", "")).split("/")[2]
+                          for meta in dossier.sources
+                          if str(meta.get("url", "")).startswith(
+                              "http") and "/" in str(meta.get(
+                                  "url", ""))})
+        _research_lines.append(
+            f"{dossier.title[:100]} — {len(dossier.sources)} "
+            f"bronnen ({', '.join(domains[:3]) or 'onbekend'}), "
+            f"{len(dossier.claims)} claims, "
+            f"{len(dossier.contradictions)} verschillen "
+            f"[{dossier.execution_state}]")
+    if not _research_lines:
+        _research_lines = ["Geen nieuwe externe "
+                           "onderzoeksresultaten beschikbaar."]
     sections = {
         "today": [current.strftime("%A %Y-%m-%d"),
                   f"{online}/{len(node_rows)} nodes online"],
@@ -4932,6 +5088,7 @@ def report_morning() -> dict:
         sections["waiting"] = _waiting_lines[:8]
     if _agenda_lines:
         sections["agenda"] = _agenda_lines[:8]
+    sections["research"] = _research_lines[:8]
     if owned_skills:
         sections["skills"] = [
             f"{row['name']} [{row['stage']}]"
@@ -5349,6 +5506,198 @@ def research_record_get(record_id: str) -> dict:
     if record is None:
         raise HTTPException(404, "Research record not found")
     return record.model_dump(mode="json")
+
+
+# =============================================================================
+# RESEARCH ENGINE (BIG #29) — question -> dossier. Read-only by
+# default; REAL/TEST/UNAVAILABLE labelled; claims cite stored
+# sources; synthesis is interpretation, never fact.
+# =============================================================================
+
+def _research_provider(name: str,
+                       test_pages: dict | None = None):
+    """Resolve a research provider by name. Unknown names and
+    fixture smuggling refuse; explicit test pages stay TEST."""
+    from .research_transport import (
+        TestResearchTransport as _Test,
+        TransportRefusedError as _TransportRefused,
+        UnavailableSearchProvider as _Down,
+        WikipediaSearchProvider as _Wiki,
+    )
+    clean = str(name or "wikipedia").strip().lower()
+    if clean == "wikipedia":
+        if test_pages:
+            raise HTTPException(
+                status_code=422,
+                detail="test pages need provider 'test'")
+        return _Wiki(language="nl")
+    if clean == "test":
+        pages: dict = {}
+        for path, pair in (test_pages or {}).items():
+            if len(pages) >= 10:
+                break
+            if not isinstance(path, str) or not path.strip() \
+                    or len(path) > 120:
+                continue
+            if not isinstance(pair, list) or len(pair) != 2:
+                continue
+            title, text = str(pair[0])[:200], str(pair[1])[:8000]
+            key = path.strip().strip("/")[:120]
+            if key and title and text:
+                pages[key] = (title, text)
+        if not pages:
+            raise HTTPException(
+                status_code=422,
+                detail="provider 'test' needs test_pages "
+                       "{path: [title, text]}")
+        return _Test(pages)
+    if clean == "unavailable":
+        return _Down()
+    raise HTTPException(
+        status_code=422,
+        detail=f"Unknown research provider '{name}' "
+               "(wikipedia|test|unavailable)")
+
+
+async def _execute_research_run(run_id: str, provider,
+                                max_sources: int,
+                                seed_urls: list | None = None
+                                ) -> dict:
+    """Drive one run with the coordinator's real context
+    sources (INVENTory bridge, recall without health scope,
+    project context, Ollama advice)."""
+    from .memory import retrieve_memories as _recall
+    from .research_engine import execute_run as _execute
+
+    async def _search(query: str) -> list[dict]:
+        records, _, _ = await _chat_world_context(query)
+        return records
+
+    def _memory_search(query: str):
+        return _recall(query, limit=10)
+
+    def _project() -> dict:
+        return default_context().model_dump()
+
+    try:
+        finished = await _execute(
+            run_id, search_provider=provider,
+            advise_fn=get_provider("ollama").advise,
+            inventory_search=_search,
+            list_memories_fn=_memory_search,
+            project_read_fn=_project,
+            max_sources=max(1, min(int(max_sources or 6), 6)),
+            seed_urls=[str(url or "")[:2000]
+                       for url in (seed_urls or [])][:6])
+    except Exception as error:
+        from .research_engine import EngineRefusedError as _Refused
+        if isinstance(error, _Refused):
+            raise HTTPException(status_code=422, detail=str(error))
+        raise HTTPException(status_code=502, detail=str(error)[:300])
+    return _run_to_json(finished.run_id)
+
+
+def _run_to_json(run_id: str) -> dict:
+    from .research_engine import (
+        dossier_for_run as _dossier_for,
+        load_run as _load,
+    )
+    run = _load(run_id)
+    if run is None:
+        raise HTTPException(404, "Research run not found")
+    payload = run.model_dump(mode="json")
+    payload["source_count"] = len(run.source_ids)
+    payload["claim_count"] = len(run.claims)
+    payload["contradiction_count"] = len(run.contradictions)
+    dossier = _dossier_for(run_id)
+    payload["dossier_id"] = dossier.dossier_id if dossier else ""
+    return payload
+
+
+@app.post("/api/v1/research/runs", status_code=201)
+async def research_run_create(body: ResearchRunBody) -> dict:
+    """Open (+ optionally execute) a research run. provider
+    wikipedia attempts REAL retrieval; test uses explicit
+    fixtures (TEST); unavailable is an honest no-op."""
+    from .research_engine import (
+        EngineRefusedError as _Refused,
+        new_run as _new,
+        save_run as _save,
+    )
+    provider = _research_provider(body.provider, body.test_pages)
+    try:
+        run = _new(body.question, objective=body.objective,
+                   project_ref=body.project_ref,
+                   mission_id=body.mission_id,
+                   requested_by="api",
+                   metadata={"provider": provider.provider_name})
+        _save(run)
+    except _Refused as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    if not body.execute:
+        return _run_to_json(run.run_id)
+    return await _execute_research_run(
+        run.run_id, provider, body.max_sources,
+        seed_urls=body.source_urls)
+
+
+@app.get("/api/v1/research/runs")
+def research_run_list(limit: int = 50) -> list[dict]:
+    from .research_engine import list_runs as _list
+    return [{"run_id": run.run_id, "question": run.question,
+             "status": run.status,
+             "execution_state": run.execution_state,
+             "source_count": len(run.source_ids),
+             "claim_count": len(run.claims),
+             "contradiction_count": len(run.contradictions),
+             "dossier_id": run.dossier_id,
+             "created_at": run.created_at}
+            for run in _list(limit=limit)]
+
+
+@app.get("/api/v1/research/runs/{run_id}")
+def research_run_get(run_id: str) -> dict:
+    return _run_to_json(run_id)
+
+
+@app.post("/api/v1/research/runs/{run_id}/execute")
+async def research_run_execute(run_id: str,
+                               body: ResearchExecuteBody) -> dict:
+    from .research_engine import load_run as _load
+    run = _load(run_id)
+    if run is None:
+        raise HTTPException(404, "Research run not found")
+    if run.status not in ("draft", "blocked", "failed"):
+        raise HTTPException(
+            status_code=409,
+            detail=f"Run is {run.status}; only draft/blocked/"
+                   "failed runs execute")
+    provider = _research_provider(body.provider, body.test_pages)
+    return await _execute_research_run(
+        run_id, provider, body.max_sources,
+        seed_urls=body.source_urls)
+
+
+@app.get("/api/v1/research/dossiers")
+def research_dossier_list(limit: int = 50) -> list[dict]:
+    from .research_engine import list_dossiers as _list
+    return [{"dossier_id": item.dossier_id, "run_id": item.run_id,
+             "title": item.title,
+             "execution_state": item.execution_state,
+             "synthesis_available": item.synthesis_available,
+             "sources": len(item.sources),
+             "claims": len(item.claims),
+             "created_at": item.created_at}
+            for item in _list(limit=limit)]
+
+
+@app.get("/api/v1/research/dossiers/{dossier_id}")
+def research_dossier_get(dossier_id: str) -> dict:
+    from .research_engine import load_dossier as _load
+    dossier = _load(dossier_id)
+    if dossier is None:
+        raise HTTPException(404, "Research dossier not found")
+    return dossier.model_dump(mode="json")
 
 
 @app.get("/api/v1/integrations/instagram/status")
@@ -6906,6 +7255,15 @@ async def dashboard(entity_id: str = "") -> str:
                      _ui.command_bar())
 
 
+def _research_runs(limit: int = 20) -> list:
+    """Recent research runs for the world-graph overlay."""
+    from .research_engine import list_runs
+    try:
+        return list_runs(limit=limit)
+    except Exception:
+        return []
+
+
 async def _graph_data(entity_id: str, depth: int,
                       flags: set) -> tuple:
     """Shared graph builder for /, /world, /workshop/graph."""
@@ -6928,7 +7286,10 @@ async def _graph_data(entity_id: str, depth: int,
             if "nodes" in flags else None,
             printers=([device.model_dump(mode="json")
                        for device in list_stored_printers()]
-                      if "printers" in flags else None))
+                      if "printers" in flags else None),
+            research_runs=([run.model_dump(mode="json")
+                            for run in _research_runs(20)]
+                           if "research" in flags else None))
     except (ValueError, InventoryRefusedError) as exc:
         error = str(exc)
     except InventoryUnavailable:
@@ -7263,19 +7624,158 @@ def skills_page() -> str:
 
 @app.get("/research", response_class=HTMLResponse)
 def research_page() -> str:
+    """Living research workshop: runs, dossiers, findings,
+    sources, contradictions, open questions. SOURCE vs
+    MYCELIUM SYNTHESIS stay labelled; TEST/REAL/UNAVAILABLE
+    states stay visible."""
     from . import ui as _ui
-    from .research import list_sources
-    sources = list_sources(limit=50)
-    rows = "".join(
-        f"<tr><td>{_ui.esc(item.title)}</td>"
-        f"<td>{_ui.esc(item.source_type)}</td>"
-        f"<td>{_ui.status_dot(item.status)}{_ui.esc(item.status)}</td></tr>"
-        for item in sources) or "<tr><td colspan='3'>—</td></tr>"
-    main = f"""<h1>Research sources</h1>
-    <p class="muted">Every claim cites a source. Synthesis is interpretation, never fact.</p>
-    <table><tr><th>Title</th><th>Type</th><th>Stage</th></tr>{rows}</table>"""
+    from .research_engine import list_dossiers, list_runs
+    runs = list_runs(limit=20)
+    dossiers = list_dossiers(limit=10)
+    run_cards = "".join(
+        f"<div class=\"sprout\"><b>{_ui.esc(run.question[:90])}</b><br>"
+        f"{_ui.status_dot(run.status)}{_ui.chip(run.status)}"
+        f"{_ui.chip(run.execution_state)}"
+        f"<span class=\"muted\">{len(run.source_ids)} bronnen · "
+        f"{len(run.claims)} claims · "
+        f"{len(run.contradictions)} verschillen</span><br>"
+        + (f"<a href='/research/{_ui.esc(run.dossier_id)}'>"
+            "Open dossier</a>" if run.dossier_id else
+            "<span class=\"muted\">nog geen dossier</span>")
+        + "</div>"
+        for run in runs) or _ui.empty(
+            "Nog geen onderzoek — stel hieronder een vraag.")
+    dossier_cards = "".join(
+        f"<div class=\"sprout\"><b>{_ui.esc(item.title[:90])}</b><br>"
+        f"{_ui.chip(item.execution_state)}"
+        f"<span class=\"muted\">"
+        f"{'AI-synthesis' if item.synthesis_available else 'extractie'}</span><br>"
+        f"<a href='/research/{_ui.esc(item.dossier_id)}'>"
+        "Open dossier</a></div>"
+        for item in dossiers)
+    open_q = []
+    for item in dossiers[:5]:
+        open_q.extend(item.open_questions[:3])
+    questions = "".join(
+        f"<li>{_ui.esc(question[:200])} "
+        f"<span class=\"muted\">[OPEN QUESTION]</span></li>"
+        for question in open_q[:8])
+    main = f"""<h1>Research workshop</h1>
+    <p class="muted">Alleen read-only bronnen. Elke claim verwijst naar een bron; synthesis is interpretatie, nooit feit.</p>
+    <div class="panel"><h2>Onderzoeksvraag</h2>
+    <form method="post" action="/web/research">
+    <input type="text" name="question" placeholder="Onderzoek mijn camper…" style="width:70%" aria-label="Research question" autocomplete="off">
+    <select name="provider" aria-label="Provider"><option value="wikipedia">web (Wikipedia)</option><option value="unavailable">droog (unavailable-pad)</option></select>
+    <button type="submit">Start research</button></form>
+    <p class="muted">Start een dossier direct, of vraag via het Command Center — een missie vraagt eerst jouw YES.</p></div>
+    <h2>Active research</h2><div class="grove">{run_cards}</div>
+    <h2>Recent dossiers</h2><div class="grove">{dossier_cards or _ui.empty("Nog geen dossiers.")}</div>
+    <h2>Open questions</h2><ul>{questions or "<li>—</li>"}</ul>"""
     return _ui.shell("Research", "/research", main, "",
                      _ui.command_bar())
+
+
+@app.get("/research/{dossier_id}", response_class=HTMLResponse)
+def research_dossier_page(dossier_id: str):
+    """Dossier detail: every claim links back to its source."""
+    from . import ui as _ui
+    from .research import get_source
+    from .research_engine import load_dossier, load_run
+    dossier = load_dossier(dossier_id)
+    if dossier is None:
+        return HTMLResponse("Dossier not found", status_code=404)
+    run = load_run(dossier.run_id)
+    findings = "".join(
+        f"<li><span class=\"chip\">{_ui.esc(str(finding.get('label', 'SOURCE')))}</span> "
+        f"{_ui.esc(str(finding.get('text', ''))[:300])}<br>"
+        f"<span class=\"muted\">bron: {_ui.esc(str(finding.get('source_id', '')))} · "
+        f"{_ui.esc(str(finding.get('execution_state', '')))}</span></li>"
+        for finding in dossier.key_findings)
+    claims = "".join(
+        f"<li>{_ui.esc(str(claim.get('text', ''))[:280])}<br>"
+        f"<span class=\"muted\">{_ui.esc(str(claim.get('claim_type', '')))} · "
+        f"bewijs: {_ui.esc(str(claim.get('evidence', ''))[:200])}</span></li>"
+        for claim in dossier.claims)
+    sources = ""
+    for meta in dossier.sources:
+        entry = get_source(str(meta.get("source_id", "")))
+        evidence = (entry.content[:400] if entry else "")
+        sources += (
+            f"<div class=\"sprout\"><b>SOURCE · "
+            f"{_ui.esc(str(meta.get('title', ''))[:100])}</b><br>"
+            f"<span class=\"muted\">"
+            f"{_ui.esc(str(meta.get('url', ''))[:120])}</span><br>"
+            f"<span class=\"muted\">opgehaald "
+            f"{_ui.esc(str(meta.get('retrieved_at', ''))[:16])} · "
+            f"{_ui.esc(str(meta.get('execution_state', '')))} · "
+            f"{_ui.esc(str(meta.get('provider', '')))} · "
+            f"{meta.get('claims', 0)} claims</span>"
+            f"<p>{_ui.esc(evidence[:400])}</p></div>")
+    contradictions = "".join(
+        f"<li><b>{_ui.esc(str(group.get('subject', '')))} · "
+        f"{_ui.esc(str(group.get('predicate', '')))}</b><br>"
+        f"<span class=\"muted\">{_ui.esc(str(group.get('detected_reason', ''))[:300])} "
+        f"[onopgelost]</span></li>"
+        for group in dossier.contradictions)
+    questions = "".join(
+        f"<li>{_ui.esc(question[:220])}</li>"
+        for question in dossier.open_questions)
+    entities = "".join(
+        f"<li>{_ui.esc(str(link.get('entity_id', '')))} — "
+        f"{_ui.esc(str(link.get('reason', ''))[:120])}"
+        f"{' [kandidaat]' if link.get('candidate') else ''}</li>"
+        for link in dossier.related_entities)
+    timeline = ""
+    if run is not None:
+        timeline = (
+            f"<li>aangemaakt { _ui.esc(run.created_at[:16])}</li>"
+            f"<li>gestart { _ui.esc(run.started_at[:16])}</li>"
+            f"<li>afgerond { _ui.esc(run.completed_at[:16])}</li>"
+            f"<li>queries: { _ui.esc(', '.join(query.text[:60] for query in run.queries[:3]))}</li>")
+    main = f"""<h1>{_ui.esc(dossier.title[:120])}</h1>
+    <p>{_ui.status_dot(dossier.execution_state)}<b>{_ui.esc(dossier.execution_state)}</b> · status run: {_ui.esc(run.status if run else '?')} · {'<b>MYCELIUM SYNTHESIS</b> (' + _ui.esc(dossier.generated_by) + ')' if dossier.synthesis_available else '<b>EXTRACTIE</b> (geen AI-synthesis — model unavailable)'}</p>
+    <div class="panel"><h2>Samenvatting</h2><p>{_ui.esc(dossier.summary[:2000])}</p></div>
+    <h2>Key findings</h2><ul>{findings or "<li>—</li>"}</ul>
+    <h2>Claims</h2><ul>{claims or "<li>—</li>"}</ul>
+    <h2>Source evidence</h2><div class="grove">{sources or _ui.empty()}</div>
+    <h2>Contradictions</h2><ul>{contradictions or "<li>Geen verschillen gevonden.</li>"}</ul>
+    <h2>Open questions</h2><ul>{questions or "<li>—</li>"}</ul>
+    <h2>Related entities</h2><ul>{entities or "<li>—</li>"}</ul>
+    <h2>Provenance</h2><p class="muted">external-source · {_ui.esc(dossier.provenance.creator_id)} · human_verified=false · run {_ui.esc(dossier.run_id)}{' · memory ' + _ui.esc(run.memory_id) if run and run.memory_id else ''}</p>
+    <h2>Timeline</h2><ul>{timeline}</ul>"""
+    return _ui.shell("Dossier", "/research", main, "",
+                     _ui.command_bar())
+
+
+@app.post("/web/research")
+async def web_research(request: Request) -> Response:
+    """Research form: open + execute a run directly (explicit
+    operator action), then land on the dossier or the run."""
+    from .research_engine import load_run as _load
+    fields = await _form_fields(request)
+    question = fields.get("question", "").strip()
+    provider_name = fields.get("provider", "wikipedia").strip()
+    if not question:
+        return RedirectResponse("/research", status_code=303)
+    try:
+        provider = _research_provider(provider_name, None)
+    except HTTPException:
+        return RedirectResponse("/research", status_code=303)
+    from .research_engine import new_run as _new, save_run as _save
+    try:
+        run = _new(question[:500], requested_by="web")
+        _save(run)
+    except Exception:
+        return RedirectResponse("/research", status_code=303)
+    try:
+        finished = await _execute_research_run(
+            run.run_id, provider, 6)
+    except HTTPException:
+        return RedirectResponse("/research", status_code=303)
+    if finished.get("dossier_id"):
+        return RedirectResponse(
+            f"/research/{finished['dossier_id']}", status_code=303)
+    return RedirectResponse("/research", status_code=303)
 
 
 @app.get("/devices", response_class=HTMLResponse)
@@ -7500,8 +8000,9 @@ def missions_page() -> str:
     <option value="inspect_project">Explore project</option>
     <option value="investigate_inventory">Investigate INVENTory</option>
     <option value="analyze_problem">Analyze problem</option>
-    <option value="prepare_build_plan">Prepare build plan</option>
-    <option value="inspect_desktop_project">View desktop project</option>
+     <option value="prepare_build_plan">Prepare build plan</option>
+     <option value="inspect_desktop_project">View desktop project</option>
+     <option value="research_topic">Research topic (web)</option>
     </select>
     <input type="text" name="goal" placeholder="Goal" style="width:40%" aria-label="Goal">
     <button type="submit">Start from template</button></form>

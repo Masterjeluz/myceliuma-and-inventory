@@ -32,7 +32,7 @@ MYCELIUM_NODE_TYPES = frozenset({"mission", "agent", "node"})
 #: to be world entities.
 OVERLAY_NODE_TYPES = frozenset({
     "mission", "agent", "node", "observation", "artifact",
-    "print_job", "printer", "live_session",
+    "print_job", "printer", "live_session", "research",
 })
 
 MAX_NODE_OVERLAY = 50
@@ -68,11 +68,12 @@ def _inventory_edge(edge) -> dict:
 async def build_world_graph(reader, entity_id: str, depth: int = 1, *,
                             include_missions: bool = False,
                             agent_nodes: list[dict] | None = None,
-                            observations: list[dict] | None = None,
-                            fabrication: list[dict] | None = None,
-                            registry_nodes: list[dict] | None = None,
-                            printers: list[dict] | None = None
-                            ) -> dict:
+                           observations: list[dict] | None = None,
+                           fabrication: list[dict] | None = None,
+                           registry_nodes: list[dict] | None = None,
+                           printers: list[dict] | None = None,
+                           research_runs: list[dict] | None = None
+                           ) -> dict:
     """Project inventory graph + optional Mycelium overlay."""
     if isinstance(depth, bool) or depth not in GRAPH_DEPTHS:
         raise ValueError("Graph depth must be 1 or 2")
@@ -91,6 +92,8 @@ async def build_world_graph(reader, entity_id: str, depth: int = 1, *,
         edges.append(_inventory_edge(edge))
     if include_missions:
         _overlay_missions(nodes, edges)
+    if research_runs:
+        _overlay_research(nodes, edges, research_runs)
     if observations:
         _overlay_observations(nodes, edges, observations)
     if fabrication:
@@ -151,6 +154,54 @@ def _overlay_missions(nodes: dict, edges: list) -> None:
 
 MAX_OBSERVATION_NODES = 20
 MAX_FABRICATION_NODES = 20
+MAX_RESEARCH_NODES = 20
+
+
+def _overlay_research(nodes: dict, edges: list,
+                      runs: list[dict]) -> None:
+    """Research runs as Mycelium-owned overlay nodes.
+
+    Question -> run -> claims -> sources -> entities. Run nodes
+    link to INVENTory entities only through the run's own
+    linked_entities (user/project context or stated
+    candidates); INVENTory stays the source of truth, these
+    nodes carry external-source, unverified provenance.
+    """
+    for item in list(runs or [])[:MAX_RESEARCH_NODES]:
+        if not isinstance(item, dict):
+            continue
+        run_id = str(item.get("run_id", ""))
+        if not run_id or run_id in nodes:
+            continue
+        nodes[run_id] = {
+            "id": run_id,
+            "type": "research",
+            "label": str(item.get("question", ""))[:120],
+            "source": "mycelium",
+            "metadata": {"status": item.get("status", ""),
+                         "execution_state": item.get(
+                             "execution_state", "UNAVAILABLE"),
+                         "sources": len(item.get("source_ids",
+                                                 []) or []),
+                         "claims": len(item.get("claims", [])
+                                       or [])},
+        }
+        for link in (item.get("linked_entities", "") or [])[:10]:
+            entity_id = str((link or {}).get("entity_id", ""))
+            if not entity_id or entity_id not in nodes:
+                continue
+            if len(edges) >= MAX_EDGES:
+                return
+            edges.append({
+                "from": run_id,
+                "predicate": "researches",
+                "to": entity_id,
+                "provenance": {"source_type": "external-source",
+                               "creator_id": f"research:{run_id}",
+                               "human_verified": False},
+            })
+        if len(nodes) >= MAX_NODES:
+            return
 
 #: Fabrication edge predicates. Closed: only derivation and
 #: execution links the flow actually records.

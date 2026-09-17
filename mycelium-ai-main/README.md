@@ -17,6 +17,13 @@ persoonlijke computer-agent (verticale slice, live bewezen):
   lokaal Ollama/Qwen-advies; eerlijke fallback zonder model
 - **Missies** (`/missions`): plan met stappen, exact-YES-approval,
   stap-voor-stap-uitvoering, voortgang en gebeurtenissen terug in chat
+- **Research Engine** (`/research`, `POST /api/v1/research/runs`):
+  vraag → queries → search → fetch → claims → contradicties →
+  dossier → research memory → morning. SSRF-geharde GET-only
+  transport, REAL/TEST/UNAVAILABLE-labels, deterministische
+  extractie, health-isolatie, `research`-missiestap; zie
+  `docs/research-engine.md` (Wikipedia vanaf dit netwerk
+  UNAVAILABLE, direct-fetch REAL, Ollama-fallback actief)
 - **Controlled writes** (`/api/v1/writes/*`): voorstel → exact YES →
   allow-list-mutatie (INVENTory object/project/idee/relatie, git-commit
   via allow-list) → onafhankelijke verificatie (readback, geen

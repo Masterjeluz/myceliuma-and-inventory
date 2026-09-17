@@ -100,6 +100,25 @@ TEMPLATES = [
              "parameters": {}},
         ],
     },
+    {
+        "template_id": "research_topic",
+        "title": "Onderwerp onderzoeken",
+        "description": "Eén begrensde read-only webrun (REAL/TEST/ "
+                       "UNAVAILABLE gelabeld) met dossier en research "
+                       "memory. Geen writes, geen aankopen, geen "
+                       "publicatie.",
+        "max_steps": 3,
+        "required_capabilities": ["research.search",
+                                  "research.fetch"],
+        "steps": [
+            {"kind": "research",
+             "description": "Onderzoek: {goal}",
+             "parameters": {"question": "{goal}",
+                            "max_sources": "6"},
+             "required_capabilities": ["research.search",
+                                       "research.fetch"]},
+        ],
+    },
 ]
 
 

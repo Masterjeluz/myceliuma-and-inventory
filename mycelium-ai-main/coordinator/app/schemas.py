@@ -980,3 +980,32 @@ class BootstrapBody(BaseModel):
 
     conversation_id: str = Field(min_length=3, max_length=80)
     auto_approve: bool = False
+
+
+class ResearchRunBody(BaseModel):
+    """Open a research run. provider: wikipedia (REAL attempt),
+    test (deterministic fixtures, TEST label), unavailable
+    (honest no-op). source_urls: explicit operator-supplied
+    URLs, REAL direct fetch through the hardened transport.
+    test_pages only for explicit fixtures."""
+
+    question: str = Field(min_length=1, max_length=500)
+    objective: str = Field(default="", max_length=500)
+    project_ref: str = Field(default="", max_length=100)
+    mission_id: str = Field(default="", max_length=80)
+    provider: str = Field(default="wikipedia", max_length=20)
+    max_sources: int = Field(default=6, ge=1, le=6)
+    source_urls: list[str] = Field(default_factory=list,
+                                   max_length=6)
+    test_pages: dict[str, list[str]] = Field(default_factory=dict)
+    execute: bool = True
+
+
+class ResearchExecuteBody(BaseModel):
+    """Re-drive a draft/blocked/failed run."""
+
+    provider: str = Field(default="wikipedia", max_length=20)
+    max_sources: int = Field(default=6, ge=1, le=6)
+    source_urls: list[str] = Field(default_factory=list,
+                                   max_length=6)
+    test_pages: dict[str, list[str]] = Field(default_factory=dict)
