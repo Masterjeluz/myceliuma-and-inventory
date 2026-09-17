@@ -415,6 +415,12 @@ def _v1_startup_scan() -> None:
 
 app = FastAPI(title="Mycelium AI Coordinator", version="0.1.0", lifespan=lifespan)
 
+try:
+    from .routes_conversations import router as _conv_router
+    app.include_router(_conv_router)
+except Exception:
+    pass
+
 
 @app.get("/api/v1/health")
 def health() -> dict[str, str]:
@@ -7337,15 +7343,20 @@ async def world_page(entity_id: str = "", depth: int = 1,
     if entity_id:
         graph, error = await _graph_data(entity_id, depth,
                                          flags)
-    main = f"""<h1>World Graph</h1>
+    main = f"""<h1>Living Workshop — one ecosystem</h1>
     <div class="panel"><h2>Command Center — wat kan ik voor je doen?</h2>
     <p>Typ hieronder in gewone taal. Ik maak een veilig lees-/onderzoeksplan, voer het zelfstandig uit tot ik je nodig heb, en leg precies uit waar ik stop.</p>
     <p class="muted">Probeer: “Onderzoek mijn camper.” · “Kijk wat er nog openstaat voor INVENTory.” · “Maak een overzicht van mijn lopende projecten.” · “Wat heb je vannacht gevonden?” · “Wat staat er vandaag op mijn agenda?”</p>
     <form method="post" action="/web/command" role="search" aria-label="Command Center">
     <input type="text" name="message" placeholder="Onderzoek mijn projecten en kijk wat er vandaag logisch is…" style="width:70%" aria-label="Command" autocomplete="off">
     <button type="submit">Ask Mycelium</button></form></div>
-    <p class="muted">Every node is real: world entities from INVENTory, overlays from Mycelium. Select to inspect, open a neighborhood to grow.</p>
-    {_ui.graph_panel(_json.dumps(graph), "/world", entity_id, depth, show, error)}"""
+    <div class="panel"><h2>Ecosystem — alive at a glance</h2>
+    <p><a href="/nodes">Nodes</a> · <a href="/conversations">Conversations</a> · <a href="/research">Research</a> · <a href="/missions">Missions</a> · <a href="/memory">Memory</a> · <a href="/cameras">Cameras</a> · <a href="/workshop/3d">3D</a> · <a href="/mobile">Mobile input</a> · <a href="/activity">Activity</a></p>
+    <p class="muted">Jelles ↔ chat ↔ mobile ↔ brain ↔ missions ↔ research ↔ memory ↔ INVENTory ↔ cameras ↔ 3D ↔ projects ↔ files ↔ nodes ↔ fabrication ↔ verification — one workshop, no loose pages. Statuses stay honest: REAL / TEST / SIMULATED / UNAVAILABLE.</p></div>
+    <p class="muted">Every node is real: world entities from INVENTory, overlays from Mycelium. Select to inspect — the context rail opens here, no page jump — or open a neighborhood to grow.</p>
+    {_ui.graph_panel(_json.dumps(graph), "/world", entity_id, depth, show, error)}
+    <div class="panel"><h2>Do something with this</h2>
+    <p class="muted">Pick a node above, then act through real endpoints: research continues in <a href="/research">Research</a>, plans wait in <a href="/missions">Missions</a>, imports land in <a href="/conversations">Conversations</a>, approvals wait in <a href="/agents">Agents</a>.</p></div>"""
     context = _ui.context_block(
         "Reading the graph",
         "<ul><li><b>Rings</b> are projects — clusters of work.</li>"
@@ -7405,12 +7416,28 @@ def activity_page() -> str:
     mission transitions, node changes, integration events,
     verifications, approvals. Provenance stays visible."""
     from . import ui as _ui
+    try:
+        from .ecosystem import activity_feed as _feed
+        feed = _feed(limit=30)
+    except Exception:
+        feed = []
     items = []
-    for event in bus_events(limit=30):
-        items.append(
-            f"<tr><td>{_ui.status_dot(event.event_type.split('.')[0])}{_ui.esc(event.event_type)}</td>"
-            f"<td>{_ui.esc(event.summary[:120])}</td>"
-            f"<td class=\"muted\">{_ui.esc(event.created_at[:16])}</td></tr>")
+    if feed:
+        for entry in feed:
+            link = entry.get("link", "/activity")
+            items.append(
+                f"<tr><td>{_ui.esc(entry.get('voice', ''))}<br><small>"
+                f"{_ui.esc(entry.get('event_type', ''))}</small></td>"
+                f"<td><a href=\"{_ui.esc(link)}\">"
+                f"{_ui.esc(entry.get('summary', '')[:120])}</a></td>"
+                f"<td class=\"muted\">"
+                f"{_ui.esc(str(entry.get('created_at', ''))[:16])}</td></tr>")
+    else:
+        for event in bus_events(limit=30):
+            items.append(
+                f"<tr><td>{_ui.status_dot(event.event_type.split('.')[0])}{_ui.esc(event.event_type)}</td>"
+                f"<td>{_ui.esc(event.summary[:120])}</td>"
+                f"<td class=\"muted\">{_ui.esc(event.created_at[:16])}</td></tr>")
     notes = "".join(
         f"<li>{_ui.esc(item.title)} <span class=\"muted\">[{_ui.esc(item.severity)}]</span></li>"
         for item in list_notifications_for_report(limit=15))
@@ -8174,7 +8201,11 @@ def cameras_page() -> str:
         for entry in detected.get("devices", []))
     main = f"""<h1>Cameras</h1>
     <div class="panel"><p>Cameras are <b>observation sources</b>, never actuators. Snapshots need a
-    capture runtime; without one the API refuses (409) instead of inventing pixels.</p></div>
+    capture runtime; without one the API refuses (409) instead of inventing pixels.</p>
+    <p class="muted">Workflow: CAMERA → CONNECT → SOURCE → SNAPSHOT → OBSERVATION → INVENTORY → ANALYSIS. Elke stap toont eerlijk wat werkt.</p></div>
+    <div class="panel"><h2>How to connect (honest)</h2>
+    <p class="muted"><b>WHAT EXISTS:</b> registration, local device scan (names only), snapshot ingest pipeline, observation store, availability probe. <b>WHAT IS MISSING:</b> live Insta360 transport — no reviewed SDK path, capture refused until a real adapter lands. <b>WHAT JELLES NEEDS TO DO:</b> register the camera below, then ingest a file snapshot (camera → file → ingest) or wait for the webcam-driver/file-ingest adapter.</p>
+    <p>Insta360 state: <b>REGISTERED</b> possible, <b>CONNECTED</b> only with a working adapter, otherwise <b>UNAVAILABLE</b> — never fake-connected.</p></div>
     <h2>Registered</h2><ul>{devices or "<li>No cameras</li>"}</ul>
     <h2>Detected locally (names only, read-only)</h2><ul>{found or "<li>Nothing found / unsupported</li>"}</ul>
     <h2>Register</h2><form method="post" action="/web/cameras/register">
@@ -8440,13 +8471,14 @@ def mobile_page(node: str = "") -> str:
             f"{_ui.esc(item.body[:120])}</li>"
             for item in items) or "<li>No notifications</li>"
     main = f"""<h1>Mycelium</h1>
-    <div class="panel"><h2>Chat</h2>
+    <div class="panel"><h2>Wat wil je doen?</h2>
     <form method="post" action="/web/chat">
-    <textarea name="message" placeholder="What is on my workbench?" aria-label="Message"></textarea><br><br>
+    <textarea name="message" placeholder="Onderzoek dit / maak hier een project van / wat staat er open?…" aria-label="Message"></textarea><br><br>
     <button type="submit">Send</button></form>
-    <p class="muted">Voice, tasks and missions run through the same
-    coordinator — this page is interface, never a second
-    coordinator.</p></div>
+    <p class="muted">PHONE → coordinator → routing → node → result → mobile. INPUT → PROCESSING → NODE → RESULT. Nooit doen alsof een node iets uitvoerde als het niet werkelijk gebeurd is.</p>
+    <p><b>Quick actions</b> (bestaande routes): <a href="/research">Research</a> · <a href="/cameras">Observe</a> · <a href="/chat">Ask Mycelium</a> · <a href="/world">INVENTory</a> · <a href="/workshop/3d">3D</a> · <a href="/projects">Project</a> · <a href="/nodes">Nodes</a> · <a href="/missions">Tasks</a> · <a href="/conversations">Import conversation</a></p></div>
+    <div class="panel"><h2>Hoe gebruik ik Mycelium?</h2>
+    <p class="muted">1. Typ wat je wilt. 2. Mycelium bepaalt wat nodig is. 3. Een node kan het uitvoeren. 4. Je ziet wat er gebeurt. 5. Toestemming blijft expliciet. 6. Resultaat komt terug op je telefoon. Jij blijft degene die acties goedkeurt.</p></div>
     <div class="panel"><h2>Approvals</h2>
     <p>Desktop {approvals['desktop_actions']} · writes {approvals['write_proposals']} · missions {approvals['missions']}</p>
     <p><a href="/agents">Review desktop actions</a> · <a href="/missions">Review missions</a></p></div>
@@ -8455,6 +8487,7 @@ def mobile_page(node: str = "") -> str:
     <div class="panel"><h2>Missions</h2>
     <p><a href="/missions">View plans</a> · <a href="/morning">Morning report</a></p></div>
     <div class="panel"><h2>Notifications{_ui.esc(' for ' + node) if node else ''}</h2>
+    <p class="muted">IN_APP is live (polling); WEB PUSH is UNAVAILABLE — <a href="/api/v1/notifications/capability">capability (JSON)</a>.</p>
     <ul>{notifications_html or "<li>link ?node=&lt;node_id&gt; for notifications</li>"}</ul></div>
     <div class="panel"><h2>Nodes</h2><ul>{nodes_html or "<li>No nodes</li>"}</ul></div>
     <div class="panel"><h2>Events</h2><ul>{events_html or "<li>No events</li>"}</ul></div>"""
@@ -8481,3 +8514,301 @@ async def web_desktop_cancel(action_id: str) -> RedirectResponse:
     except HTTPException:
         pass
     return RedirectResponse("/agents", status_code=303)
+
+
+# =============================================================================
+# BIG #30 — THE LIVING ECOSYSTEM. One interconnected workshop:
+# conversations in, context packets out, entity-first links, honest
+# REAL/TEST/SIMULATED/UNAVAILABLE labels everywhere. No fake transports.
+# =============================================================================
+
+
+@app.get("/api/v1/conversation-imports")
+def api_conversation_imports(limit: int = 50) -> dict:
+    from .conversation_bridge import list_imports
+    return {"imports": list_imports(limit=limit)}
+
+
+@app.get("/api/v1/conversation-imports/{conversation_id}")
+def api_conversation_import_get(conversation_id: str) -> dict:
+    from .conversation_bridge import (get_import, import_messages,
+                                      load_analysis)
+    meta = get_import(conversation_id)
+    if meta is None:
+        raise HTTPException(status_code=404, detail="Unknown import")
+    return {"import": meta,
+            "messages": import_messages(conversation_id)[:50],
+            "analysis": load_analysis(conversation_id)}
+
+
+@app.post("/api/v1/conversations/{conversation_id}/analyze")
+def api_conversation_analyze(conversation_id: str) -> dict:
+    from .conversation_bridge import (BridgeRefusedError, analyze_import,
+                                      missed_items)
+    try:
+        record = analyze_import(conversation_id)
+        return {"analysis": record,
+                "missed_items": missed_items(conversation_id, record)}
+    except BridgeRefusedError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+
+@app.get("/api/v1/conversations/{conversation_id}/missed")
+def api_conversation_missed(conversation_id: str) -> dict:
+    from .conversation_bridge import BridgeRefusedError, missed_items
+    try:
+        return {"missed_items": missed_items(conversation_id)}
+    except BridgeRefusedError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+
+@app.get("/api/v1/context/packet")
+def api_context_packet(goal: str = "", project_id: str = "",
+                       conversation_id: str = "",
+                       include_health: str = "") -> dict:
+    from .context_packet import build_context_packet
+    return build_context_packet(
+        goal=goal[:500], project_id=project_id[:80],
+        conversation_id=conversation_id[:80],
+        include_health=include_health.lower() == "true")
+
+
+@app.post("/api/v1/context/packet")
+def api_context_packet_post(body: dict) -> dict:
+    from .context_packet import build_context_packet
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=422, detail="JSON body required")
+    return build_context_packet(
+        goal=str(body.get("goal", ""))[:500],
+        project_id=str(body.get("project_id", ""))[:80],
+        conversation_id=str(body.get("conversation_id", ""))[:80],
+        include_health=bool(body.get("include_health", False)))
+
+
+@app.get("/api/v1/context/continue")
+def api_context_continue(goal: str = "", project_id: str = "",
+                         conversation_id: str = "",
+                         next_step: str = "") -> dict:
+    from .context_packet import build_continuation
+    return build_continuation(
+        goal=goal[:500], project_id=project_id[:80],
+        conversation_id=conversation_id[:80], next_step=next_step[:500])
+
+
+@app.get("/api/v1/ecosystem/summary")
+def api_ecosystem_summary() -> dict:
+    from .ecosystem import ecosystem_summary
+    return ecosystem_summary()
+
+
+@app.get("/api/v1/ecosystem/entity")
+async def api_ecosystem_entity(entity_id: str, depth: int = 1) -> dict:
+    from .ecosystem import entity_context
+    try:
+        return await entity_context(entity_id, depth)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+
+@app.get("/api/v1/notifications/capability")
+def api_notify_capability() -> dict:
+    from .notify_center import capability
+    return capability()
+
+
+@app.post("/api/v1/notifications/send", status_code=201)
+def api_notify_send(body: dict) -> dict:
+    from .notify_center import NotifyRefusedError, send
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=422, detail="JSON body required")
+    try:
+        return send(str(body.get("recipient_node_id", "")),
+                    str(body.get("type", "")),
+                    str(body.get("title", "")),
+                    str(body.get("body", "")),
+                    related_entity=str(body.get("related_entity", ""))[:100],
+                    related_mission=str(body.get("related_mission", ""))[:80],
+                    related_task=str(body.get("related_task", ""))[:80])
+    except (NotifyRefusedError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+
+@app.get("/api/v1/linux-nodes")
+def api_linux_node_contract() -> dict:
+    from .linux_node import LINUX_CAPABILITIES, NODE_SETUP_STEPS
+    return {"capabilities": list(LINUX_CAPABILITIES),
+            "setup_steps": list(NODE_SETUP_STEPS),
+            "transport": "pull-only; no inbound ports; no shell",
+            "state": "AVAILABLE"}
+
+
+@app.post("/api/v1/linux-nodes/check")
+def api_linux_node_check(body: dict) -> dict:
+    from .linux_node import bootstrap_check
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=422, detail="JSON body required")
+    return bootstrap_check(
+        python_version=str(body.get("python_version", "")),
+        coordinator_url=str(body.get("coordinator_url", "")),
+        node_id=str(body.get("node_id", "")),
+        capabilities=body.get("capabilities", []))
+
+
+@app.get("/api/v1/activity/feed")
+def api_activity_feed(limit: int = 30) -> dict:
+    from .ecosystem import activity_feed
+    return {"items": activity_feed(limit=limit)}
+
+
+@app.get("/conversations", response_class=HTMLResponse)
+def conversations_page() -> str:
+    """Conversation bridge: external chats become Mycelium context."""
+    from . import ui as _ui
+    from .conversation_bridge import KNOWN_PLATFORMS, list_imports
+    try:
+        imports = list_imports(limit=30)
+    except Exception:
+        imports = []
+    rows = "".join(
+        f"<tr><td><a href=\"/conversations/{_ui.esc(item['conversation_id'])}\">"
+        f"{_ui.esc(item['title'][:70])}</a></td>"
+        f"<td>{_ui.esc(item['source_platform'])}</td>"
+        f"<td>{item['message_count']}</td>"
+        f"<td class=\"muted\">{_ui.esc(str(item['imported_at'])[:16])}</td></tr>"
+        for item in imports) or "<tr><td colspan='4'>No imports yet.</td></tr>"
+    platforms = "".join(
+        f"<option value='{_ui.esc(name)}'>{_ui.esc(name)}</option>"
+        for name in KNOWN_PLATFORMS)
+    main = f"""<h1>Conversations — bring outside chats in</h1>
+    <p class="muted">Import from ChatGPT, Codex, OpenCode, Ollama, Claude, Gemini, Antigravity, Google AI Studio — any platform, no lock-in. Imports become <b>OBSERVATION/CANDIDATE</b> context with evidence; nothing is stored as fact. Direct connectors are future adapters.</p>
+    <div class="panel"><h2>Import a conversation</h2>
+    <form method="post" action="/web/conversations/import">
+    <input type="text" name="title" placeholder="Title" style="width:40%" aria-label="Title"><br><br>
+    <select name="source_platform" aria-label="Source platform">{platforms}</select>
+    <select name="format" aria-label="Format"><option value="plain">pasted text</option><option value="markdown">markdown</option><option value="txt">txt</option><option value="json">json</option><option value="html">html export</option></select><br><br>
+    <textarea name="content" rows="8" style="width:100%" placeholder="Paste the conversation here…" aria-label="Conversation content"></textarea><br><br>
+    <button type="submit">Import</button></form></div>
+    <div class="panel"><h2>Imported</h2><table><tr><th>Title</th><th>Platform</th><th>Msgs</th><th>When</th></tr>{rows}</table></div>"""
+    return _ui.shell("Conversations", "/conversations", main,
+                     _ui.command_bar())
+
+
+@app.get("/conversations/{conversation_id}", response_class=HTMLResponse)
+def conversation_detail_page(conversation_id: str):
+    from . import ui as _ui
+    from .conversation_bridge import (get_import, import_messages,
+                                      load_analysis, missed_items)
+    meta = get_import(conversation_id)
+    if meta is None:
+        return HTMLResponse("Unknown conversation", status_code=404)
+    messages = import_messages(conversation_id)[:100]
+    analysis = load_analysis(conversation_id)
+    try:
+        missed = missed_items(conversation_id, analysis)
+    except Exception:
+        missed = []
+    turns = "".join(
+        f"<article class='sprout'><b>{_ui.esc(str(msg.get('role', '')))}</b>"
+        f"<p>{_ui.link_entities(str(msg.get('content', ''))[:2000])}</p></article>"
+        for msg in messages)
+    findings = "".join(
+        f"<li><span class=\"chip\">{_ui.esc(str(item.get('state', '')))}</span> "
+        f"<b>{_ui.esc(str(item.get('kind', '')))}</b> - "
+        f"{_ui.esc(str(item.get('text', ''))[:220])}<br>"
+        f"<span class=\"muted\">evidence: {_ui.esc(str(item.get('evidence', ''))[:160])}</span></li>"
+        for item in (analysis or {}).get("findings", [])[:40])
+    missed_html = "".join(
+        f"<li><b>{_ui.esc(str(item.get('kind', '')))}</b> — "
+        f"{_ui.esc(str(item.get('text', ''))[:220])}<br>"
+        f"<span class=\"muted\">evidence: {_ui.esc(str(item.get('evidence', ''))[:160])}</span></li>"
+        for item in missed)
+    main = f"""<h1>{_ui.esc(meta['title'][:100])}</h1>
+    <p class="muted">{_ui.esc(meta['source_platform'])} · {meta['message_count']} messages · imported {_ui.esc(str(meta['imported_at'])[:16])} · {_ui.esc(meta['execution_state'])} · provenance imported/human_verified=false</p>
+    <div class="panel"><h2>What did we miss?</h2><ul>{missed_html or "<li>Nothing flagged — import more context.</li>"}</ul></div>
+    <div class="panel"><h2>Analysis (OBSERVATION / CANDIDATE — never fact)</h2><ul>{findings or "<li>Not analyzed yet.</li>"}</ul>
+    <p><form method="post" action="/web/conversations/{_ui.esc(conversation_id)}/analyze"><button type="submit">Analyze</button></form></p></div>
+    <div class="panel"><h2>Context bridge</h2>
+    <p><a href="/api/v1/context/packet?conversation_id={_ui.esc(conversation_id)}">Context packet (JSON)</a> · <a href="/api/v1/context/continue?conversation_id={_ui.esc(conversation_id)}">Continuation (JSON)</a></p>
+    <p class="muted">Take the packet to any model; bring the answer back as a new import. External AI never approves, never verifies.</p></div>
+    <h2>Messages</h2>{turns or "<p>No messages.</p>"}"""
+    return _ui.shell("Conversation", "/conversations", main,
+                     _ui.command_bar())
+
+
+@app.post("/web/conversations/import")
+async def web_conversation_import(request: Request) -> Response:
+    from .conversation_bridge import BridgeRefusedError
+    from .conversation_bridge import import_conversation as _import
+    fields = await _form_fields(request)
+    try:
+        record = _import(fields.get("title", "")[:120],
+                         fields.get("content", ""),
+                         fields.get("format", "plain"),
+                         fields.get("source_platform", "other"))
+    except BridgeRefusedError:
+        return RedirectResponse("/conversations", status_code=303)
+    return RedirectResponse(
+        f"/conversations/{record['conversation_id']}", status_code=303)
+
+
+@app.post("/web/conversations/{conversation_id}/analyze")
+async def web_conversation_analyze(conversation_id: str) -> Response:
+    from .conversation_bridge import BridgeRefusedError, analyze_import
+    try:
+        analyze_import(conversation_id)
+    except BridgeRefusedError:
+        pass
+    return RedirectResponse(f"/conversations/{conversation_id}",
+                            status_code=303)
+
+
+@app.get("/nodes", response_class=HTMLResponse)
+def nodes_page() -> str:
+    """Nodes as ecosystem machines: what each can do, honest status."""
+    from . import ui as _ui
+    rows = list_nodes()
+    cards = "".join(
+        f"<div class=\"sprout\"><b>{_ui.status_dot(record['derived_status'])}"
+        f"{_ui.esc(record['node_id'])}</b><br>"
+        f"{_ui.chip(record['derived_status'])}"
+        f"{_ui.chip(record.get('tier', 'unknown'))}<br>"
+        f"<span class=\"muted\">WHAT IT CAN DO:</span><br>"
+        f"<small>{_ui.esc(', '.join(record['capabilities'][:12]) or 'no capabilities advertised')}</small><br>"
+        f"<span class=\"muted\">models {len(record.get('models', []))} · executors {len(record.get('executors', []))} · last seen {_ui.esc(str(record.get('last_seen', ''))[:16])}</span></div>"
+        for record in rows) or _ui.empty("No nodes yet — start one.")
+    main = f"""<h1>Nodes — small ecosystem machines</h1>
+    <p class="muted">Pull-only: nodes poll, the coordinator never pushes commands. ONLINE / STALE (60s) / OFFLINE / DISABLED. Capabilities are owner-advertised, never wildcard. Each card shows WHAT IT CAN DO.</p>
+    <div class="panel"><h2>Linux node onboarding</h2>
+    <p class="muted">Old laptop → Mycelium node. <a href="/api/v1/linux-nodes">Contract (JSON)</a> · <a href="/api/v1/agent/status">agent JSON</a></p>
+    <p>Capabilities that exist: <code>node.status, research.search, research.fetch, analysis.ollama, inventory.read, file.inspect</code> — no shell, no arbitrary commands.</p></div>
+    <div class="grove">{cards}</div>"""
+    return _ui.shell("Nodes", "/nodes", main, _ui.command_bar())
+
+
+@app.get("/3d", response_class=HTMLResponse)
+def model_3d_page() -> str:
+    """3D workflow pipeline: honest stage chips, no fake meshes."""
+    from . import ui as _ui
+    from .fab_flow import list_fabrications
+    try:
+        runs = list_fabrications(10)
+    except Exception:
+        runs = []
+    rows = "".join(
+        f"<li><a href=\"/workshop?fabrication_id={_ui.esc(record.fabrication_id)}\">{_ui.esc(record.fabrication_id)}</a> — {_ui.esc(record.status)}</li>"
+        for record in runs) or "<li>No runs yet.</li>"
+    main = """<h1>3D — from photo to verified object</h1>
+    <div class="panel"><div class="path" aria-label="3D pipeline">
+    <span class="step done">PHOTO / OBJECT</span><span class="arrow">→</span>
+    <span class="step done">OBSERVATION</span><span class="arrow">→</span>
+    <span class="step">3D MODEL CANDIDATE</span><span class="arrow">→</span>
+    <span class="step">MODEL</span><span class="arrow">→</span>
+    <span class="step">PREPARE</span><span class="arrow">→</span>
+    <span class="step">SLICE</span><span class="arrow">→</span>
+    <span class="step">G-CODE</span><span class="arrow">→</span>
+    <span class="step">PRINTER</span><span class="arrow">→</span>
+    <span class="step">VERIFY</span></div>
+    <p class="muted">Stages: READY / WAITING / SIMULATED / TEST / HARDWARE_REQUIRED / UNAVAILABLE. OBJECT → CREATE 3D MODEL uses the existing procedural/test workflow; true reconstruction transport is UNAVAILABLE and says so. No fake generated mesh.</p></div>
+    <div class="panel"><h2>Workspace</h2><p><a href="/workshop/3d">Open 3D workshop</a> · <a href="/fabrication">Fabrication</a> · <a href="/workshop">Chain view</a></p></div>
+    <div class="panel"><h2>Recent runs</h2><ul>""" + rows + """</ul></div>"""
+    return _ui.shell("3D", "/workshop/3d", main, _ui.command_bar())

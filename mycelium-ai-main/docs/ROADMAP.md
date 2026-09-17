@@ -339,6 +339,32 @@ Omgevingswaarheid: direct fetch REAL (live bewezen),
 Wikipedia vanaf dit netwerk UNAVAILABLE (edge-403),
 Ollama momenteel DOWN (extractive fallback actief).
 
+## PHASE Q — LIVING ECOSYSTEM (DONE als BIG #30)
+
+Zie `docs/living-ecosystem.md`, `docs/conversation-bridge.md`,
+`docs/mobile-node-flow.md`, `docs/linux-node-setup.md`,
+`docs/camera-workflow.md`, `docs/3d-workflow.md`. Van losse
+pagina's naar een zichtbaar ecosysteem — zelfde stores, nieuwe
+verbindingen, geen fake functionaliteit.
+
+- Living Workshop cockpit (`/world`): ecosysteem-overzicht, echte
+  graph + context rail, "do something with this" naar bestaande
+  endpoints — DONE
+- Conversation bridge: import (pasted/TXT/Markdown/JSON/safe HTML)
+  als `conv_...` met OBSERVATION/CANDIDATE-analyse + "what did we
+  miss?" (evidence-backed), universeel context packet + continuation
+  (Markdown + JSON, entity-first, health-scoped) — DONE
+- Mobile als input surface (`/mobile`: INPUT/PROCESSING/NODE/RESULT,
+  quick actions op bestaande routes, help) + notification center
+  (IN_APP real, WEB_PUSH expliciet UNAVAILABLE) — DONE
+- Linux nodes praktisch (`/nodes`-machines, starter capabilities,
+  10-stappen runbook, pull-only, geen shell) — DONE
+- Insta360 foundation zichtbaar (REGISTERED/CONNECTED/UNAVAILABLE,
+  how-to met WHAT EXISTS/MISSING/NEEDS) — DONE
+- 3D-pipeline zichtbaar (`/3d`: stages met eerlijke chips,
+  procedural/test REAL, reconstructie UNAVAILABLE) — DONE
+- Activity met Mycelium voice + echte links — DONE
+
 ## Expliciet niet op de kaart
 
 Autonome ongelimiteerde computerbediening, credential-automatisering,
