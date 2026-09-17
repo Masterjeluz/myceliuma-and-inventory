@@ -92,13 +92,13 @@ def assemble_report(blocks: list[tuple[str, Any]]) -> Report:
 
 def morning_report(sections: dict) -> Report:
     """Morning-report template over named bounded sources.
-    Fifteen independent sections (DEEL C); each loads on its
-    own, none dumps context. Unknown keys refuse (no silent
-    scope creep)."""
+    Seventeen independent sections (V1 adds waiting + agenda);
+    each loads on its own, none dumps context. Unknown keys
+    refuse (no silent scope creep)."""
     allowed = ("today", "health", "recovery", "projects",
-               "tasks", "missions", "skills", "inventory",
-               "workshop", "research", "fabrication", "devices",
-               "findings", "suggestions", "fun")
+               "tasks", "missions", "waiting", "agenda", "skills",
+               "inventory", "workshop", "research", "fabrication",
+               "devices", "findings", "suggestions", "fun")
     if not isinstance(sections, dict):
         raise ReportRefusedError("Morning report needs an object")
     unknown = set(sections) - set(allowed)
@@ -108,6 +108,7 @@ def morning_report(sections: dict) -> Report:
     titles = {"today": "Today", "health": "Health",
               "recovery": "Recovery", "projects": "Projects",
               "tasks": "Tasks", "missions": "Missions",
+              "waiting": "Waiting for you", "agenda": "Agenda",
               "skills": "Skills", "inventory": "Inventory",
               "workshop": "Workshop", "research": "Research",
               "fabrication": "Fabrication", "devices": "Devices",

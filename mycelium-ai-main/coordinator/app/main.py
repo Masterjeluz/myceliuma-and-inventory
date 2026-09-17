@@ -333,7 +333,7 @@ from .routing import (
     requirements_from_payload,
     route_task,
 )
-from .schemas import AdviseRequest, AdviseResponse, AdvancedOpBody, CadDocumentBody, CadOpBody, CadPartBody, CampaignBody, CameraRegisterBody, CaptureCloseBody, CaptureOpenBody, ChatMissionBody, ChatRequest, ChatResponse, ClaimedTask, DecideApprovalBody, DesktopActionBody, DesktopClaimBody, DesktopDecisionBody, DesktopDispatchBody, DesktopResultBody,     DistEnvelopeBody, DroneCreateBody, DroneMissionApproveBody, DroneMissionBody,     FabGenerateBody, FabSliceBody, FamiliarCreateBody, FoodCreateBody, GarminImportBody, GitCommitBody, HealthMeasureBody, Heartbeat, InstagramImportBody,     InterfaceChatBody, IntegrationEnvelopeBody, IntegrationKeyBody, IntegrationTriggerBody, InventoryWriteBody, JobRunBody, LiveContextBody, LiveProposeBody, LiveSessionBody, MealCreateBody, MealItemBody, MemoryConsolidateBody, MemoryCreateBody, MemoryRetrieveBody, MemoryVerifyBody,     MissionApproveBody, MissionCreateBody, MissionRunBody, MissionStepBody, NodeRegistration, NodeRotateBody,     NotifyBody, OperatorBody, OutboxAckBody, OutboxEnqueueBody, PhoneCameraBody,     PlanBody, PlanToProposalBody, PipelinePlanBody, PrintCancelBody, PrintProposeBody, PrinterRegisterBody, PrinterSelectBody, PromptEditBody, ResearchAdvanceBody, ResearchClaimBody, ResearchRecordBody, ResearchSourceBody, RobotActionBody, RobotApproveBody, RobotCreateBody, RobotSafetyBody, RobotTelemetryBody, SessionOpenBody,     StreamStartBody, SuggestStepsBody, SkillAcceptBody, SkillAdvanceBody, SkillCreateBody, SkillDiscoverBody, SkillEvidenceBody, SpoolCreateBody, SyncApplyBody, TaskAssignBody, TaskCreate, TaskFromProposalBody, TaskResult, TaskRouteBody,     TemplateMissionBody, TransformBody, TwinLinkBody, VisionAnalyzeBody, VisionProposeBody, VoiceApprovalRequestBody, VoiceApproveBody, VoiceChatBody, VoiceSynthesizeBody, VoiceTranscribeBody, WriteDecisionBody
+from .schemas import AdviseRequest, AdviseResponse, AdvancedOpBody, CadDocumentBody, CadOpBody, CadPartBody, CampaignBody, CameraRegisterBody, CaptureCloseBody, CaptureOpenBody, ChatMissionBody, ChatRequest, ChatResponse, ClaimedTask, DecideApprovalBody, DesktopActionBody, DesktopClaimBody, DesktopDecisionBody, DesktopDispatchBody, DesktopResultBody,     DistEnvelopeBody, DroneCreateBody, DroneMissionApproveBody, DroneMissionBody,     FabGenerateBody, FabSliceBody, FamiliarCreateBody, FoodCreateBody, GarminImportBody, GitCommitBody, HealthMeasureBody, Heartbeat, InstagramImportBody,     InterfaceChatBody, IntegrationEnvelopeBody, IntegrationKeyBody, IntegrationTriggerBody, InventoryWriteBody, JobRunBody, LiveContextBody, LiveProposeBody, LiveSessionBody, MealCreateBody, MealItemBody, MemoryConsolidateBody, MemoryCreateBody, MemoryRetrieveBody, MemoryVerifyBody,     MissionApproveBody, MissionCreateBody, MissionRunBody, MissionStepBody, NodeRegistration, NodeRotateBody,     NotifyBody, OperatorBody, OutboxAckBody, OutboxEnqueueBody, PhoneCameraBody,     PlanBody, PlanToProposalBody, PipelinePlanBody, PrintCancelBody, PrintProposeBody, PrinterRegisterBody, PrinterSelectBody, PromptEditBody, ResearchAdvanceBody, ResearchClaimBody, ResearchRecordBody, ResearchSourceBody, RobotActionBody, RobotApproveBody, RobotCreateBody, RobotSafetyBody, RobotTelemetryBody, SessionOpenBody,     StreamStartBody, SuggestStepsBody, SkillAcceptBody, SkillAdvanceBody, SkillCreateBody, SkillDiscoverBody, SkillEvidenceBody, SpoolCreateBody, SyncApplyBody, TaskAssignBody, TaskCreate, TaskFromProposalBody, TaskResult, TaskRouteBody,     TemplateMissionBody, TransformBody, TwinLinkBody, VisionAnalyzeBody, VisionProposeBody, VoiceApprovalRequestBody, VoiceApproveBody, VoiceChatBody,     VoiceSynthesizeBody, VoiceTranscribeBody, WriteDecisionBody, CommandBody, RecoverBody, AgendaImportBody, BootstrapBody
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 logger = logging.getLogger("mycelium.coordinator")
@@ -374,7 +374,37 @@ def _lease_until(now_str: str) -> str:
 async def lifespan(_: FastAPI):
     init_database()
     logger.info("coordinator_started")
+    try:
+        _v1_startup_scan()
+    except Exception as error:
+        logger.warning("startup_scan_skipped cause=%s", error)
     yield
+
+
+def _v1_startup_scan() -> None:
+    """Boot recovery inspection (BIG #25): reconstruct unfinished
+    missions, log the verdicts, execute NOTHING. Safe read-only
+    steps resume only through an explicit POST /api/v1/command
+    ('ga verder') or POST /api/v1/missions/recover call."""
+    from .agenda import init_agenda_tables
+    init_chat_database()
+    with chat_connection() as db:
+        init_agenda_tables(db)
+    from .missions import bindings_for_mission, list_missions
+    from .recovery import scan
+    missions = list_missions(limit=100)
+    if not missions:
+        logger.info("startup_scan no_missions")
+        return
+    report = scan(missions,
+                  lambda mission_id: bindings_for_mission(mission_id))
+    logger.info("startup_scan total=%d counts=%s",
+                report["total"], report["counts"])
+    for item in report["verdicts"]:
+        if item["verdict"] in ("needs_reapproval", "waiting_agent"):
+            logger.info("startup_scan mission=%s verdict=%s reason=%s",
+                        item["mission_id"], item["verdict"],
+                        item["reason"][:160])
 
 
 app = FastAPI(title="Mycelium AI Coordinator", version="0.1.0", lifespan=lifespan)
@@ -2416,6 +2446,548 @@ async def mission_from_template(body: TemplateMissionBody) -> dict:
 
 
 # =============================================================================
+# MYCELIUM V1 (BIG #23-28) — command center, decisions, recovery,
+# agenda, bootstrap, research capability, physical readiness.
+# Adds NO new execution power: commands build missions from the
+# existing safe templates, decisions only read state, recovery
+# only resumes read-only steps explicitly, agenda is read-only
+# context, bootstrap missions wait honestly for a real research
+# transport. Every boundary below fails closed.
+# =============================================================================
+
+def _v1_conversation(conversation_id: str, title: str) -> str:
+    """Use the given conversation or start one for a command."""
+    from .conversations import generate_conversation_id
+    init_chat_database()
+    if conversation_id:
+        with chat_connection() as db:
+            row = db.execute(
+                "SELECT conversation_id FROM conversations "
+                "WHERE conversation_id=?", (conversation_id,)).fetchone()
+        if row is not None:
+            return conversation_id
+    fresh = generate_conversation_id()
+    _chat_ensure_conversation(fresh, title[:120], "", now())
+    return fresh
+
+
+def _v1_waiting_reason(mission) -> str:
+    """Exact human-readable wait reason for a mission card."""
+    from .missions import current_step_of
+    step = current_step_of(mission)
+    if mission.status == "pending_approval":
+        return "Ik wacht op jouw YES voor dit plan."
+    if mission.status == "paused":
+        return "Gepauzeerd — hervat expliciet om verder te gaan."
+    if step is None:
+        return "Geen huidige stap; opnieuw ticken na statuswijziging."
+    if step.status == "waiting_approval":
+        return (f"Ik wacht op jouw toestemming voor: "
+                f"{step.action_type or step.kind} "
+                f"({step.desktop_action_id or 'zonder id'}) — "
+                f"exact YES via de desktop-actie.")
+    if step.status == "dispatched":
+        return (f"Actie {step.desktop_action_id or '?'} loopt bij de "
+                f"desktop-agent; ik wacht op zijn verslag.")
+    if step.kind == "proposal":
+        return ("Voorstel klaar als data — goedkeuren loopt via "
+                "/api/v1/approvals, nooit automatisch.")
+    if step.kind in ("write", "fabricate", "slice", "physical_print"):
+        return (f"Een {step.kind}-stap heeft een eigen exacte YES plus "
+                f"fingerprint-herbevestiging nodig.")
+    if step.status in ("failed", "blocked"):
+        return (f"Stap '{step.description[:80]}' is {step.status}: "
+                f"{step.error[:160] or 'zie events'}.")
+    return (f"Volgende: {step.kind} — "
+            f"'{step.description[:100]}' ({step.status}).")
+
+
+@app.post("/api/v1/command")
+async def command_center(body: CommandBody) -> dict:
+    """Command Center: NL/EN text -> intent -> status answer,
+    safe template mission, or mission control. One brain: advice
+    still flows through chat(); routing is deterministic."""
+    from .command import EXAMPLE_COMMANDS, parse_command
+    try:
+        command = parse_command(body.text)
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    intent = command.intent
+    if intent == "help":
+        return {"intent": intent, "confidence": command.confidence,
+                "reply": ("Dit kun je me vragen:\n" + "\n".join(
+                    f"- {example}" for example in EXAMPLE_COMMANDS)
+                    + "\nIk maak alleen veilige lees-/onderzoeksplannen; "
+                      "klikken, schrijven, publiceren en fysieke acties "
+                      "vragen altijd eerst jouw YES."),
+                "examples": list(EXAMPLE_COMMANDS)}
+    if intent == "chat":
+        answer = await chat(ChatRequest(
+            conversation_id=body.conversation_id or None,
+            message=command.raw))
+        return {"intent": intent, "confidence": command.confidence,
+                "reply": answer.reply,
+                "conversation_id": answer.conversation_id}
+    if intent == "morning_report":
+        report = report_morning()
+        sections = report.get("sections", [])
+        lines = []
+        for section in sections:
+            items = section.get("items", [])[:4]
+            if items:
+                lines.append(f"{section.get('title', '?')}: "
+                             + "; ".join(str(item)[:120]
+                                         for item in items))
+        waiting = [line for line in lines if line]
+        reply = ("Goedemorgen — dit heb ik gevonden:\n" + "\n".join(
+            f"- {line}" for line in waiting[:12])
+            if waiting else "Nog geen nieuws van vannacht.")
+        return {"intent": intent, "confidence": command.confidence,
+                "reply": reply, "morning": report}
+    if intent == "agenda_today":
+        from .agenda import init_agenda_tables, list_events
+        init_chat_database()
+        with chat_connection() as db:
+            init_agenda_tables(db)
+            events = list_events(db, upcoming_only=True, limit=20)
+        if not events:
+            return {"intent": intent,
+                    "confidence": command.confidence,
+                    "reply": ("Geen agendapunten gevonden. Importeer een "
+                              ".ics via /agenda als je wilt dat ik "
+                              "meekijk."),
+                    "events": []}
+        lines = [f"{event.get('start', '?')} — "
+                 f"{event.get('title', '?')}"
+                 + (f" ({event.get('location', '')})"
+                    if event.get("location") else "")
+                 for event in events]
+        return {"intent": intent, "confidence": command.confidence,
+                "reply": "Vandaag op je agenda:\n" + "\n".join(
+                    f"- {line}" for line in lines),
+                "events": events}
+    if intent == "mission_status":
+        from .missions import list_missions
+        missions = [mission for mission in list_missions(limit=20)
+                    if mission.status not in (
+                        "completed", "failed", "cancelled")]
+        if not missions:
+            return {"intent": intent,
+                    "confidence": command.confidence,
+                    "reply": "Geen openstaande missies — alles is afgerond "
+                             "of gestopt.",
+                    "missions": []}
+        cards = [{"mission_id": mission.mission_id,
+                  "goal": mission.goal, "status": mission.status,
+                  "waiting_reason": _v1_waiting_reason(mission)}
+                 for mission in missions]
+        lines = [f"{card['goal'][:90]} [{card['status']}] — "
+                 f"{card['waiting_reason']}" for card in cards]
+        return {"intent": intent, "confidence": command.confidence,
+                "reply": "Dit loopt er nu:\n" + "\n".join(
+                    f"- {line}" for line in lines),
+                "missions": cards}
+    if intent == "mission_stop":
+        from .missions import list_missions
+        if command.mission_id:
+            mission = load_mission(command.mission_id)
+            if mission is None:
+                raise HTTPException(404, "Mission not found")
+            targets = [mission]
+        else:
+            targets = [mission for mission in list_missions(limit=50)
+                       if mission.status in ("running", "approved")]
+        stopped = []
+        for mission in targets:
+            try:
+                if mission.status == "running":
+                    _executor().pause(mission.mission_id)
+                    stopped.append(mission.mission_id)
+                elif mission.status in ("approved", "pending_approval",
+                                        "paused"):
+                    _executor().cancel(mission.mission_id)
+                    stopped.append(mission.mission_id)
+            except ExecutorError:
+                continue
+        if not stopped:
+            return {"intent": intent,
+                    "confidence": command.confidence,
+                    "reply": "Er liep niets dat ik kon stoppen.",
+                    "stopped": []}
+        return {"intent": intent, "confidence": command.confidence,
+                "reply": ("Gestopt en veilig weggezet "
+                          f"({len(stopped)} missie(s)). Zeg 'ga verder' "
+                          "om een veilige missie te hervatten."),
+                "stopped": stopped}
+    if intent == "mission_resume":
+        from .missions import bindings_for_mission, list_missions
+        from .recovery import scan
+        if command.mission_id:
+            mission = load_mission(command.mission_id)
+            if mission is None:
+                raise HTTPException(404, "Mission not found")
+            targets = [mission]
+        else:
+            targets = list_missions(limit=50)
+        bindings = {mission.mission_id: bindings_for_mission(
+            mission.mission_id) for mission in targets}
+        report = scan(targets, bindings.get)
+        resumed = []
+        for item in report["verdicts"]:
+            if item["verdict"] != "safe_to_resume":
+                continue
+            if len(resumed) >= 5:
+                break
+            try:
+                current = load_mission(item["mission_id"])
+                if current is None:
+                    continue
+                if current.status == "paused":
+                    _executor().resume(current.mission_id)
+                from .mission_loop import run_loop
+                result = await run_loop(current.mission_id,
+                                        max_rounds=5)
+                resumed.append({"mission_id": current.mission_id,
+                                "stop_reason": result.get(
+                                    "stop_reason",
+                                    result.get("outcome", "?"))})
+            except (ExecutorError, ValueError):
+                continue
+        waiting = [item for item in report["verdicts"]
+                   if item["verdict"] == "needs_reapproval"]
+        reply = ("Niets veilig hervatbaar gevonden."
+                 if not resumed else
+                 f"{len(resumed)} veilige missie(s) hervat (alleen lezen).")
+        if waiting:
+            reply += (f" {len(waiting)} missie(s) wachten op jouw YES.")
+        return {"intent": intent, "confidence": command.confidence,
+                "reply": reply, "resumed": resumed,
+                "waiting": waiting}
+    # research_project / inventory_status / project_overview:
+    # build a mission from the existing safe template.
+    conversation_id = _v1_conversation(
+        body.conversation_id, command.target or command.raw[:80])
+    goal = (f"Onderzoek {command.target}" if command.target
+            else command.raw[:200])
+    template_id = command.template_id or "investigate_inventory"
+    try:
+        steps, template_max = instantiate(template_id, goal)
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    records, _, _ = await _chat_world_context(goal)
+    try:
+        mission = _executor().create(
+            conversation_id, goal, steps, max_steps=template_max,
+            context_records=records)
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    except ExecutorError as error:
+        raise _mission_error(error)
+    return {"intent": intent, "confidence": command.confidence,
+            "reply": (f"Ik heb een onderzoeksplan gemaakt voor "
+                      f"'{goal[:120]}' ({len(mission.steps)} stappen, "
+                      "alleen lezen). Geef YES op het plan, dan ga ik "
+                      "zelfstandig verder tot ik je nodig heb."),
+            "mission": _mission_to_json(mission),
+            "conversation_id": conversation_id}
+
+
+@app.post("/api/v1/missions/{mission_id}/decide")
+def mission_decide(mission_id: str) -> dict:
+    """Evaluate the current step into an explicit decision
+    (BIG #24). Read-only: never mutates, never approves."""
+    from .decisions import StepOutcome, decide
+    from .missions import current_step_of
+    mission = load_mission(mission_id)
+    if mission is None:
+        raise HTTPException(404, "Mission not found")
+    step = current_step_of(mission)
+    if step is None:
+        outcome = StepOutcome(
+            kind="", step_status="completed", ok=True,
+            mission_status=mission.status)
+    else:
+        attempts = 0
+        try:
+            attempts = int((mission.metadata or {}).get(
+                f"attempts:{step.step_id}", 0))
+        except (ValueError, TypeError, AttributeError):
+            attempts = 0
+        outcome = StepOutcome(
+            kind=step.kind, step_status=step.status,
+            ok=step.status == "completed", error=step.error,
+            attempts=attempts,
+            waiting_detail=(step.desktop_action_id
+                            or step.description)[:200],
+            mission_status=mission.status)
+    decision = decide(outcome)
+    return {"mission_id": mission_id, "status": mission.status,
+            "decision": decision.state, "reason": decision.reason,
+            "retry_in_seconds": decision.retry_in_seconds,
+            "needs": dict(decision.needs)}
+
+
+@app.post("/api/v1/missions/recover")
+async def missions_recover(body: RecoverBody) -> dict:
+    """Startup/restart recovery scan (BIG #25). Report-only by
+    default; resume_safe drives ONLY safe_to_resume missions
+    through the bounded loop (read-only steps, never gated)."""
+    from .missions import list_missions
+    from .recovery import scan
+    report = scan(list_missions(limit=100),
+                  lambda mission_id: bindings_for_mission(mission_id))
+    resumed: list[dict] = []
+    if body.resume_safe:
+        from .mission_loop import run_loop
+        for item in report["verdicts"]:
+            if item["verdict"] != "safe_to_resume":
+                continue
+            if len(resumed) >= body.max_resume:
+                break
+            try:
+                current = load_mission(item["mission_id"])
+                if current is None:
+                    continue
+                if current.status not in ("approved", "running",
+                                          "paused"):
+                    continue
+                if current.status == "paused":
+                    _executor().resume(current.mission_id)
+                result = await run_loop(current.mission_id,
+                                        max_rounds=5)
+                resumed.append({
+                    "mission_id": current.mission_id,
+                    "stop_reason": result.get(
+                        "stop_reason", result.get("outcome", "?"))})
+            except (ExecutorError, ValueError):
+                continue
+    report["resumed"] = resumed
+    return report
+
+
+@app.get("/api/v1/research/capability")
+async def research_capability(probe: bool = False) -> dict:
+    """Honest research-transport status. Unprobed by default;
+    probe=true runs one tiny local-model call (bounded 10s)."""
+    from .ollama_advisor import (DEFAULT_BASE_URL, DEFAULT_MODEL)
+    available: str | bool = "unprobed"
+    detail = ("Oproepbaar via een analyse-stap; status onbekend tot "
+              "een probe of een missie echt draait.")
+    if probe:
+        try:
+            provider = get_provider("ollama", timeout=10)
+            answered = await provider.advise("Zeg alleen: ok", [])
+            available = True
+            detail = (f"Lokaal model antwoordt "
+                      f"({answered.model or DEFAULT_MODEL}).")
+        except ProviderUnavailable as error:
+            available = False
+            detail = f"Lokaal model onbereikbaar: {error}"
+        except ProviderRefusedError as error:
+            available = False
+            detail = f"Probe geweigerd: {error}"
+    return {"research_transport": "local-analysis",
+            "provider": "ollama",
+            "base_url": DEFAULT_BASE_URL,
+            "model": DEFAULT_MODEL,
+            "available": available,
+            "detail": detail,
+            "note": ("Bootstrap-missies wachten als "
+                     "WAITING_FOR_RESEARCH_CAPABILITY tot een echte "
+                     "transportlaag draait; voltooiing wordt nooit "
+                     "gefaket.")}
+
+
+@app.post("/api/v1/agenda/import")
+def agenda_import(body: AgendaImportBody) -> dict:
+    """ICS import with preview-first discipline. preview_only
+    parses and reports; preview_only=false stores with UID dedup."""
+    from .agenda import (AgendaRefusedError, init_agenda_tables,
+                         parse_ics, store_preview)
+    try:
+        preview = parse_ics(body.ics_text,
+                            source_label=body.source_label)
+    except AgendaRefusedError as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    if body.preview_only:
+        return {"preview": True,
+                "source_label": preview.source_label,
+                "event_count": len(preview.events),
+                "events": [event.__dict__
+                           for event in preview.events[:50]]}
+    init_chat_database()
+    with chat_connection() as db:
+        init_agenda_tables(db)
+        try:
+            result = store_preview(db, preview)
+        except AgendaRefusedError as error:
+            raise HTTPException(status_code=422, detail=str(error))
+    return {"preview": False, **result}
+
+
+@app.get("/api/v1/agenda/events")
+def agenda_events(upcoming_only: bool = False,
+                  limit: int = 100) -> list[dict]:
+    """Stored agenda events: read-only context, never facts."""
+    from .agenda import init_agenda_tables, list_events
+    init_chat_database()
+    with chat_connection() as db:
+        init_agenda_tables(db)
+        return list_events(db, limit=limit,
+                           upcoming_only=upcoming_only)
+
+
+@app.get("/api/v1/agenda/sources")
+def agenda_sources() -> list[dict]:
+    from .agenda import init_agenda_tables, list_sources
+    init_chat_database()
+    with chat_connection() as db:
+        init_agenda_tables(db)
+        return list_sources(db)
+
+
+@app.post("/api/v1/bootstrap/ensure", status_code=201)
+async def bootstrap_ensure(body: BootstrapBody) -> dict:
+    """Create the bootstrap research campaign once (BIG #28 §26).
+    Idempotent via metadata bootstrap keys; auto_approve=false
+    leaves plans pending (human YES per plan)."""
+    from .bootstrap import (BOOTSTRAP_DOMAINS, mission_metadata,
+                            missing_domains)
+    from .missions import list_missions, save_mission
+    with chat_connection() as db:
+        init_chat_database()
+        row = db.execute(
+            "SELECT conversation_id FROM conversations "
+            "WHERE conversation_id=?", (body.conversation_id,)).fetchone()
+    if row is None:
+        raise HTTPException(404, "Conversation not found")
+    missing = missing_domains(list_missions(limit=100))
+    created: list[dict] = []
+    for domain in missing:
+        if len(created) >= len(BOOTSTRAP_DOMAINS):
+            break
+        steps, template_max = instantiate(domain["template"],
+                                          domain["goal"])
+        records, _, _ = await _chat_world_context(domain["goal"])
+        try:
+            mission = _executor().create(
+                body.conversation_id, domain["goal"], steps,
+                max_steps=template_max, context_records=records)
+        except (ValueError, ExecutorError):
+            continue
+        stamped = mission.model_copy(update={
+            "metadata": {**(mission.metadata or {}),
+                         **mission_metadata(domain)}})
+        try:
+            save_mission(stamped)
+        except (ValueError, MissionConflictError):
+            continue
+        created.append({"mission_id": stamped.mission_id,
+                        "domain": domain["domain"],
+                        "goal": domain["goal"][:160]})
+    if body.auto_approve:
+        approved = []
+        for item in created:
+            try:
+                _executor().approve(item["mission_id"], "YES",
+                                    decided_by="bootstrap-operator")
+                approved.append(item["mission_id"])
+            except ExecutorError:
+                continue
+        return {"created": created, "approved": approved,
+                "skipped": len(BOOTSTRAP_DOMAINS) - len(missing)}
+    return {"created": created, "approved": [],
+            "skipped": len(BOOTSTRAP_DOMAINS) - len(missing)}
+
+
+@app.get("/api/v1/bootstrap/status")
+def bootstrap_status() -> dict:
+    """Which bootstrap domains have a mission, which are missing."""
+    from .bootstrap import BOOTSTRAP_DOMAINS, missing_domains
+    from .missions import list_missions
+    missions = list_missions(limit=100)
+    missing = missing_domains(missions)
+    missing_keys = {domain["key"] for domain in missing}
+    present = [{"key": domain["key"], "domain": domain["domain"],
+                "mission_id": next((
+                    mission.mission_id for mission in missions
+                    if (mission.metadata or {}).get("bootstrap_key")
+                    == domain["key"]), "")}
+               for domain in BOOTSTRAP_DOMAINS
+               if domain["key"] not in missing_keys]
+    return {"campaign": "bootstrap-campaign-v1",
+            "present": present,
+            "missing": [{"key": domain["key"],
+                         "domain": domain["domain"]}
+                        for domain in missing]}
+
+
+@app.get("/api/v1/physical/status")
+def physical_status() -> dict:
+    """Honest physical-world readiness matrix. No fake LIVE."""
+    capabilities: list[dict] = []
+    try:
+        printers = [printer.model_dump(mode="json")
+                    if hasattr(printer, "model_dump") else dict(printer)
+                    for printer in list_printers()]
+    except (ValueError, AttributeError):
+        printers = []
+    for printer in printers:
+        capabilities.append({
+            "device": printer.get("printer_id", "printer"),
+            "kind": "printer",
+            "status": "SIMULATED",
+            "gate": "PROPOSE → APPROVE → REVALIDATE → EXECUTE → "
+                    "OBSERVE → VERIFY",
+            "note": "Simulated until a real transport + physical "
+                    "YES + fingerprint exists."})
+    try:
+        from .robots import list_robots
+        robots = list_robots()
+    except (ValueError, AttributeError, ImportError):
+        robots = []
+    for robot in robots:
+        robot_id = (robot.get("robot_id", "robot")
+                    if isinstance(robot, dict)
+                    else str(getattr(robot, "robot_id", "robot")))
+        capabilities.append({"device": robot_id, "kind": "robot",
+                             "status": "HARDWARE_REQUIRED",
+                             "gate": "own exact YES + fingerprint",
+                             "note": "No hardware attached."})
+    try:
+        from .drones import list_drones
+        drones = list_drones()
+    except (ValueError, AttributeError, ImportError):
+        drones = []
+    for drone in drones:
+        drone_id = (drone.get("drone_id", "drone")
+                    if isinstance(drone, dict)
+                    else str(getattr(drone, "drone_id", "drone")))
+        capabilities.append({"device": drone_id, "kind": "drone",
+                             "status": "HARDWARE_REQUIRED",
+                             "gate": "own exact YES + fingerprint",
+                             "note": "No hardware attached."})
+    if not capabilities:
+        capabilities.append({
+            "device": "none-registered", "kind": "none",
+            "status": "UNAVAILABLE",
+            "gate": "register a device first",
+            "note": "No physical devices registered; nothing can "
+                    "move until one is."})
+    capabilities.append({"device": "garmin", "kind": "integration",
+                         "status": "UNAVAILABLE",
+                         "gate": "official OAuth + operator approval",
+                         "note": "No credentials, no fabricated OAuth."})
+    capabilities.append({"device": "n8n", "kind": "transport",
+                         "status": "CONFIGURED-TRANSPORT",
+                         "gate": "Mycelium stays authority; n8n only "
+                                 "transports",
+                         "note": "Useful without n8n; check disk space "
+                                 "before installing anything new."})
+    return {"capabilities": capabilities}
+
+
+# =============================================================================
 # CAMERAS (BIG #4) — generic device abstraction, Insta360-ready.
 # Registration is explicit; discovery is read-only names; snapshots
 # require an injected capture adapter and refuse without one.
@@ -4314,6 +4886,29 @@ def report_morning() -> dict:
             current)[:5]
     except WatcherRefusedError:
         findings = []
+    try:
+        from .agenda import init_agenda_tables as _agenda_init
+        from .agenda import list_events as _agenda_events
+        with chat_connection() as _adb:
+            _agenda_init(_adb)
+            _agenda_upcoming = _agenda_events(
+                _adb, upcoming_only=True, limit=8)
+    except Exception:
+        _agenda_upcoming = []
+    _waiting_lines = []
+    for row in missions:
+        try:
+            _record = load(row["record"])
+        except ValueError:
+            continue
+        if _record.get("status") in ("pending_approval", "paused"):
+            _waiting_lines.append(
+                f"{str(_record.get('goal', '?'))[:100]} "
+                f"[{_record.get('status', '?')}]")
+    _agenda_lines = [
+        f"{str(event.get('start', '?'))} — "
+        f"{str(event.get('title', '?'))[:100]}"
+        for event in _agenda_upcoming]
     sections = {
         "today": [current.strftime("%A %Y-%m-%d"),
                   f"{online}/{len(node_rows)} nodes online"],
@@ -4333,6 +4928,10 @@ def report_morning() -> dict:
         sections["fabrication"] = [
             f"{row['fabrication_id']} [{row['status']}]"
             for row in fabs]
+    if _waiting_lines:
+        sections["waiting"] = _waiting_lines[:8]
+    if _agenda_lines:
+        sections["agenda"] = _agenda_lines[:8]
     if owned_skills:
         sections["skills"] = [
             f"{row['name']} [{row['stage']}]"
@@ -6378,6 +6977,12 @@ async def world_page(entity_id: str = "", depth: int = 1,
         graph, error = await _graph_data(entity_id, depth,
                                          flags)
     main = f"""<h1>World Graph</h1>
+    <div class="panel"><h2>Command Center — wat kan ik voor je doen?</h2>
+    <p>Typ hieronder in gewone taal. Ik maak een veilig lees-/onderzoeksplan, voer het zelfstandig uit tot ik je nodig heb, en leg precies uit waar ik stop.</p>
+    <p class="muted">Probeer: “Onderzoek mijn camper.” · “Kijk wat er nog openstaat voor INVENTory.” · “Maak een overzicht van mijn lopende projecten.” · “Wat heb je vannacht gevonden?” · “Wat staat er vandaag op mijn agenda?”</p>
+    <form method="post" action="/web/command" role="search" aria-label="Command Center">
+    <input type="text" name="message" placeholder="Onderzoek mijn projecten en kijk wat er vandaag logisch is…" style="width:70%" aria-label="Command" autocomplete="off">
+    <button type="submit">Ask Mycelium</button></form></div>
     <p class="muted">Every node is real: world entities from INVENTory, overlays from Mycelium. Select to inspect, open a neighborhood to grow.</p>
     {_ui.graph_panel(_json.dumps(graph), "/world", entity_id, depth, show, error)}"""
     context = _ui.context_block(
@@ -6481,6 +7086,99 @@ def morning_page() -> str:
     <div class="grove">{cards or _ui.empty()}</div>"""
     return _ui.shell("Morning", "/morning", main, "",
                      _ui.command_bar())
+
+
+@app.get("/agenda", response_class=HTMLResponse)
+def agenda_page() -> str:
+    """Agenda importer: .ics plakken, preview, bevestigen.
+    Read-only context; nooit een verplichting-fact."""
+    from . import ui as _ui
+    from .agenda import init_agenda_tables, list_events, list_sources
+    init_chat_database()
+    with chat_connection() as db:
+        init_agenda_tables(db)
+        events = list_events(db, limit=50)
+        sources = list_sources(db)
+    rows = "".join(
+        f"<tr><td>{_ui.esc(str(event.get('start', ''))[:16])}</td>"
+        f"<td>{_ui.esc(str(event.get('title', ''))[:80])}</td>"
+        f"<td class=\"muted\">"
+        f"{_ui.esc(str(event.get('location', ''))[:60])}</td></tr>"
+        for event in events)
+    srcs = "".join(
+        f"<li>{_ui.esc(str(source.get('label', '')))} — "
+        f"{source.get('event_count', 0)} events "
+        f"<span class=\"muted\">({ _ui.esc(str(source.get('imported_at', ''))[:16])})</span></li>"
+        for source in sources)
+    main = f"""<h1>Agenda</h1>
+    <div class="panel"><h2>Importeer agenda (.ics)</h2>
+    <p class="muted">Plak .ics-tekst, bekijk de preview, bevestig pas daarna. Duplicaten (zelfde UID) worden nooit dubbel opgeslagen. Alles blijft alleen-lezen context.</p>
+    <form method="post" action="/web/agenda/import">
+    <input type="text" name="source_label" placeholder="Bron (bv. gezin)" style="width:30%" aria-label="Source label"><br><br>
+    <textarea name="ics_text" rows="6" style="width:100%" placeholder="Plak hier .ics-tekst…" aria-label="ICS text"></textarea><br><br>
+    <button type="submit" name="preview_only" value="true">Preview</button>
+    <button type="submit" name="preview_only" value="false">Bevestig import</button></form></div>
+    <div class="panel"><h2>Bronnen</h2><ul>{srcs or "<li>Nog geen.</li>"}</ul></div>
+    <div class="panel"><h2>Aankomend</h2><table><tr><th>Wanneer</th><th>Wat</th><th>Waar</th></tr>
+    {rows or "<tr><td colspan='3'>Leeg — importeer een .ics.</td></tr>"}</table></div>"""
+    return _ui.shell("Agenda", "/agenda", main, "",
+                     _ui.command_bar())
+
+
+@app.post("/web/agenda/import")
+async def web_agenda_import(request: Request) -> Response:
+    from .agenda import (AgendaRefusedError, init_agenda_tables,
+                         parse_ics, store_preview)
+    fields = await _form_fields(request)
+    ics_text = fields.get("ics_text", "")
+    label = fields.get("source_label", "import") or "import"
+    preview_only = fields.get("preview_only", "true") != "false"
+    try:
+        preview = parse_ics(ics_text[:500000], source_label=label)
+    except AgendaRefusedError:
+        return RedirectResponse("/agenda", status_code=303)
+    if preview_only:
+        return RedirectResponse("/agenda", status_code=303)
+    init_chat_database()
+    with chat_connection() as db:
+        init_agenda_tables(db)
+        try:
+            store_preview(db, preview)
+        except AgendaRefusedError:
+            pass
+    return RedirectResponse("/agenda", status_code=303)
+
+
+@app.post("/web/command")
+async def web_command(request: Request) -> Response:
+    """Command Center form: route NL text through /api/v1/command
+    and land on the right page (mission, morning, chat)."""
+    fields = await _form_fields(request)
+    text = fields.get("message", "").strip()
+    conversation_id = fields.get("conversation_id", "").strip()
+    if not text:
+        return RedirectResponse("/world", status_code=303)
+    try:
+        result = await command_center(CommandBody(
+            text=text[:500], conversation_id=conversation_id[:80]))
+    except HTTPException:
+        return RedirectResponse("/world", status_code=303)
+    intent = result.get("intent", "chat")
+    if intent in ("research_project", "inventory_status",
+                  "project_overview") and result.get("mission"):
+        return RedirectResponse(
+            f"/missions/{result['mission']['mission_id']}",
+            status_code=303)
+    if intent == "morning_report":
+        return RedirectResponse("/morning", status_code=303)
+    if intent == "agenda_today":
+        return RedirectResponse("/agenda", status_code=303)
+    if intent in ("mission_status", "mission_stop", "mission_resume"):
+        return RedirectResponse("/missions", status_code=303)
+    convo = result.get("conversation_id", "") or conversation_id
+    if convo:
+        return RedirectResponse(f"/chat?id={convo}", status_code=303)
+    return RedirectResponse("/chat", status_code=303)
 
 
 @app.get("/memory", response_class=HTMLResponse)
@@ -6776,13 +7474,25 @@ def _result_suffix(entry: dict) -> str:
 @app.get("/missions", response_class=HTMLResponse)
 def missions_page() -> str:
     from . import ui as _ui
-    cards = "".join(
-        f"<div class=\"sprout\"><b>{_ui.esc(m['goal'][:90])}</b><br>"
-        f"{_ui.status_dot(m['status'])}{_ui.chip(m['status'])}"
-        f"<span class=\"muted\">step {m['current_step']}/{len(m['steps'])}</span><br>"
-        f"<a href='/missions/{_ui.esc(m['mission_id'])}'>Open process</a></div>"
-        for m in [_mission_to_json(mission)
-                  for mission in list_missions()])
+    from .missions import current_step_of as _current_step
+    cards = ""
+    for m in [_mission_to_json(mission)
+              for mission in list_missions()]:
+        loaded = load_mission(m["mission_id"])
+        waiting = _v1_waiting_reason(loaded) if loaded else ""
+        dot = {"running": "🟢", "pending_approval": "🟡",
+               "paused": "⚫", "completed": "✓",
+               "failed": "✕", "blocked": "🟠"}.get(
+                   m["status"], "🔵")
+        cards += (
+            f"<div class=\"sprout\"><b>{dot} "
+            f"{_ui.esc(m['goal'][:90])}</b><br>"
+            f"{_ui.status_dot(m['status'])}{_ui.chip(m['status'])}"
+            f"<span class=\"muted\">step {m['current_step']}/"
+            f"{len(m['steps'])}</span><br>"
+            f"<span class=\"muted\">{_ui.esc(waiting[:220])}</span><br>"
+            f"<a href='/missions/{_ui.esc(m['mission_id'])}'>"
+            "Open process</a></div>")
     main = f"""<h1>Missions</h1>
     <div class="panel"><p>Autonomy exists only <b>inside</b> an approved plan. Approved is not executed — execution is a separate, visible step.</p>
     <form method="post" action="/web/missions/from-template">

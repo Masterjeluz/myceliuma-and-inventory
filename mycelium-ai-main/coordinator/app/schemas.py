@@ -951,3 +951,32 @@ class OutboxEnqueueBody(BaseModel):
 class OutboxAckBody(BaseModel):
     integration_id: str = Field(min_length=1, max_length=80)
     failed: bool = False
+
+
+class CommandBody(BaseModel):
+    """One natural-language command for the Command Center."""
+
+    text: str = Field(min_length=1, max_length=500)
+    conversation_id: str = Field(default="", max_length=80)
+
+
+class RecoverBody(BaseModel):
+    """Mission recovery scan; resume_safe drives read-only resumes."""
+
+    resume_safe: bool = False
+    max_resume: int = Field(default=5, ge=1, le=20)
+
+
+class AgendaImportBody(BaseModel):
+    """ICS import: preview first, confirm stores with UID dedup."""
+
+    ics_text: str = Field(min_length=1, max_length=500000)
+    source_label: str = Field(default="import", max_length=120)
+    preview_only: bool = True
+
+
+class BootstrapBody(BaseModel):
+    """Idempotent bootstrap campaign creation."""
+
+    conversation_id: str = Field(min_length=3, max_length=80)
+    auto_approve: bool = False

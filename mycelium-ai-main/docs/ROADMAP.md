@@ -302,6 +302,25 @@ localhost HTTP met zero desktop disturbance
 keten; geen shell/RCE/cloud. Testbasis: 961
 Mycelium-tests + 9-checks live hands-smoke.
 
+## PHASE O — MYCELIUM V1 (DONE als BIG #23–#28)
+
+Zie `docs/mycelium-v1.md`. Eerste dagelijks bruikbare Mycelium:
+Command Center (/world) met deterministische NL-router
+(`POST /api/v1/command`) naar status-antwoorden, veilige
+template-missies en missie-besturing; expliciete
+beslisstaten (`decisions.py`: CONTINUE/RETRY/REPLAN/
+WAITING_FOR_HUMAN/WAITING_FOR_AGENT/BLOCKED/FAILED/
+COMPLETED/CANCELLED, `POST /missions/{id}/decide` leest mee);
+persistente recovery (boot-scan rapporteert, hervat alleen
+expliciet read-only, nooit stale approvals); agenda-importer
+(.ics preview → bevestig, UID-dedup, alleen-lezen context);
+bootstrap-onderzoekscampagne (9 domeinen, idempotent,
+wacht eerlijk op echte research-transport);
+ochtendrapport met waiting + agenda; eerlijke
+fysieke matrix (`GET /physical/status`, nooit fake LIVE);
+Windows-startup via Task Scheduler zonder admin
+(`docs/startup.md`, `scripts/`).
+
 ## Expliciet niet op de kaart
 
 Autonome ongelimiteerde computerbediening, credential-automatisering,

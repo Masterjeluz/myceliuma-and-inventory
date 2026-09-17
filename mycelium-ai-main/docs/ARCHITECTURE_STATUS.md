@@ -1,4 +1,4 @@
-# Architecture Status (september 2026, na BIG #22)
+# Architecture Status (september 2026, na BIG #23–#28 / V1)
 
 Momentopname van wat het systeem IS. Voor flows, zie
 `chat-agent-architecture.md`; voor richting, zie `ROADMAP.md`.
