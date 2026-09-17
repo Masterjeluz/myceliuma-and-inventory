@@ -289,6 +289,19 @@ zonder bestaande approvals. Terminale missies
 schrijven één episodic memory (observed, nooit fact).
 Testbasis: 951 Mycelium-tests + 12-checks live smoke.
 
+## PHASE N — DESKTOP AGENT HANDS (DONE als BIG #22)
+
+Zie `docs/desktop-hands.md`. De desktop-agent als
+bruikbare handen: claim → revalidate → observe → act
+→ observe → report met dispatch-leases (300s),
+attempt-bounds (max 3) en lazy expiry; mission loop
+gaat na desktop-resultaat automatisch verder. Echte
+Windows-backend (ctypes, geen deps) bewezen over live
+localhost HTTP met zero desktop disturbance
+(screenshot-reads alleen). Fysiek onmogelijk via deze
+keten; geen shell/RCE/cloud. Testbasis: 961
+Mycelium-tests + 9-checks live hands-smoke.
+
 ## Expliciet niet op de kaart
 
 Autonome ongelimiteerde computerbediening, credential-automatisering,

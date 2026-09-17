@@ -1034,6 +1034,57 @@ def expire_leases(now_str: str | None = None) -> dict[str, int]:
     return summary
 
 
+def expire_desktop_leases(now_str: str | None = None) -> dict[str, int]:
+    """Recover dispatched desktop actions whose lease expired.
+
+    A dead agent must never pin an action forever: expired
+    leases return to approved while attempts remain (another
+    claim may pick the action up), and block when attempts
+    are exhausted. Each transition is conditional, so a
+    late agent report still wins its own race instead of
+    being silently overwritten. Runs lazily on every
+    desktop claim.
+    """
+    from .agent_loop import DESKTOP_MAX_ATTEMPTS
+    current = now_str or now()
+    summary = {"recovered": 0, "blocked": 0}
+    for row in _desktop_list(limit=100, status="dispatched"):
+        try:
+            record = DesktopActionRecord.model_validate(
+                load(row["record"]))
+        except ValueError:
+            continue
+        try:
+            expired = not record.lease_until or _parse_time(
+                record.lease_until) <= _parse_time(current)
+        except (ValueError, TypeError):
+            expired = True
+        if not expired:
+            continue
+        if record.attempt_count >= DESKTOP_MAX_ATTEMPTS:
+            updated = record.model_copy(update={
+                "status": "blocked",
+                "note": "dispatch lease expired with no "
+                        "attempts left; operator reviews"})
+            key = "blocked"
+        else:
+            updated = record.model_copy(update={
+                "status": "approved", "dispatched_by": "",
+                "dispatched_at": "", "lease_until": "",
+                "note": "dispatch lease expired; released "
+                        "for re-claim"})
+            key = "recovered"
+        try:
+            _desktop_save(updated, current,
+                          expected_from=("dispatched",))
+        except (DesktopConflictError, ValueError):
+            continue
+        summary[key] += 1
+        logger.info("desktop_lease_expired action_id=%s %s",
+                    record.action.action_id, key)
+    return summary
+
+
 @app.get("/api/v1/tasks/by-id/{task_id}")
 def get_task(task_id: int) -> dict:
     """One task with requirements, assignment and routing
@@ -1774,6 +1825,7 @@ def desktop_claim_next(body: DesktopClaimBody) -> dict | None:
     if node["status"] != "online" or node_is_stale(node["last_seen"],
                                                    moment):
         return None
+    expire_desktop_leases(moment)
     advertised = {str(cap).strip().lower()
                   for cap in load(node["capabilities"])}
     for row in _desktop_list(limit=100, status="approved"):

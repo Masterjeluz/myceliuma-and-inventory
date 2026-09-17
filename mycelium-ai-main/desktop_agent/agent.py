@@ -183,10 +183,25 @@ class DesktopAgent:
     def revalidate(self, action: dict) -> dict:
         """Fresh read immediately before input. Fail-closed.
 
-        Requires status dispatched + dispatched_by == me. Returns the
-        fresh record; raises ApprovalInvalid otherwise (BLOCK, halt).
+        Requires status dispatched + dispatched_by == me + a
+        still-valid dispatch lease + unchanged type/params.
+        Returns the fresh record; raises ApprovalInvalid
+        otherwise (BLOCK, halt the run).
         """
+        from datetime import datetime, timezone
         action_id = str(action.get("action_id", ""))
+        try:
+            moment = datetime.fromisoformat(
+                str(action.get("lease_until", "") or ""))
+            if moment.tzinfo is None:
+                moment = moment.replace(tzinfo=timezone.utc)
+            local_valid = moment > datetime.now(timezone.utc)
+        except (ValueError, TypeError):
+            local_valid = False
+        if not local_valid:
+            raise ApprovalInvalid(
+                f"action '{action_id}' dispatch lease expired; "
+                "blocking instead of acting on revoked authority")
         response = self._get(f"/api/v1/desktop/actions/{action_id}")
         if response.status_code != 200:
             raise ApprovalInvalid(
@@ -198,6 +213,18 @@ class DesktopAgent:
             raise ApprovalInvalid(
                 f"action '{action_id}' not dispatched to me "
                 f"(status={fresh.get('status')}); blocking")
+        lease_until = str(fresh.get("lease_until", "") or "")
+        try:
+            moment = datetime.fromisoformat(lease_until)
+            if moment.tzinfo is None:
+                moment = moment.replace(tzinfo=timezone.utc)
+            lease_valid = moment > datetime.now(timezone.utc)
+        except (ValueError, TypeError):
+            lease_valid = False
+        if not lease_valid:
+            raise ApprovalInvalid(
+                f"action '{action_id}' dispatch lease expired; "
+                "blocking instead of acting on revoked authority")
         if fresh.get("action_type") != action.get(
                 "action_type") or fresh.get("parameters") != action.get(
                 "parameters"):

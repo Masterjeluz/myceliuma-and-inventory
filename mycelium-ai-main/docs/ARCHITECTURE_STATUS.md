@@ -1,4 +1,4 @@
-# Architecture Status (september 2026, na BIG #21)
+# Architecture Status (september 2026, na BIG #22)
 
 Momentopname van wat het systeem IS. Voor flows, zie
 `chat-agent-architecture.md`; voor richting, zie `ROADMAP.md`.
@@ -120,13 +120,14 @@ Momentopname van wat het systeem IS. Voor flows, zie
 | Integration plane | `n8n.py` + routes | DONE (BIG #17; zie `n8n-integration.md`) |
 | Workshop UI | `ui.py` + pages | DONE (BIG #19; zie `living-workshop-ui.md`) |
 | Mission loop | `mission_loop.py` + run route | DONE (BIG #21; zie `autonomous-mission-loop.md`) |
+| Desktop hands | lease/attempts/expiry + agent | DONE (BIG #22; zie `desktop-hands.md`) |
 | Live-universiteit | `live.py` + secties | PARTIAL (8 nieuwe secties, health apart gescoped) |
 | Lokale desktop-scanner | `Mycelium/agent/` | Bestaand, read-only |
 
 ## Teststatus (gemeten, niet geschat)
 
-- Mycelium: **951 passed** (`pytest -v` in `mycelium-ai-main/`)
-  (944 voor BIG #21 + 7 nieuwe mission-loop-tests;
+- Mycelium: **961 passed** (`pytest -v` in `mycelium-ai-main/`)
+  (951 voor BIG #22 + 10 nieuwe desktop-hands-tests;
   camera-ctypes geeft dezelfde pre-existing
   access-violation-meldingen als altijd)
 - INVENTory: **179 passed, 1 failed** (ongewijzigd schema) — de faal is pre-existing:

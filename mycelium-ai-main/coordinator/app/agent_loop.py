@@ -45,6 +45,13 @@ ActionStatus = Literal[
 TERMINAL_STATUSES = frozenset(
     {"rejected", "cancelled", "completed", "failed", "blocked"})
 
+#: Desktop dispatch lease, mirroring the task queue: a
+#: dispatched action must report back inside this window or
+#: lose the lease (expiry returns it to approved while
+#: attempts remain, blocks it when exhausted).
+DESKTOP_LEASE_SECONDS = 300
+DESKTOP_MAX_ATTEMPTS = 3
+
 
 class DesktopActionRecord(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -56,6 +63,8 @@ class DesktopActionRecord(BaseModel):
     result: AgentActionResult | None = None
     dispatched_by: str = Field(default="", max_length=80)
     dispatched_at: str = ""
+    lease_until: str = ""
+    attempt_count: int = Field(default=0, ge=0)
     provenance: Provenance = Field(default_factory=Provenance)
 
 
@@ -141,17 +150,37 @@ def dispatch(record: DesktopActionRecord, action_id: str,
 
     ``by`` pins the lease holder (node/agent id). An empty holder
     means a manual local dispatch with no remote owner; the standalone
-    agent only executes actions dispatched to itself.
+    agent only executes actions dispatched to itself. Dispatch stamps
+    a lease deadline (DESKTOP_LEASE_SECONDS past ``at``) and counts
+    the attempt; exhausted records refuse re-dispatch and must be
+    blocked by expiry instead.
     """
+    from datetime import datetime, timedelta, timezone
     _bind(record, action_id)
     if record.status != "approved":
         raise ValueError(
             f"Action is {record.status}; only approved actions dispatch")
     if by and (not isinstance(by, str) or len(by) > 80):
         raise ValueError("dispatch owner must be 0..80 characters")
+    if record.attempt_count >= DESKTOP_MAX_ATTEMPTS:
+        raise ValueError(
+            f"Action used all {DESKTOP_MAX_ATTEMPTS} attempts; "
+            "it stays blocked, never silently retried")
+    try:
+        moment = datetime.fromisoformat(at) if at else \
+            datetime.now(timezone.utc)
+        if moment.tzinfo is None:
+            moment = moment.replace(tzinfo=timezone.utc)
+    except (ValueError, TypeError):
+        raise ValueError("dispatch needs a readable timestamp")
+    lease_until = (moment + timedelta(
+        seconds=DESKTOP_LEASE_SECONDS)).isoformat()
     return record.model_copy(update={"status": "dispatched",
                                      "dispatched_by": by or "",
-                                     "dispatched_at": at or ""})
+                                     "dispatched_at": moment.isoformat(),
+                                     "lease_until": lease_until,
+                                     "attempt_count":
+                                     record.attempt_count + 1})
 
 
 def record_result(record: DesktopActionRecord, action_id: str,
@@ -181,6 +210,8 @@ def describe(record: DesktopActionRecord) -> dict[str, Any]:
         "note": record.note,
         "dispatched_by": record.dispatched_by,
         "dispatched_at": record.dispatched_at,
+        "lease_until": record.lease_until,
+        "attempt_count": record.attempt_count,
         "result": (record.result.model_dump(mode="json")
                    if record.result else None),
     }
