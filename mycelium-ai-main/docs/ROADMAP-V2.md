@@ -1,23 +1,31 @@
-# Mycelium V2 Roadmap — BIG #32 → BIG #40 (directional)
+# Mycelium V2 Roadmap — BIG #33 → BIG #40 (directional)
 
-Status after BIG #32: knowledge lifecycle (candidates → memory),
-Linux `research.fetch_url` executor, capability routing, graph
-truth/source/kind/recency filters + memory/candidate/
-conversation overlays, packet knowledge sections, mobile
-remember/queue/missed, writes inbox, file ingest, overnight queue.
+Status after BIG #33: living world layer on the BIG #32
+foundation — symbiosis (PROPOSED/SUPPORTED/VERIFIED),
+craft tree (12 real-data stages + gaps), guide
+(WHAT/WHY/NEXT from live state), missions as quests (same
+gates), living animated shell (reduced-motion safe), mobile
+as input terminal (quick actions + needs-you), node-mesh
+delegation contracts + topology, camera/3D/conversation/
+research/agenda/activity reframed, dev notify utility.
+1173 Mycelium tests green; INVENTory untouched (179 + 1
+pre-existing). See `docs/BIG33-final-report.md`.
 
 Principles for every step: reuse stores, explicit promotion,
 provenance always, honest REAL/TEST/SIMULATED/UNAVAILABLE/FUTURE,
 no background threads, no shell/RCE, health isolated. Never
 implement a future stage prematurely because it is listed here.
 
-## BIG #33 — Research Network
+## BIG #33 — Living World (DONE 2026-09-18)
 
-Multiple Linux nodes without architecture changes: reviewed
-`research.extract` executor (deterministic, coordinator-owned
-rules), per-node capability matrix UI, queue fan-out across
-nodes, dossier synthesis over mixed local + node sources.
-Needs: on-node extraction review + completion-hook extension.
+Shipped: symbiosis, craft tree, guide, quest presentation,
+living shell, mobile input surface, mesh contracts, notify
+utility. The ROADMAP-V2 research-network items (reviewed
+`research.extract` executor, per-node capability matrix UI,
+queue fan-out) are partially covered — capability matrix and
+routing UI exist via eligible-nodes + mesh topology; the
+reviewed extract executor remains future work (see BIG33
+report §12).
 
 ## BIG #34 — Camera Ecosystem
 

@@ -116,10 +116,59 @@ svg.world text{fill:var(--ink-dim);font-size:11px;font-family:var(--font)}
 @keyframes pulse{0%{opacity:.9}70%{opacity:.35}100%{opacity:.9}}
 @media (max-width:1080px){.shell{grid-template-columns:200px minmax(0,1fr);grid-template-areas:"top top" "nav main" "cmd cmd"}.context{display:none}}
 @media (max-width:720px){.shell{grid-template-columns:minmax(0,1fr);grid-template-areas:"top" "nav" "main" "cmd"}.sidenav{grid-area:nav;display:flex;overflow-x:auto;gap:.2rem;border-right:none;border-bottom:1px solid var(--line);align-items:center}.sidenav h4{display:none}.sidenav a{white-space:nowrap;border:none}.brand{font-size:.75rem}.brand small{display:none}.workspace{padding:var(--space-2)}}
+/* BIG #33 living world: pixel-organic accents, state language, quest/craft/guide */
+button,.btn{box-shadow:inset 0 -3px 0 rgba(0,0,0,.28),inset 0 2px 0 rgba(255,255,255,.08);image-rendering:pixelated}
+.panel{position:relative}
+.panel.living{border-top:2px solid var(--moss);overflow:hidden}
+.living-bg{position:fixed;inset:0;z-index:-1;pointer-events:none;opacity:.5;
+background-image:radial-gradient(900px 380px at 20% -80px, rgba(125,155,106,.10), transparent 70%),
+radial-gradient(700px 320px at 85% 10%, rgba(217,164,65,.07), transparent 70%),
+radial-gradient(500px 500px at 50% 110%, rgba(76,107,79,.12), transparent 70%)}
+.living-canvas{position:fixed;inset:0;z-index:-1;pointer-events:none;opacity:.55}
+.state-real{border-color:var(--moss);color:var(--moss-bright)}
+.state-test{border-color:var(--amber);color:var(--amber);border-style:dashed}
+.state-simulated{border-color:var(--amber-dim);color:var(--ink-dim);border-style:dashed}
+.state-unavailable{border-color:var(--ink-faint);color:var(--ink-faint)}
+.state-waiting{border-color:var(--amber);color:var(--amber)}
+.state-active{border-color:var(--moss-bright);color:var(--moss-bright)}
+.state-blocked{border-color:var(--danger);color:var(--danger)}
+.state-verified{border-color:var(--moss);color:var(--moss-bright);box-shadow:0 0 8px rgba(125,155,106,.35)}
+.state-candidate{border-color:var(--fern);color:var(--spore)}
+.state-observation{border-color:var(--line);color:var(--ink-dim)}
+.sym-PROPOSED{border-color:var(--amber-dim);color:var(--amber)}
+.sym-SUPPORTED{border-color:var(--moss);color:var(--moss-bright)}
+.sym-VERIFIED{border-color:var(--moss-bright);color:var(--moss-bright);box-shadow:0 0 8px rgba(165,196,138,.4)}
+.quest{list-style:none;margin:.4rem 0;padding:0}
+.quest li{display:flex;gap:.5rem;align-items:baseline;padding:.25rem 0}
+.quest .q-done{color:var(--moss-bright)}
+.quest .q-now{color:var(--amber)}
+.quest .q-todo{color:var(--ink-faint)}
+.growthbar{display:flex;align-items:center;gap:.3rem;margin:.5rem 0}
+.growthbar .g{height:8px;flex:1;border-radius:99px;background:var(--soil-2);border:1px solid var(--line)}
+.growthbar .g.on{background:linear-gradient(90deg,var(--fern),var(--moss-bright));border-color:var(--moss)}
+.craft{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:var(--space-2)}
+.craft-stage{background:var(--surface);border:1px solid var(--line);border-radius:var(--r);padding:var(--space-2)}
+.craft-stage.full{border-top:2px solid var(--moss-bright)}
+.craft-stage.empty{border-top:2px dotted var(--ink-faint);opacity:.85}
+.guide-card{border-left:3px solid var(--moss)}
+.guide-card.kind-approval{border-left-color:var(--amber)}
+.guide-card.kind-node{border-left-color:var(--amber-dim)}
+.empty-hero{text-align:center;padding:var(--space-3)}
+.empty-hero .sprout-char{font-size:2rem}
+.timeline{list-style:none;margin:0;padding:0}
+.timeline li{position:relative;padding:.35rem 0 .35rem 1.2rem;border-left:2px solid var(--line);margin-left:.4rem}
+.timeline li::before{content:"";position:absolute;left:-5px;top:.8em;width:8px;height:8px;border-radius:50%;background:var(--moss)}
+.timeline li.wait::before{background:var(--amber);box-shadow:0 0 6px var(--amber)}
+.quickgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:.5rem;margin:.6rem 0}
+.quickgrid a{display:block;text-align:center;background:var(--surface-2);border:1px solid var(--line);border-radius:var(--r-sm);padding:.7rem .4rem;text-decoration:none;font-size:1.4rem}
+.quickgrid a small{display:block;font-size:.72rem;color:var(--ink-dim);margin-top:.2rem}
+@media (prefers-reduced-motion:reduce){.living-canvas{display:none}}
 """
 
 NAV = [
     ("WORLD", [("/", "Living World"), ("/world", "World Graph"),
+               ("/craft", "Craft Tree"), ("/guide", "Guide"),
+               ("/symbiosis", "Symbiosis"),
                ("/search", "Search"), ("/projects", "Projects"),
                ("/memory", "Memory"), ("/knowledge", "Knowledge"),
                ("/conversations", "Conversations")]),
@@ -295,6 +344,137 @@ def link_entities(text: str) -> str:
         return f"<a href=\"/missions/{ident}\"><code>{ident}</code></a>"
     safe = re.sub(r"\bmission_[A-Za-z0-9]+\b", mission_link, safe)
     return safe
+
+
+# -- BIG #33 living world helpers ---------------------------------------------
+# Presentational only: technical state text always stays next to
+# the visual. Growth vocabulary (seed/sprout/growing/bloom/
+# harvest) never replaces backend status.
+
+GROWTH_STAGES = ("seed", "sprout", "growing", "bloom", "harvest")
+
+LIVING_BG_JS = """
+(function(){
+try{
+if (window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+var c = document.getElementById('living-canvas');
+if (!c) return;
+var x = c.getContext('2d');
+function size(){ c.width = window.innerWidth; c.height = window.innerHeight; }
+size();
+window.addEventListener('resize', size);
+var spores = [];
+for (var i = 0; i < 26; i++) spores.push({x: Math.random(), y: Math.random(), r: 1 + Math.random() * 2, s: .0002 + Math.random() * .0006, o: .15 + Math.random() * .3});
+var pulse = 0;
+function frame(){
+pulse += .008;
+x.clearRect(0, 0, c.width, c.height);
+for (var i = 0; i < spores.length; i++){
+var p = spores[i];
+p.y -= p.s;
+if (p.y < -0.02) { p.y = 1.02; p.x = Math.random(); }
+var px = p.x * c.width + Math.sin(pulse + i) * 8;
+var py = p.y * c.height;
+x.beginPath();
+x.arc(px, py, p.r, 0, 6.283);
+x.fillStyle = 'rgba(201,214,107,' + p.o.toFixed(2) + ')';
+x.fill();
+}
+window.requestAnimationFrame(frame);
+}
+window.requestAnimationFrame(frame);
+} catch (e) { /* decorative only */ }
+})();
+"""
+
+
+def living_bg() -> str:
+    """Subtle drifting-spore canvas. Decorative, reduced-motion safe."""
+    return ('<div class="living-bg" aria-hidden="true"></div>'
+            '<canvas id="living-canvas" class="living-canvas" '
+            'aria-hidden="true"></canvas>'
+            f'<script>{LIVING_BG_JS}</script>')
+
+
+def visual_state(state: str) -> str:
+    """State language chip: REAL solid, TEST/SIMULATED dashed,
+    UNAVAILABLE muted, WAITING amber, ACTIVE living, BLOCKED
+    contained, VERIFIED glow, CANDIDATE sprout, OBSERVATION
+    spore. The exact technical state stays as text."""
+    key = str(state or "unknown").strip().upper().replace(" ", "_")
+    known = {"REAL", "TEST", "SIMULATED", "UNAVAILABLE", "WAITING",
+             "ACTIVE", "BLOCKED", "VERIFIED", "CANDIDATE",
+             "OBSERVATION"}
+    css = key if key in known else "OBSERVATION"
+    return f"<span class=\"chip state-{esc(css.lower())}\">{esc(key)}</span>"
+
+
+def growth_bar(stage: str, label: str = "") -> str:
+    """Organic progress: seed — sprout — growing — bloom — harvest."""
+    key = str(stage or "seed").strip().lower()
+    try:
+        level = GROWTH_STAGES.index(key) + 1
+    except ValueError:
+        level, key = 1, "seed"
+    glyphs = "🌱—🌿—🌳" if level < 4 else "🌱—🌿—🌳✿"
+    bars = "".join(
+        f"<span class=\"g{' on' if i < level else ''}\"></span>"
+        for i in range(5))
+    caption = esc(label or key)
+    return (f"<div class=\"growthbar\" role=\"img\" aria-label=\"Growth: {caption}\">"
+            f"<span aria-hidden=\"true\">{glyphs}</span>{bars}"
+            f"<small class=\"muted\">{caption}</small></div>")
+
+
+def quest_steps(steps: list) -> str:
+    """Mission steps as a quest trail: ✓ done, ● now, ○ open.
+    Backend status text is kept per step."""
+    rows = []
+    for step in steps or []:
+        status = str(step.get("status", step.get("state", "open")))
+        text = str(step.get("description", step.get("title", status)))[:120]
+        key = status.strip().lower()
+        if key in ("done", "completed", "verified", "succeeded"):
+            rows.append(f"<li><span class=\"q-done\">✓</span> {esc(text)} "
+                        f"<span class=\"muted\">[{esc(status)}]</span></li>")
+        elif key in ("running", "active", "in_progress", "now"):
+            rows.append(f"<li><span class=\"q-now\">●</span> {esc(text)} "
+                        f"<span class=\"muted\">[{esc(status)}]</span></li>")
+        elif key in ("blocked", "failed", "paused"):
+            rows.append(f"<li><span class=\"q-now\">■</span> {esc(text)} "
+                        f"<span class=\"muted\">[{esc(status)}]</span></li>")
+        else:
+            rows.append(f"<li><span class=\"q-todo\">○</span> {esc(text)} "
+                        f"<span class=\"muted\">[{esc(status)}]</span></li>")
+    return f"<ul class=\"quest\"> {''.join(rows) or '<li>○ No steps yet.</li>'} </ul>"
+
+
+def symbiosis_chip(state: str) -> str:
+    key = str(state or "").strip().upper()
+    if key not in ("PROPOSED", "SUPPORTED", "VERIFIED"):
+        key = "PROPOSED"
+    return f"<span class=\"chip sym-{esc(key)}\">{esc(key)}</span>"
+
+
+def guide_card(item: dict) -> str:
+    kind = str(item.get("kind", ""))
+    nxt = item.get("next", {}) if isinstance(item.get("next"), dict) else {}
+    return (f"<div class=\"sprout guide-card kind-{esc(kind)}\">"
+            f"<b>{esc(item.get('glyph', '🌱'))} "
+            f"{esc(item.get('what', ''))}</b><br>"
+            f"<small>{esc(item.get('why', ''))}</small><br>"
+            f"<a href=\"{esc(nxt.get('href', '/'))}\">"
+            f"{esc(nxt.get('label', 'Open'))} →</a></div>")
+
+
+def empty_grove(text: str, actions: list | None = None) -> str:
+    """Empty state with a small mycelium character, never a void."""
+    links = "".join(
+        f"<a class=\"chip\" href=\"{esc(href)}\">{esc(label)}</a>"
+        for label, href in (actions or []))
+    return (f"<div class=\"panel empty-hero\"><div class=\"sprout-char\" "
+            f"aria-hidden=\"true\">🌱</div><p>{esc(text)}</p>"
+            f"<p class=\"flowline\">{links}</p></div>")
 
 
 # -- world graph -----------------------------------------------------------

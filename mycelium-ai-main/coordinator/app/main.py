@@ -7361,9 +7361,11 @@ async def dashboard(entity_id: str = "") -> str:
         f"{' → ' + _ui.esc(row['assigned_node_id']) if row['assigned_node_id'] else ''}</span></li>"
         for row in task_rows)
     main = f"""<h1>Living World</h1>
-    <p class="muted">The graph is the center. Everything around it supports it. Memory lives at <a href="/memory">/memory</a>.</p>
+    <p class="muted">The graph is the center. Everything around it supports it. Memory lives at <a href="/memory">/memory</a>. New: <a href="/guide">Guide</a> · <a href="/craft">Craft Tree</a> · <a href="/symbiosis">Symbiosis</a> — one living workshop, no loose pages.</p>
+    {_guide_panel()}
     {_ui.graph_panel(_json.dumps(graph), "/", entity_id, 1, "missions,nodes", error) if entity_id else ""}
     <h2>Grow from a seed</h2><p class="flowline">{seed_chips}</p>
+    <p class="muted">Pick a seed to open its craft tree and symbioses: every seed links to <a href="/craft">/craft</a> and <a href="/symbiosis">/symbiosis</a>.</p>
     <h2>Active missions</h2><div class="grove">{mission_cards}</div>
     <h2>Recent Tasks</h2><ul>{task_items or "<li>No tasks yet.</li>"}</ul>"""
     context = _ui.context_block(
@@ -7374,8 +7376,29 @@ async def dashboard(entity_id: str = "") -> str:
             ("nodes online", str((status.get("nodes") or {}).get("online", "?"))),
             ("pending approvals", str(sum((status.get("pending_approvals") or {}).values()) if isinstance(status.get("pending_approvals"), dict) else "?"))])) + \
         _ui.context_block("Notifications", f"<ul>{note_items or '<li>Quiet.</li>'}</ul>")
-    return _ui.shell("Living World", "/", main, context,
+    return _ui.shell("Living World", "/", _ui.living_bg() + main,
+                     context,
                      _ui.command_bar())
+
+
+def _guide_panel() -> str:
+    """Home guide strip: WHAT/WHY/NEXT from live state."""
+    from . import ui as _ui
+    try:
+        from .guide import guide_items
+        items = guide_items(limit=3)
+    except Exception:
+        items = []
+    if not items:
+        return ("<div class=\"panel living\"><h2>Guide</h2>"
+                "<p class=\"muted\">🌱 Your world is quiet. "
+                "<a href=\"/guide\">Open the guide</a> for "
+                "first seeds.</p></div>")
+    cards = "".join(_ui.guide_card(item) for item in items)
+    return (f"<div class=\"panel living\"><h2>Guide — "
+            f"where the world needs you</h2>"
+            f"<div class=\"grove\">{cards}</div>"
+            f"<p><a href=\"/guide\">All guide items →</a></p></div>")
 
 
 def _research_runs(limit: int = 20) -> list:
@@ -7568,7 +7591,7 @@ async def world_page(entity_id: str = "", depth: int = 1,
     <p class="muted">Every node is real: world entities from INVENTory, overlays from Mycelium. Select to inspect — the context rail opens here, no page jump — or open a neighborhood to grow.</p>
     {_ui.graph_panel(_json.dumps(graph), "/world", entity_id, depth, show, error)}
     <div class="panel"><h2>Do something with this</h2>
-    <p class="muted">Pick a node above, then act through real endpoints: research continues in <a href="/research">Research</a>, plans wait in <a href="/missions">Missions</a>, imports land in <a href="/conversations">Conversations</a>, approvals wait in <a href="/agents">Agents</a>.</p></div>"""
+    <p class="muted">Pick a node above, then act through real endpoints: research continues in <a href="/research">Research</a>, plans wait in <a href="/missions">Missions</a>, imports land in <a href="/conversations">Conversations</a>, approvals wait in <a href="/agents">Agents</a>. Growth views: <a href="/craft">Craft Tree</a> · <a href="/symbiosis">Symbiosis</a> · <a href="/guide">Guide</a>.</p></div>"""
     context = _ui.context_block(
         "Reading the graph",
         "<ul><li><b>Rings</b> are projects — clusters of work.</li>"
@@ -7576,7 +7599,8 @@ async def world_page(entity_id: str = "", depth: int = 1,
         "<li><b>Halos</b> are memories and missions — alive.</li>"
         "<li><b>Squares</b> are technical nodes.</li>"
         "<li><b>Dashed</b> outlines are Mycelium overlays, not world truth.</li></ul>")
-    return _ui.shell("World Graph", "/world", main, context,
+    return _ui.shell("World Graph", "/world", _ui.living_bg() + main,
+                     context,
                      _ui.command_bar())
 
 
@@ -7653,12 +7677,14 @@ def activity_page() -> str:
     notes = "".join(
         f"<li>{_ui.esc(item.title)} <span class=\"muted\">[{_ui.esc(item.severity)}]</span></li>"
         for item in list_notifications_for_report(limit=15))
-    main = f"""<h1>Activity</h1>
+    main = f"""<h1>Activity — the world breathing</h1>
+    <p class="muted">Every line is a real event with provenance. Mycelium voice up front, technical detail one click away in <a href="/activity">events</a> and <a href="/morning">Morning</a>.</p>
     <div class="panel"><h2>Stream</h2><table><tr><th>Event</th><th>What</th><th>When</th></tr>
     {"".join(items) or "<tr><td colspan='3'>Quiet.</td></tr>"}</table></div>"""
     context = _ui.context_block("Notifications",
                                 f"<ul>{notes or '<li>None.</li>'}</ul>")
-    return _ui.shell("Activity", "/activity", main, context,
+    return _ui.shell("Activity", "/activity", _ui.living_bg() + main,
+                     context,
                      _ui.command_bar())
 
 
@@ -7736,7 +7762,8 @@ def agenda_page() -> str:
         f"{source.get('event_count', 0)} events "
         f"<span class=\"muted\">({ _ui.esc(str(source.get('imported_at', ''))[:16])})</span></li>"
         for source in sources)
-    main = f"""<h1>Agenda</h1>
+    main = f"""<h1>Agenda — today in the ecosystem</h1>
+    <p class="muted">Today's soil: appointments give missions and research their timing. Import stays preview → dedup → confirm; events link to projects and missions as context, never as orders.</p>
     <div class="panel"><h2>Importeer agenda (.ics)</h2>
     <p class="muted">Plak .ics-tekst, bekijk de preview, bevestig pas daarna. Duplicaten (zelfde UID) worden nooit dubbel opgeslagen. Alles blijft alleen-lezen context.</p>
     <form method="post" action="/web/agenda/import">
@@ -7936,7 +7963,7 @@ def research_page() -> str:
         f"<span class=\"muted\">[OPEN QUESTION]</span></li>"
         for question in open_q[:8])
     main = f"""<h1>Research workshop</h1>
-    <p class="muted">Alleen read-only bronnen. Elke claim verwijst naar een bron; synthesis is interpretatie, nooit feit.</p>
+    <p class="muted">The research network, read-only always: bounded questions, allow-listed transports, provenance on every claim. Phone → coordinator → queue → Linux nodes → Ollama → dossier → knowledge → project → mission. Which node researched what is visible per run; contradictions surface as candidates.</p>
     <div class="panel"><h2>Onderzoeksvraag</h2>
     <form method="post" action="/web/research">
     <input type="text" name="question" placeholder="Onderzoek mijn camper…" style="width:70%" aria-label="Research question" autocomplete="off">
@@ -8303,6 +8330,11 @@ def missions_page() -> str:
                          ("done", "completed", "skipped"))
         growth = _ui.growth_class(m["status"], done_steps,
                                   len(m["steps"]))
+        quest = _ui.quest_steps([
+            {"status": step.get("status", "open"),
+             "description": f"{step.get('kind', '')} — "
+                            f"{step.get('description', '')[:80]}"}
+            for step in m["steps"][:6]])
         cards += (
             f"<div class=\"sprout {growth} grain\"><b>{dot} "
             f"{_ui.esc(m['goal'][:90])}</b><br>"
@@ -8310,9 +8342,11 @@ def missions_page() -> str:
             f"<span class=\"muted\">step {m['current_step']}/"
             f"{len(m['steps'])}</span><br>"
             f"<span class=\"muted\">{_ui.esc(waiting[:220])}</span><br>"
+            f"{quest}"
             f"<a href='/missions/{_ui.esc(m['mission_id'])}'>"
             "Open process</a></div>")
-    main = f"""<h1>Missions</h1>
+    main = f"""<h1>Missions — quests with guardrails</h1>
+    <p class="muted">Quests are missions wearing work clothes: same plan, same exact-YES approvals, same visible steps. No game button ever skips a safety gate.</p>
     <div class="panel"><p>Autonomy exists only <b>inside</b> an approved plan. Approved is not executed — execution is a separate, visible step.</p>
     <form method="post" action="/web/missions/from-template">
     <select name="template_id" aria-label="Template">
@@ -8491,10 +8525,11 @@ def cameras_page() -> str:
     found = "".join(
         f"<li><small>{_ui.esc(str(entry.get('path', '?')))}</small></li>"
         for entry in detected.get("devices", []))
-    main = f"""<h1>Cameras</h1>
+    main = f"""<h1>Camera Lab</h1>
+    <p class="muted">Your Insta360 journey: camera → observation → candidate object → project → craft tree → research → dossier → world growth. Every step is real and labeled.</p>
     <div class="panel"><p>Cameras are <b>observation sources</b>, never actuators. Snapshots need a
     capture runtime; without one the API refuses (409) instead of inventing pixels.</p>
-    <p class="muted">Workflow: CAMERA → CONNECT → SOURCE → SNAPSHOT → OBSERVATION → INVENTORY → ANALYSIS. Elke stap toont eerlijk wat werkt.</p></div>
+    <p class="muted">Workflow: CAMERA → CONNECT → SOURCE → SNAPSHOT → OBSERVATION → INVENTORY → ANALYSIS. Elke stap toont eerlijk wat werkt. Observations feed <a href="/craft">Craft Tree</a> and <a href="/knowledge">Knowledge</a>.</p></div>
     <div class="panel"><h2>How to connect (honest)</h2>
     <p class="muted"><b>WHAT EXISTS:</b> registration, local device scan (names only), snapshot ingest pipeline, observation store, availability probe. <b>WHAT IS MISSING:</b> live Insta360 transport — no reviewed SDK path, capture refused until a real adapter lands. <b>WHAT JELLES NEEDS TO DO:</b> register the camera below, then ingest a file snapshot (camera → file → ingest) or wait for the webcam-driver/file-ingest adapter.</p>
     <p>Insta360 state: <b>REGISTERED</b> possible, <b>CONNECTED</b> only with a working adapter, otherwise <b>UNAVAILABLE</b> — never fake-connected.</p></div>
@@ -8637,6 +8672,7 @@ def workshop_3d_page(artifact: str = "") -> str:
     scripting, no printer commands."""
     from . import ui as _ui
     main = f"""<h1>3D Workshop</h1>
+    <p class="muted">From idea to thing you can hold: observation → candidate object → 3D model → edit → slice → fabrication → physical result → observation → improvement. Follow the <a href="/craft">Craft Tree</a>; every stage shows status, provenance, next action.</p>
     <div class="panel"><form id="loadform">
     <input type="text" id="ref" placeholder="artifact_ref, e.g. fab-test-cube.stl"
     value="{_ui.esc(artifact)}" style="width:50%" aria-label="Artifact reference">
@@ -8791,7 +8827,19 @@ def mobile_page(node: str = "") -> str:
     <textarea name="message" placeholder="Onderzoek dit / maak hier een project van / wat staat er open?…" aria-label="Message"></textarea><br><br>
     <button type="submit">Send</button></form>
     <p class="muted">PHONE → coordinator → routing → node → result → mobile. INPUT → PROCESSING → NODE → RESULT. Nooit doen alsof een node iets uitvoerde als het niet werkelijk gebeurd is.</p>
-    <p><b>Quick actions</b> (bestaande routes): <a href="/research">Research</a> · <a href="/cameras">Observe</a> · <a href="/chat">Ask Mycelium</a> · <a href="/world">INVENTory</a> · <a href="/workshop/3d">3D</a> · <a href="/projects">Project</a> · <a href="/nodes">Nodes</a> · <a href="/missions">Tasks</a> · <a href="/conversations">Import conversation</a></p></div>
+    <p><b>Quick actions</b> (bestaande routes): <a href="/research">Research</a> · <a href="/cameras">Observe</a> · <a href="/chat">Ask Mycelium</a> · <a href="/world">INVENTory</a> · <a href="/workshop/3d">3D</a> · <a href="/projects">Project</a> · <a href="/nodes">Nodes</a> · <a href="/missions">Tasks</a> · <a href="/conversations">Import conversation</a></p>
+    <div class="quickgrid" aria-label="Quick input actions">
+    <a href="/research">🔍<small>Onderzoek</small></a>
+    <a href="/cameras">📷<small>Kijk hiernaar</small></a>
+    <a href="/knowledge">🧠<small>Onthoud dit</small></a>
+    <a href="/conversations">💡<small>Nieuw idee</small></a>
+    <a href="/writes">📦<small>Voeg toe</small></a>
+    <a href="/fabrication">🛠<small>Maak</small></a>
+    <a href="/guide">🌱<small>Ga verder</small></a>
+    <a href="/missions">📋<small>Wat staat open?</small></a>
+    </div>
+    <p class="muted">PROCESSING: Mycelium verwerkt dit (INPUT → PROCESSING → NODE → RESULT). RESULT verschijnt hieronder bij events en in <a href="/activity">Activity</a>. NEEDS YOU: alles met een YES-button wacht op jou — <a href="/guide">Guide</a> wijst de weg.</p></div>
+    {_mobile_guide_panel()}
     <div class="panel"><h2>Hoe gebruik ik Mycelium?</h2>
     <p class="muted">1. Typ wat je wilt. 2. Mycelium bepaalt wat nodig is. 3. Een node kan het uitvoeren. 4. Je ziet wat er gebeurt. 5. Toestemming blijft expliciet. 6. Resultaat komt terug op je telefoon. Jij blijft degene die acties goedkeurt.</p></div>
     <div class="panel"><h2>Approvals</h2>
@@ -8823,6 +8871,22 @@ def mobile_page(node: str = "") -> str:
     <div class="panel"><h2>Events</h2><ul>{events_html or "<li>No events</li>"}</ul></div>"""
     return _ui.shell("Mobile", "/mobile", main, "",
                      _ui.command_bar())
+
+
+def _mobile_guide_panel() -> str:
+    """Guide strip for the phone: next real action, one tap away."""
+    from . import ui as _ui
+    try:
+        from .guide import guide_items
+        items = guide_items(limit=2)
+    except Exception:
+        items = []
+    if not items:
+        return ""
+    cards = "".join(_ui.guide_card(item) for item in items)
+    return (f"<div class=\"panel\"><h2>Needs you</h2>"
+            f"<div class=\"grove\">{cards}</div>"
+            f"<p><a href=\"/guide\">All guide items →</a></p></div>")
 
 
 @app.post("/web/desktop/{action_id}/decision")
@@ -9026,8 +9090,8 @@ def conversations_page() -> str:
         f"<span class=\"muted\">(<a href=\"{_ui.esc(item['link'])}\">"
         f"dossier</a>)</span></li>"
         for item in found.get("research_open_questions", [])[:6])
-    main = f"""<h1>Conversations — bring outside chats in</h1>
-    <p class="muted">Import from ChatGPT, Codex, OpenCode, Ollama, Claude, Gemini, Antigravity, Google AI Studio — any platform, no lock-in. Imports become <b>OBSERVATION/CANDIDATE</b> context with evidence; nothing is stored as fact. Direct connectors are future adapters.</p>
+    main = f"""<h1>AI Conversation Archive</h1>
+    <p class="muted">Not another chat app — the bridge between every AI you talk to and the workshop. Import → analyse → missed ideas → candidates → projects → research → context packet → continue anywhere. <a href="/guide">Guide</a> shows what each import still needs.</p>
     <div class="panel"><h2>Te tonen aan Jelles</h2>
     <ul>{show_items or "<li>Nog niets — importeer een gesprek.</li>"}</ul>
     <h3>Open researchvragen</h3><ul>{show_research or "<li>—</li>"}</ul>
@@ -9181,8 +9245,45 @@ def nodes_page(check_cap: str = "") -> str:
     <input type="text" name="check_cap" placeholder="research.fetch" value="{_ui.esc(check_cap[:80])}" style="width:50%" aria-label="Capability" autocomplete="off">
     <button type="submit">Check</button></form>
     {_routing_answer_html(check_cap)}</div>
+    {_mesh_panel_html()}
     <div class="grove">{cards}</div>"""
     return _ui.shell("Nodes", "/nodes", main, _ui.command_bar())
+
+
+def _mesh_panel_html() -> str:
+    """Node mesh: shared-capability map + safe delegation contract."""
+    from . import ui as _ui
+    try:
+        from .nodemesh import mesh_topology
+        topo = mesh_topology()
+    except Exception:
+        return ""
+    nodes = topo.get("nodes", [])
+    if not nodes:
+        return ("<div class=\"panel\"><h2>Node mesh</h2>"
+                "<p class=\"muted\">No nodes registered yet — the "
+                "mesh grows when laptops join. Delegation contract: "
+                "<a href=\"/api/v1/mesh/topology\">topology "
+                "(JSON)</a>. Nodes never dial each other; every "
+                "request goes node → coordinator → eligible "
+                "node(s).</p></div>")
+    edges = "".join(
+        f"<li><small>{_ui.esc(edge['from'])} ↔ "
+        f"{_ui.esc(edge['to'])} via coordinator "
+        f"({ _ui.esc(', '.join(edge.get('shared', [])))})</small></li>"
+        for edge in topo.get("edges", [])[:12])
+    kinds = ", ".join(f"<code>{_ui.esc(kind)}</code>"
+                      for kind in topo.get("allowed_kinds", []))
+    return (
+        f"<div class=\"panel\"><h2>Node mesh — safe remote help</h2>"
+        f"<p class=\"muted\">Node A asks the coordinator, the "
+        f"coordinator tasks an eligible Node B. No shell, no "
+        f"wildcard, no direct control. Delegable kinds: {kinds}.</p>"
+        f"<ul>{edges or '<li>No shared capabilities yet.</li>'}</ul>"
+        f"<p class=\"muted\"><a href=\"/api/v1/mesh/topology\">"
+        f"Topology (JSON)</a> · validate via "
+        f"<code>POST /api/v1/mesh/validate</code> · dispatch via "
+        f"the normal task queue.</p></div>")
 
 
 @app.get("/3d", response_class=HTMLResponse)
@@ -10427,3 +10528,234 @@ async def web_candidate_reject(candidate_id: str,
     except CandidateRefusedError:
         pass
     return RedirectResponse("/knowledge", status_code=303)
+
+
+# =============================================================================
+# BIG #33 — Living World: symbiosis, craft tree, guide, node mesh
+# =============================================================================
+
+
+@app.get("/api/v1/guide")
+def api_guide(limit: int = 12) -> dict:
+    from .guide import guide_items
+    try:
+        count = max(1, min(int(limit), 20))
+    except (TypeError, ValueError):
+        count = 12
+    return {"items": guide_items(limit=count),
+            "honesty": "Derived live from approvals, candidates, "
+                       "conversations, research, cameras, "
+                       "fabrications, nodes, projects. Read-only."}
+
+
+@app.get("/api/v1/symbiosis")
+async def api_symbiosis(entity_id: str = "",
+                        depth: int = 1) -> dict:
+    from .symbiosis import clean_entity, for_entity
+    try:
+        cleaned = clean_entity(entity_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    try:
+        return await for_entity(cleaned, depth)
+    except (InventoryRefusedError, InventoryUnavailable,
+            ValueError) as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+
+
+@app.get("/api/v1/craft")
+async def api_craft(entity_id: str = "", depth: int = 1) -> dict:
+    from .symbiosis import clean_entity
+    from .craft import craft_tree
+    try:
+        cleaned = clean_entity(entity_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    try:
+        return await craft_tree(cleaned, depth)
+    except (InventoryRefusedError, InventoryUnavailable,
+            ValueError) as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+
+
+@app.get("/api/v1/mesh/topology")
+def api_mesh_topology() -> dict:
+    from .nodemesh import mesh_topology
+    return mesh_topology()
+
+
+@app.post("/api/v1/mesh/validate")
+def api_mesh_validate(body: dict) -> dict:
+    from .nodemesh import validate_delegation
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=422,
+                            detail="JSON body required")
+    try:
+        return validate_delegation(
+            str(body.get("requesting_node", "")),
+            str(body.get("task_kind", "")),
+            str(body.get("capability", "")),
+            body.get("payload") if isinstance(
+                body.get("payload"), dict) else {})
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+
+@app.get("/guide", response_class=HTMLResponse)
+def guide_page() -> str:
+    """Mycelium Guide: what needs Jelles, with WHAT/WHY/NEXT."""
+    from . import ui as _ui
+    from .guide import guide_items
+    items = guide_items(limit=12)
+    cards = "".join(_ui.guide_card(item) for item in items) or \
+        _ui.empty_grove(
+            "Your world is quiet. Nothing waits for you — "
+            "grow a seed and the guide will notice.",
+            [("Create project", "/projects"),
+             ("Import conversation", "/conversations"),
+             ("Research something", "/research"),
+             ("Connect a node", "/nodes")])
+    main = (f"<h1>Guide — where the world needs you</h1>"
+            f"<p class=\"muted\">Not a tutorial. The guide reads "
+            f"live state and points at real work: WHAT, WHY, NEXT."
+            f"</p><div class=\"grove\">{cards}</div>")
+    return _ui.shell("Guide", "/guide", _ui.living_bg() + main,
+                     _ui.command_bar())
+
+
+@app.get("/symbiosis", response_class=HTMLResponse)
+async def symbiosis_page(entity_id: str = "") -> str:
+    """Symbiosis: explicit mutual influence, PROPOSED/SUPPORTED/VERIFIED."""
+    from . import ui as _ui
+    from .symbiosis import for_entity, proposed
+    detail = ""
+    if entity_id:
+        try:
+            result = await for_entity(entity_id, 1)
+            rows = "".join(
+                f"<tr><td>{_ui.symbiosis_chip(item['state'])}</td>"
+                f"<td><a href=\"/world?entity_id={_ui.esc(item['entity_b'])}\">"
+                f"{_ui.esc(item['entity_b'])}</a></td>"
+                f"<td>{_ui.esc(item['predicate'][:80])}</td></tr>"
+                for item in result["symbioses"][:30])
+            counts = result["counts"]
+            detail = (
+                f"<div class=\"panel\"><h2>"
+                f"{_ui.esc(entity_id)}</h2>"
+                f"<p class=\"muted\">{counts['verified']} verified · "
+                f"{counts['supported']} supported · "
+                f"{counts['proposed']} proposed. "
+                f"{_ui.esc(result['honesty'])}</p>"
+                f"<table><tr><th>State</th><th>Other</th>"
+                f"<th>Through</th></tr>{rows or '<tr><td colspan=3>'
+                f'No symbioses yet — relations grow here when you '
+                f'link entities.</td></tr>'}</table>"
+                f"<p><a href=\"/craft?entity_id={_ui.esc(entity_id)}\">"
+                f"Open craft tree →</a></p></div>")
+        except (ValueError, InventoryRefusedError,
+                InventoryUnavailable) as exc:
+            detail = f"<div class=\"panel\"><p>{_ui.esc(str(exc))}</p></div>"
+    proposals = proposed(limit=12)
+    prop_rows = "".join(
+        f"<tr><td>{_ui.symbiosis_chip('PROPOSED')}</td>"
+        f"<td>{_ui.esc(prop['title'][:80])}</td>"
+        f"<td>{_ui.esc(', '.join(prop['entities'][:4]))}</td>"
+        f"<td><a href=\"{_ui.esc(prop['link'])}\">Review</a></td></tr>"
+        for prop in proposals) or ("<tr><td colspan='4'>No open "
+                                   "proposals. Connection candidates "
+                                   "appear here — AI proposes, you "
+                                   "decide.</td></tr>")
+    main = (f"<h1>Symbiosis — what strengthens what</h1>"
+            f"<p class=\"muted\">Two or more entities influencing "
+            f"each other through an explicit relation. Never "
+            f"invented: SUPPORTED/VERIFIED are real INVENTory "
+            f"edges, PROPOSED are open candidates.</p>"
+            f"<div class=\"panel\"><form method=\"get\" "
+            f"action=\"/symbiosis\"><label>Entity "
+            f"<input type=\"text\" name=\"entity_id\" "
+            f"placeholder=\"proj_… / obj_…\" value=\""
+            f"{_ui.esc(entity_id)}\" style=\"width:16rem\"></label>"
+            f"<button type=\"submit\">Grow</button></form></div>"
+            f"{detail}"
+            f"<div class=\"panel\"><h2>Open proposals</h2>"
+            f"<table><tr><th>State</th><th>Proposal</th>"
+            f"<th>Entities</th><th>Next</th></tr>"
+            f"{prop_rows}</table></div>")
+    return _ui.shell("Symbiosis", "/symbiosis",
+                     _ui.living_bg() + main, _ui.command_bar())
+
+
+@app.get("/craft", response_class=HTMLResponse)
+async def craft_page(entity_id: str = "", depth: int = 1) -> str:
+    """Craft Tree: idea → project → … → made thing, on real records."""
+    from . import ui as _ui
+    from .craft import STAGES, craft_tree
+    detail = ""
+    if entity_id:
+        try:
+            tree = await craft_tree(entity_id, depth)
+            blocks = []
+            for stage in tree["stages"]:
+                nodes = "".join(
+                    f"<li><a href=\"{_ui.esc(node['href'])}\">"
+                    f"{_ui.esc(node['label'][:60])}</a> "
+                    f"<span class=\"muted\">[{_ui.esc(node['kind'])}"
+                    f"]</span></li>"
+                    for node in stage["nodes"][:8])
+                cls = "full" if stage["nodes"] else "empty"
+                stage_list_html = nodes or (
+                    '<li class="muted">Not grown yet.</li>')
+                blocks.append(
+                    f"<div class=\"craft-stage {cls}\">"
+                    f"<h3>{_ui.esc(stage['glyph'])} "
+                    f"{_ui.esc(stage['title'])}</h3>"
+                    f"<ul>{stage_list_html}</ul></div>")
+            gaps = "".join(
+                f"<li>{_ui.esc(gap['hint'])} "
+                f"<a href=\"{_ui.esc(gap['href'])}\">Act →</a></li>"
+                for gap in tree["gaps"])
+            detail = (
+                f"<p class=\"muted\">Growth: "
+                f"{_ui.esc(tree['growth'])} · "
+                f"{tree['stages_present']}/12 stages present. "
+                f"{_ui.esc(tree['honesty'])}</p>"
+                f"{_ui.growth_bar(tree['growth'], tree['growth'])}"
+                f"<div class=\"craft\">{''.join(blocks)}</div>"
+                + (f"<div class=\"panel\"><h2>What is missing?</h2>"
+                    f"<ul>{gaps}</ul></div>" if gaps else "")
+                + (f"<p class=\"muted\">{_ui.esc(tree['error'])}"
+                    f"</p>" if tree.get("error") else ""))
+        except (ValueError, InventoryRefusedError,
+                InventoryUnavailable) as exc:
+            detail = f"<div class=\"panel\"><p>{_ui.esc(str(exc))}</p></div>"
+    else:
+        stage_list = "".join(
+            f"<span class=\"step\">{glyph} {title}</span>"
+            f"<span class=\"arrow\">→</span>"
+            for _, glyph, title in STAGES)
+        detail = (
+            f"<div class=\"panel\"><h2>This craft path has not "
+            f"grown yet.</h2><div class=\"path\">{stage_list}</div>"
+            f"<p class=\"muted\">Pick a project or object seed — "
+            f"every node is a real record, every gap a real "
+            f"next action.</p></div>")
+    seeds_html = ""
+    try:
+        seeds = await _world_seeds()
+        seeds_html = "".join(
+            f"<a class=\"chip\" href=\"/craft?entity_id="
+            f"{_ui.esc(item['id'])}\">{_ui.esc(item['label'])}</a>"
+            for item in seeds[:8])
+    except Exception:
+        pass
+    main = (f"<h1>Craft Tree — from idea to made thing</h1>"
+            f"<div class=\"panel\"><form method=\"get\" "
+            f"action=\"/craft\"><label>Entity "
+            f"<input type=\"text\" name=\"entity_id\" "
+            f"placeholder=\"proj_… / obj_… / idea_…\" value=\""
+            f"{_ui.esc(entity_id)}\" style=\"width:16rem\"></label>"
+            f"<button type=\"submit\">Grow</button></form>"
+            f"<p class=\"flowline\">{seeds_html}</p></div>"
+            f"{detail}")
+    return _ui.shell("Craft Tree", "/craft",
+                     _ui.living_bg() + main, _ui.command_bar())
