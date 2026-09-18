@@ -32,6 +32,8 @@ KNOWN_PREFIXES = (
     # BIG #34 camera ecosystem: observations, ingest sessions.
     # Observation ids use the existing obs-/obs_ spellings.
     "obs_", "obs-", "cing_",
+    # BIG #35 workshop: models, materials, fab jobs.
+    "mdl_", "mat_", "fabjob_",
 )
 
 

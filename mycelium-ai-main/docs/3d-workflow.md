@@ -1,7 +1,9 @@
-# 3D Workflow (BIG #30)
+# 3D Workflow (BIG #35: workbench)
 
 PHOTO / OBJECT → OBSERVATION → 3D MODEL CANDIDATE → MODEL → EDIT →
 PREPARE → SLICE → G-CODE → PRINTER → VERIFY.
+
+Full ecosystem in `docs/3d-workshop.md`.
 
 ## What exists (REAL)
 
@@ -48,3 +50,14 @@ creation from mobile follows the same inbox (`/web/objects/propose`
 the world graph — model ↔ project ↔ file ↔ object ↔ research
 becomes navigable instead of implied. Links themselves are still
 proposed through `/writes` and need YES.
+
+## Workbench (BIG #35)
+
+`/3d` is now one workbench: Models (`mdl_…` registry, STL/OBJ
+inspection, 3MF/GLB/GLTF metadata-only), Materials (known /
+candidate / unknown), per-entity presence checklists with gaps,
+fab jobs (designed → … → verified state machine around the
+existing YES flow), Machines (printer badges SIMULATED /
+UNAVAILABLE + mesh-capable nodes), link proposals (PROPOSED
+symbiosis), continuation packet (`/api/v1/workshop/packet`),
+real progress bars. Details in `docs/3d-workshop.md`.

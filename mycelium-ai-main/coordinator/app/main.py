@@ -8888,6 +8888,7 @@ def mobile_page(node: str = "") -> str:
     <input type="text" name="question" placeholder="Zoek dit uit…" style="width:70%" aria-label="Research question" autocomplete="off">
     <button type="submit">Queue research</button></form>
     <p><a href="/api/v1/discoveries">What did we miss?</a></p></div>
+    {_mobile_workshop_html()}
     <div class="panel"><h2>Notifications{_ui.esc(' for ' + node) if node else ''}</h2>
     <p class="muted">IN_APP is live (polling); WEB PUSH is UNAVAILABLE — <a href="/api/v1/notifications/capability">capability (JSON)</a>.</p>
     <ul>{notifications_html or "<li>link ?node=&lt;node_id&gt; for notifications</li>"}</ul></div>
@@ -8943,6 +8944,31 @@ def _mobile_camera_html() -> str:
                  "into the inbox first. No native upload; the inbox "
                  "is the honest path.")
     return f"<p>{state}</p>"
+
+
+def _mobile_workshop_html() -> str:
+    """Workbench quick actions: input only, coordinator decides,
+    YES gates never bypassed."""
+    from . import ui as _ui
+    try:
+        from .workshop3d import list_fabjobs, list_models
+        models = len(list_models(limit=50))
+        active = sum(1 for job in list_fabjobs(limit=50)
+                     if job.get("stage") not in
+                     ("verified", "cancelled", "blocked"))
+    except Exception:
+        models, active = 0, 0
+    return (
+        f"<div class=\"panel\"><h2>Workbench</h2>"
+        f"<p class=\"muted\">{models} model(s), {active} active "
+        f"fab job(s). The coordinator decides what can happen.</p>"
+        f"<p><a href=\"/3d\">Scan this</a> · "
+        f"<a href=\"/3d\">Add model</a> · "
+        f"<a href=\"/3d\">Find material</a> · "
+        f"<a href=\"/3d\">Connect to project</a> · "
+        f"<a href=\"/craft\">What can I build?</a> · "
+        f"<a href=\"/fabrication\">Continue fabrication</a> · "
+        f"<a href=\"/cameras\">Verify this print</a></p></div>")
 
 
 @app.post("/web/desktop/{action_id}/decision")
@@ -9342,9 +9368,196 @@ def _mesh_panel_html() -> str:
         f"the normal task queue.</p></div>")
 
 
+def _workbench_models_html() -> str:
+    """Model library: register + inspect + progress."""
+    from . import ui as _ui
+    try:
+        from .workshop3d import list_models
+        models = list_models(limit=12)
+    except Exception:
+        models = []
+    cards = "".join(
+        f"<div class=\"sprout\"><b>{_ui.esc(item['filename'][:50])}</b><br>"
+        f"<code>{_ui.esc(item['model_id'][:20])}</code> "
+        f"{_ui.chip(item.get('status', '?'))}<br>"
+        f"<span class=\"muted\">mesh: "
+        f"{_ui.esc(str(item.get('inspection', {}).get('mesh_verdict', 'UNKNOWN')))} · "
+        f"{_ui.esc(str(item.get('size_bytes', 0)))} bytes</span><br>"
+        f"<a href=\"/craft?entity_id={_ui.esc(item['model_id'])}\">Craft</a> · "
+        f"<a href=\"/symbiosis?entity_id={_ui.esc(item['model_id'])}\">Symbiosis</a></div>"
+        for item in models) or _ui.empty(
+            "No models yet — copy an STL/OBJ into the fabrication dir, then register it.")
+    progress = _ui.stage_progress(
+        "Model library",
+        [(f"{item['filename'][:40]}", item.get("status", "open"))
+         for item in models[:8]]) if models else ""
+    return (
+        f"<div class=\"panel\"><h2>Models</h2>"
+        f"<form method=\"post\" action=\"/web/workshop/models\">"
+        f"<input type=\"text\" name=\"filename\" "
+        f"placeholder=\"bracket.stl (already in fabrication dir)\" "
+        f"style=\"width:50%\" aria-label=\"Model filename\">"
+        f"<button type=\"submit\">Register + inspect</button></form>"
+        f"<p class=\"muted\">STL/OBJ get geometric inspection; "
+        f"3MF/GLB/GLTF register metadata-only (UNKNOWN). Same bytes "
+        f"never register twice.</p>"
+        f"<div class=\"grove\">{cards}</div>{progress}</div>")
+
+
+def _workbench_materials_html() -> str:
+    """Material library: known / candidate / unknown."""
+    from . import ui as _ui
+    try:
+        from .workshop3d import list_materials
+        materials = list_materials(limit=12)
+    except Exception:
+        materials = []
+    cards = "".join(
+        f"<div class=\"sprout\"><b>{_ui.esc(item['name'][:50])}</b><br>"
+        f"{_ui.chip(item.get('kind', '?'))}"
+        f"{_ui.chip(item.get('state', '?'))}<br>"
+        f"<span class=\"muted\">{_ui.esc(item.get('notes', '')[:100])}</span></div>"
+        for item in materials) or _ui.empty(
+            "No materials yet — name what is on the shelf.")
+    return (
+        f"<div class=\"panel\"><h2>Materials</h2>"
+        f"<form method=\"post\" action=\"/web/workshop/materials\">"
+        f"<input type=\"text\" name=\"name\" placeholder=\"PLA green\" "
+        f"style=\"width:30%\" aria-label=\"Material name\">"
+        f"<select name=\"kind\" aria-label=\"Kind\">"
+        f"<option value=\"filament\">filament</option>"
+        f"<option value=\"resin\">resin</option>"
+        f"<option value=\"fastener\">fastener</option>"
+        f"<option value=\"electronics\">electronics</option>"
+        f"<option value=\"other\">other</option></select>"
+        f"<select name=\"state\" aria-label=\"State\">"
+        f"<option value=\"known\">known</option>"
+        f"<option value=\"candidate\">candidate</option>"
+        f"<option value=\"unknown\">unknown</option></select>"
+        f"<button type=\"submit\">Add material</button></form>"
+        f"<p class=\"muted\">Sustainability notes are operator notes, "
+        f"never verified claims.</p>"
+        f"<div class=\"grove\">{cards}</div></div>")
+
+
+def _workbench_fabjobs_html() -> str:
+    """Fab jobs with honest stage chips + progress."""
+    from . import ui as _ui
+    try:
+        from .workshop3d import list_fabjobs
+        jobs = list_fabjobs(limit=10)
+    except Exception:
+        jobs = []
+    cards = ""
+    for job in jobs:
+        actions = ""
+        stage = job.get("stage", "")
+        if stage == "designed":
+            actions = _w3_action(job["job_id"], "prepare", "Prepare")
+        elif stage == "prepared":
+            actions = _w3_action(job["job_id"], "slice", "Slice (TEST)")
+        elif stage == "gcode-ready":
+            actions = _w3_action(job["job_id"], "propose",
+                                 "Propose print (needs YES)")
+        elif stage in ("proposed", "approved", "printing-simulated",
+                       "printed-simulated"):
+            actions = _w3_action(job["job_id"], "sync", "Sync")
+        cards += (
+            f"<div class=\"sprout\"><b>{_ui.esc(job['job_id'][:28])}</b><br>"
+            f"{_ui.chip(stage)}"
+            f"<span class=\"muted\">model "
+            f"{_ui.esc(job.get('model_id', '')[:16])} · printer "
+            f"{_ui.esc(job.get('printer_id', 'none'))}</span><br>"
+            f"{actions}</div>")
+    progress = _ui.stage_progress(
+        "Fabrication",
+        [(f"{job['job_id'][:24]}", job.get("stage", "open"))
+         for job in jobs[:8]]) if jobs else ""
+    return (
+        f"<div class=\"panel\"><h2>Fabrication</h2>"
+        f"<form method=\"post\" action=\"/web/workshop/fabjobs\">"
+        f"<input type=\"text\" name=\"model_id\" placeholder=\"mdl_…\" "
+        f"style=\"width:22%\" aria-label=\"Model id\">"
+        f"<input type=\"text\" name=\"material_ref\" placeholder=\"material\" "
+        f"style=\"width:18%\" aria-label=\"Material\">"
+        f"<input type=\"text\" name=\"printer_id\" placeholder=\"prt_…\" "
+        f"style=\"width:18%\" aria-label=\"Printer\">"
+        f"<input type=\"text\" name=\"profile\" placeholder=\"profile\" "
+        f"style=\"width:14%\" aria-label=\"Profile\">"
+        f"<button type=\"submit\">Start fab job</button></form>"
+        f"<p class=\"muted\">Execution only via "
+        f"<a href=\"/writes\">Writes</a> exact YES; here you prepare, "
+        f"slice (TEST), propose and sync honest stages.</p>"
+        f"<div class=\"grove\">{cards or _ui.empty('No fab jobs yet.')}</div>"
+        f"{progress}</div>")
+
+
+def _w3_action(job_id: str, action: str, label: str) -> str:
+    from . import ui as _ui
+    return (
+        f"<form method=\"post\" action=\"/web/workshop/fabjobs/"
+        f"{_ui.esc(job_id)}/{action}\" style=\"display:inline\">"
+        f"<button type=\"submit\">{_ui.esc(label)}</button></form>")
+
+
+def _w3_printer_badge(printer_id: str) -> str:
+    """Honest printer badge: SIMULATED, UNAVAILABLE (no adapter),
+    or bare capabilities (registered, execution via YES flow)."""
+    from . import ui as _ui
+    if _printer_is_simulated(printer_id):
+        return " " + _ui.chip("[SIMULATED]", "state-SIMULATED")
+    try:
+        from .printer3d import adapter_for_printer
+        adapter = adapter_for_printer(printer_id)
+    except (ValueError, AttributeError):
+        adapter = None
+    if adapter is None:
+        return " " + _ui.chip("[UNAVAILABLE]", "state-UNAVAILABLE")
+    return ""
+
+
+def _workbench_machines_html() -> str:
+    """Printers + mesh-capable nodes. Read-only."""
+    from . import ui as _ui
+    try:
+        from .printer3d import list_stored_printers
+        printers = list_stored_printers()
+    except Exception:
+        printers = []
+    rows = "".join(
+        f"<li><b>{_ui.esc(device.name)}</b> "
+        f"({_ui.esc(device.printer_id)}) — "
+        f"{_ui.esc(', '.join(device.capabilities))}"
+        f"{_w3_printer_badge(device.printer_id)}</li>"
+        for device in printers) or "<li>No printers</li>"
+    mesh_nodes = ""
+    try:
+        from .nodemesh import mesh_topology
+        topo = mesh_topology()
+        capable = [node for node in topo.get("nodes", [])
+                   if any("mesh" in cap or "cad" in cap or
+                          "analysis" in cap
+                          for cap in node.get("capabilities", []))]
+        mesh_nodes = "".join(
+            f"<li>{_ui.esc(node['node_id'])} — "
+            f"{_ui.esc(', '.join(node.get('roles', [])))}</li>"
+            for node in capable[:8]) or \
+            "<li>No mesh-capable nodes</li>"
+    except Exception:
+        mesh_nodes = "<li>Mesh unavailable</li>"
+    return (
+        f"<div class=\"panel\"><h2>Machines</h2><ul>{rows}</ul>"
+        f"<h3>Mesh-capable nodes</h3><ul>{mesh_nodes}</ul>"
+        f"<p class=\"muted\">Nodes only run allowlisted "
+        f"capabilities via <a href=\"/nodes\">task claims</a>; "
+        f"no shell, no direct control.</p></div>")
+
+
 @app.get("/3d", response_class=HTMLResponse)
 def model_3d_page(entity_id: str = "") -> str:
-    """3D workflow pipeline: honest stage chips, no fake meshes."""
+    """3D workbench: models, materials, projects, fabrication,
+    machines, observations, verification — one workshop, honest
+    stage chips, no fake meshes, no fake prints."""
     from . import ui as _ui
     from .fab_flow import list_fabrications
     try:
@@ -9355,6 +9568,7 @@ def model_3d_page(entity_id: str = "") -> str:
         f"<li><a href=\"/workshop?fabrication_id={_ui.esc(record.fabrication_id)}\">{_ui.esc(record.fabrication_id)}</a> — {_ui.esc(record.status)}</li>"
         for record in runs) or "<li>No runs yet.</li>"
     related_html = ""
+    presence_html = ""
     if entity_id.strip():
         import anyio as _anyio
         try:
@@ -9380,7 +9594,17 @@ def model_3d_page(entity_id: str = "") -> str:
             related_html = (
                 "<div class=\"panel\"><p class=\"muted\">Relations "
                 "unavailable right now.</p></div>")
-    main = """<h1>3D — from photo to verified object</h1>
+        try:
+            from .workshop3d import workshop_presence
+            presence = workshop_presence(entity_id.strip()[:100])
+            presence_html = _ui.stage_progress(
+                f"Workshop presence — {entity_id.strip()[:40]}",
+                [(label, "completed" if present else "open")
+                 for label, present in presence["checklist"]])
+        except Exception:
+            presence_html = ""
+    main = f"""<h1>3D Workbench — from idea to verified object</h1>
+    <p class="muted">One workbench: models, materials, projects, fabrication, machines, observations, verification. Every stage REAL / TEST / SIMULATED / UNAVAILABLE, labeled.</p>
     <div class="panel"><div class="path" aria-label="3D pipeline">
     <span class="step done">PHOTO / OBJECT</span><span class="arrow">→</span>
     <span class="step done">OBSERVATION</span><span class="arrow">→</span>
@@ -9391,20 +9615,27 @@ def model_3d_page(entity_id: str = "") -> str:
     <span class="step">G-CODE</span><span class="arrow">→</span>
     <span class="step">PRINTER</span><span class="arrow">→</span>
     <span class="step">VERIFY</span></div>
-    <p class="muted">Stages: READY / WAITING / SIMULATED / TEST / HARDWARE_REQUIRED / UNAVAILABLE. OBJECT → CREATE 3D MODEL uses the existing procedural/test workflow; true reconstruction transport is UNAVAILABLE and says so. No fake generated mesh.</p></div>
+    <p class="muted">Stages: READY / WAITING / SIMULATED / TEST / HARDWARE_REQUIRED / UNAVAILABLE. OBJECT → CREATE 3D MODEL uses the existing procedural/test workflow; true reconstruction transport is UNAVAILABLE and says so. No fake generated mesh. Prints need exact YES in <a href="/writes">Writes</a>; SIMULATED execution never becomes REAL.</p></div>
+    {_workbench_models_html()}
+    {_workbench_materials_html()}
+    {presence_html}
+    {_workbench_fabjobs_html()}
+    {_workbench_machines_html()}
+    """ + related_html + f"""
     <div class="panel"><h2>Connect a model</h2>
-    <p class="muted">Link a model, file, object or project — as a proposal first, in <a href="/writes">Writes</a>. Example: model <code>mod_…</code> <code>used_in</code> project <code>proj_…</code>.</p>
-    <form method="post" action="/web/links/propose">
-    <input type="text" name="from_id" placeholder="from: mod_… / file_…" style="width:28%" aria-label="From entity">
-    <select name="predicate" aria-label="Predicate"><option value="used_in">used_in</option><option value="part_of">part_of</option><option value="produced_by">produced_by</option><option value="related_to">related_to</option><option value="depends_on">depends_on</option></select>
-    <input type="text" name="to_id" placeholder="to: proj_… / obj_…" style="width:28%" aria-label="To entity">
-    <button type="submit">Propose link</button></form></div>
+    <p class="muted">Link a model, material or fab job to a project, object, idea or machine — as a PROPOSED symbiosis first. Example: model <code>mdl_…</code> <code>used_in</code> project <code>proj_…</code>.</p>
+    <form method="post" action="/web/workshop/links">
+    <input type="text" name="workshop_id" placeholder="mdl_… / mat_… / fabjob_…" style="width:24%" aria-label="Workshop record">
+    <select name="predicate" aria-label="Predicate"><option value="used_in">used_in</option><option value="represents">represents</option><option value="requires">requires</option><option value="generated_from">generated_from</option><option value="fabricated_by">fabricated_by</option><option value="replacement_for">replacement_for</option><option value="compatible_with">compatible_with</option><option value="verified_by">verified_by</option><option value="part_of">part_of</option><option value="related_to">related_to</option></select>
+    <input type="text" name="entity_id" placeholder="to: proj_… / obj_…" style="width:24%" aria-label="To entity">
+    <button type="submit">Propose link</button></form>
+    <p class="muted">Prefer <a href="/writes">Writes</a> for direct INVENTory relations (<code>used_in</code>, <code>part_of</code>, <code>produced_by</code>, <code>related_to</code>, <code>depends_on</code>).</p></div>
     <div class="filament" aria-hidden="true"></div>
-    """ + related_html + """
-    <div class="panel"><h2>Workspace</h2><p><a href="/workshop/3d">Open 3D workshop</a> · <a href="/fabrication">Fabrication</a> · <a href="/workshop">Chain view</a></p>
+    <div class="panel"><h2>Workspace</h2><p><a href="/workshop/3d">Open 3D workshop</a> · <a href="/fabrication">Fabrication</a> · <a href="/workshop">Chain view</a> · <a href="/api/v1/workshop/packet">continuation packet (JSON)</a></p>
     <p><form method="get" action="/3d" aria-label="Related relations"><input type="text" name="entity_id" placeholder="mod_… / file_… / proj_…" value="{_ui.esc(entity_id)}" style="width:40%" aria-label="Entity"> <button type="submit">Show relations</button></form></p></div>
-    <div class="panel"><h2>Recent runs</h2><ul>""" + rows + """</ul></div>"""
-    return _ui.shell("3D", "/workshop/3d", main, _ui.command_bar())
+    <div class="panel"><h2>Recent runs</h2><ul>{rows}</ul></div>"""
+    return _ui.shell("3D", "/workshop/3d", _ui.living_bg() + main,
+                     _ui.command_bar())
 
 
 # =============================================================================
@@ -11097,3 +11328,268 @@ async def web_camera_suggest_link(request: Request) -> Response:
         pass
     target = f"/cameras/{device_id}" if device_id else "/cameras"
     return RedirectResponse(target, status_code=303)
+
+
+# =============================================================================
+# BIG #35 — 3D WORKSHOP ECOSYSTEM. Models become living citizens:
+# MODEL ↔ OBJECT ↔ MATERIAL ↔ PROJECT ↔ IDEA ↔ MACHINE ↔
+# FABRICATION ↔ OBSERVATION ↔ VERIFICATION ↔ KNOWLEDGE ↔
+# SYMBIOSIS ↔ CRAFT. Workshop metadata only; relationships are
+# connection candidates; prints need the existing YES flow.
+# =============================================================================
+
+
+@app.post("/api/v1/workshop/models", status_code=201)
+def api_workshop_model_register(body: dict) -> dict:
+    from .workshop3d import WorkshopRefusedError, register_model
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=422, detail="JSON body required")
+    try:
+        return register_model(str(body.get("filename", "")),
+                              source=str(body.get("source", "inbox")))
+    except WorkshopRefusedError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+
+@app.get("/api/v1/workshop/models")
+def api_workshop_models(limit: int = 50) -> dict:
+    from .workshop3d import list_models
+    return {"models": list_models(limit=limit)}
+
+
+@app.post("/api/v1/workshop/models/{model_id}/inspect")
+def api_workshop_model_inspect(model_id: str) -> dict:
+    from .workshop3d import WorkshopRefusedError, inspect_model
+    try:
+        return inspect_model(model_id)
+    except WorkshopRefusedError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+
+@app.post("/api/v1/workshop/materials", status_code=201)
+def api_workshop_material_create(body: dict) -> dict:
+    from .workshop3d import WorkshopRefusedError, create_material
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=422, detail="JSON body required")
+    try:
+        return create_material(
+            str(body.get("name", "")),
+            kind=str(body.get("kind", "filament")),
+            state=str(body.get("state", "unknown")),
+            notes=str(body.get("notes", "")),
+            sustainability_note=str(body.get("sustainability_note",
+                                             "")),
+            linked_entity=str(body.get("linked_entity", "")))
+    except WorkshopRefusedError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+
+@app.get("/api/v1/workshop/materials")
+def api_workshop_materials(limit: int = 50) -> dict:
+    from .workshop3d import list_materials
+    return {"materials": list_materials(limit=limit)}
+
+
+@app.get("/api/v1/workshop/materials/suggest")
+def api_workshop_material_suggest(model_id: str = "",
+                                  limit: int = 5) -> dict:
+    from .workshop3d import WorkshopRefusedError, suggest_materials
+    try:
+        suggestions = suggest_materials(model_id, limit=limit)
+    except WorkshopRefusedError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    return {"model_id": model_id[:80], "suggestions": suggestions,
+            "note": "Suggestions, never assignments."}
+
+
+@app.post("/api/v1/workshop/links", status_code=201)
+def api_workshop_link(body: dict) -> dict:
+    from .workshop3d import WorkshopRefusedError, propose_workshop_link
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=422, detail="JSON body required")
+    try:
+        return propose_workshop_link(
+            str(body.get("workshop_id", "")),
+            str(body.get("entity_id", "")),
+            str(body.get("predicate", "")))
+    except WorkshopRefusedError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+
+@app.post("/api/v1/workshop/fabjobs", status_code=201)
+def api_workshop_fabjob_create(body: dict) -> dict:
+    from .workshop3d import WorkshopRefusedError, create_fabjob
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=422, detail="JSON body required")
+    try:
+        return create_fabjob(
+            str(body.get("model_id", "")),
+            material_ref=str(body.get("material_ref", "")),
+            printer_id=str(body.get("printer_id", "")),
+            profile=str(body.get("profile", "")),
+            actor=str(body.get("actor", "api")))
+    except WorkshopRefusedError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+
+@app.get("/api/v1/workshop/fabjobs")
+def api_workshop_fabjobs(limit: int = 50) -> dict:
+    from .workshop3d import list_fabjobs
+    return {"fabjobs": list_fabjobs(limit=limit)}
+
+
+@app.get("/api/v1/workshop/fabjobs/{job_id}")
+def api_workshop_fabjob_get(job_id: str) -> dict:
+    from .workshop3d import WorkshopRefusedError, get_fabjob
+    try:
+        job = get_fabjob(job_id)
+    except WorkshopRefusedError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    if job is None:
+        raise HTTPException(404, "Fab job not found")
+    return job
+
+
+@app.post("/api/v1/workshop/fabjobs/{job_id}/{action}")
+def api_workshop_fabjob_action(job_id: str, action: str,
+                               body: dict | None = None) -> dict:
+    from .workshop3d import (WorkshopRefusedError, cancel_job,
+                             observe_job, prepare_job, propose_job_print,
+                             slice_job, sync_job, verify_job)
+    payload = body if isinstance(body, dict) else {}
+    try:
+        if action == "prepare":
+            return prepare_job(job_id)
+        if action == "slice":
+            return slice_job(
+                job_id,
+                slicer=str(payload.get("slicer", "test-slicer")))
+        if action == "propose":
+            return propose_job_print(
+                job_id, actor=str(payload.get("actor", "api")))
+        if action == "sync":
+            return sync_job(job_id)
+        if action == "observe":
+            return observe_job(
+                job_id, str(payload.get("observation_id", "")))
+        if action == "verify":
+            return verify_job(
+                job_id, verified_by=str(payload.get("verified_by",
+                                                    "")))
+        if action == "cancel":
+            return cancel_job(
+                job_id, reason=str(payload.get("reason", "")))
+    except WorkshopRefusedError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    raise HTTPException(
+        status_code=422,
+        detail="action must be prepare, slice, propose, sync, "
+               "observe, verify or cancel")
+
+
+@app.get("/api/v1/workshop/presence")
+def api_workshop_presence(entity_id: str = "") -> dict:
+    from .workshop3d import WorkshopRefusedError, workshop_presence
+    try:
+        return workshop_presence(entity_id)
+    except WorkshopRefusedError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+
+@app.get("/api/v1/workshop/packet")
+def api_workshop_packet(project_id: str = "") -> dict:
+    from .workshop3d import workshop_packet
+    return workshop_packet(project_id[:100])
+
+
+@app.post("/web/workshop/models")
+async def web_workshop_model_register(request: Request) -> Response:
+    from .workshop3d import WorkshopRefusedError, register_model
+    fields = await _form_fields(request)
+    try:
+        model = register_model(fields.get("filename", ""),
+                               source="inbox")
+        from .workshop3d import inspect_model
+        try:
+            inspect_model(model["model_id"])
+        except WorkshopRefusedError:
+            pass
+    except WorkshopRefusedError:
+        pass
+    return RedirectResponse("/3d", status_code=303)
+
+
+@app.post("/web/workshop/materials")
+async def web_workshop_material_create(request: Request) -> Response:
+    from .workshop3d import WorkshopRefusedError, create_material
+    fields = await _form_fields(request)
+    try:
+        create_material(
+            fields.get("name", ""),
+            kind=fields.get("kind", "filament") or "filament",
+            state=fields.get("state", "unknown") or "unknown",
+            notes=fields.get("notes", ""),
+            sustainability_note=fields.get("sustainability_note",
+                                           ""))
+    except WorkshopRefusedError:
+        pass
+    return RedirectResponse("/3d", status_code=303)
+
+
+@app.post("/web/workshop/fabjobs")
+async def web_workshop_fabjob_create(request: Request) -> Response:
+    from .workshop3d import WorkshopRefusedError, create_fabjob
+    fields = await _form_fields(request)
+    try:
+        create_fabjob(
+            fields.get("model_id", ""),
+            material_ref=fields.get("material_ref", ""),
+            printer_id=fields.get("printer_id", ""),
+            profile=fields.get("profile", ""), actor="web")
+    except WorkshopRefusedError:
+        pass
+    return RedirectResponse("/3d", status_code=303)
+
+
+@app.post("/web/workshop/fabjobs/{job_id}/{action}")
+async def web_workshop_fabjob_action(job_id: str, action: str,
+                                     request: Request) -> Response:
+    from .workshop3d import (WorkshopRefusedError, cancel_job,
+                             observe_job, prepare_job,
+                             propose_job_print, slice_job, sync_job,
+                             verify_job)
+    fields = await _form_fields(request)
+    try:
+        if action == "prepare":
+            prepare_job(job_id)
+        elif action == "slice":
+            slice_job(job_id, slicer=fields.get("slicer",
+                                                "test-slicer"))
+        elif action == "propose":
+            propose_job_print(job_id, actor="web")
+        elif action == "sync":
+            sync_job(job_id)
+        elif action == "observe":
+            observe_job(job_id, fields.get("observation_id", ""))
+        elif action == "verify":
+            verify_job(job_id,
+                       verified_by=fields.get("verified_by", ""))
+        elif action == "cancel":
+            cancel_job(job_id, reason=fields.get("reason", ""))
+    except WorkshopRefusedError:
+        pass
+    return RedirectResponse("/3d", status_code=303)
+
+
+@app.post("/web/workshop/links")
+async def web_workshop_link(request: Request) -> Response:
+    from .workshop3d import WorkshopRefusedError, propose_workshop_link
+    fields = await _form_fields(request)
+    try:
+        propose_workshop_link(fields.get("workshop_id", ""),
+                              fields.get("entity_id", ""),
+                              fields.get("predicate",
+                                         "related_to"))
+    except WorkshopRefusedError:
+        pass
+    return RedirectResponse("/3d", status_code=303)

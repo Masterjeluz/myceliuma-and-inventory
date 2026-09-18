@@ -1,13 +1,13 @@
-# Mycelium V2 Roadmap — BIG #34 → BIG #40 (directional)
+# Mycelium V2 Roadmap — BIG #35 → BIG #40 (directional)
 
-Status after BIG #34: camera ecosystem on the living world —
-multi-file ingest sessions (`cing_…`, sha256 dedupe),
-VLM wrapper (REAL Ollama / UNAVAILABLE fallback), per-label
-idempotent candidates, possible-match + link proposals as
-PROPOSED symbiosis, timeline from the shared bus, Camera Lab
-+ Insta360 guide, mobile camera flow, guide items, IN_APP
-notifications. 1186 Mycelium tests green; INVENTory untouched
-(179 + 1 pre-existing). See `docs/BIG34-final-report.md`.
+Status after BIG #35: 3D workshop ecosystem on the living
+world — model/material/fab-job registries, honest
+inspection, PROPOSED symbiosis links, 13-stage fab machine
+around the existing YES flow, camera two-half verification,
+presence checklists, continuation packets, real progress,
+activity-reactive ambient background, /3d workbench. 1199
+Mycelium tests green; INVENTory untouched (179 + 1
+pre-existing). See `docs/BIG35-final-report.md`.
 
 Principles for every step: reuse stores, explicit promotion,
 provenance always, honest REAL/TEST/SIMULATED/UNAVAILABLE/FUTURE,
@@ -31,12 +31,12 @@ proposals, timeline, Camera Lab + guide, mobile flow,
 notifications. Insta360 live transport stays UNAVAILABLE
 until a verified adapter exists (file ingest is REAL).
 
-## BIG #35 — 3D Workshop
+## BIG #35 — 3D Workshop (DONE 2026-09-18)
 
-Models ↔ projects ↔ materials ↔ fabrication as visible
-relations: file/model entity pages, material notes via
-candidates, fabrication proposal from a linked model, verify
-loop with camera observations. No printer transport claims.
+Shipped: registries, inspection, materials, links, fab-job
+machine, camera verification, presence, packet, progress,
+workbench. Real printer transport stays UNAVAILABLE;
+SIMULATED execution never becomes REAL.
 
 ## BIG #36 — Mobile Mycelium
 

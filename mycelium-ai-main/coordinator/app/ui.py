@@ -363,8 +363,11 @@ var x = c.getContext('2d');
 function size(){ c.width = window.innerWidth; c.height = window.innerHeight; }
 size();
 window.addEventListener('resize', size);
+var density = parseInt(c.getAttribute('data-spores') || '26', 10);
+if (!(density >= 8 && density <= 48)) density = 26;
+var waiting = c.getAttribute('data-waiting') === '1';
 var spores = [];
-for (var i = 0; i < 26; i++) spores.push({x: Math.random(), y: Math.random(), r: 1 + Math.random() * 2, s: .0002 + Math.random() * .0006, o: .15 + Math.random() * .3});
+for (var i = 0; i < density; i++) spores.push({x: Math.random(), y: Math.random(), r: 1 + Math.random() * 2, s: .0002 + Math.random() * .0006, o: .15 + Math.random() * .3});
 var pulse = 0;
 function frame(){
 pulse += .008;
@@ -377,7 +380,8 @@ var px = p.x * c.width + Math.sin(pulse + i) * 8;
 var py = p.y * c.height;
 x.beginPath();
 x.arc(px, py, p.r, 0, 6.283);
-x.fillStyle = 'rgba(201,214,107,' + p.o.toFixed(2) + ')';
+var amber = waiting && (i % 5 === 0);
+x.fillStyle = amber ? 'rgba(217,164,65,' + p.o.toFixed(2) + ')' : 'rgba(201,214,107,' + p.o.toFixed(2) + ')';
 x.fill();
 }
 window.requestAnimationFrame(frame);
@@ -389,9 +393,30 @@ window.requestAnimationFrame(frame);
 
 
 def living_bg() -> str:
-    """Subtle drifting-spore canvas. Decorative, reduced-motion safe."""
+    """Subtle drifting-spore canvas. Decorative, reduced-motion safe.
+
+    BIG #35: density follows recent ecosystem activity (more
+    events = more spores, 8..48) and every fifth spore glows
+    amber while approvals wait. Ambient only — density never
+    claims specific events happened."""
+    spores = 26
+    waiting = False
+    try:
+        from .living_state import current_state
+        state = current_state()
+        activity = int(state.get("new_observations_24h", 0)) + \
+            int(state.get("new_candidates_24h", 0)) + \
+            int(state.get("new_connections_24h", 0)) + \
+            int(state.get("running_missions", 0)) + \
+            int(state.get("active_research_runs", 0))
+        spores = max(8, min(48, 16 + activity * 2))
+        waiting = int(state.get("waiting_approvals", 0)) > 0
+    except Exception:
+        pass
     return ('<div class="living-bg" aria-hidden="true"></div>'
             '<canvas id="living-canvas" class="living-canvas" '
+            f'data-spores="{spores}" '
+            f'data-waiting="{1 if waiting else 0}" '
             'aria-hidden="true"></canvas>'
             f'<script>{LIVING_BG_JS}</script>')
 
@@ -454,6 +479,50 @@ def symbiosis_chip(state: str) -> str:
     if key not in ("PROPOSED", "SUPPORTED", "VERIFIED"):
         key = "PROPOSED"
     return f"<span class=\"chip sym-{esc(key)}\">{esc(key)}</span>"
+
+
+#: Stage states that count as done for progress bars. Everything
+#: else counts as open; blocked/failed show separately. Callers
+#: pass real backend states — this helper only renders.
+PROGRESS_DONE = frozenset({
+    "done", "completed", "verified", "approved", "prepared",
+    "sliced", "gcode-ready", "printed-simulated", "observed",
+    "connected", "inspected",
+})
+
+PROGRESS_BAD = frozenset({"blocked", "failed", "cancelled",
+                          "rejected"})
+
+
+def stage_progress(title: str, stages: list) -> str:
+    """Real progress from real stages: [██████░░░░] 60% plus a
+    ✓/○/■ checklist with backend state text. No XP, no levels —
+    the bar derives from the stages passed in."""
+    items = list(stages or [])
+    total = len(items)
+    done = sum(1 for label, state in items
+               if str(state).strip().lower() in PROGRESS_DONE)
+    percent = int(100 * done / total) if total else 0
+    filled = max(0, min(10, round(10 * done / total))) if total \
+        else 0
+    bar = "█" * filled + "░" * (10 - filled)
+    rows = []
+    for label, state in items:
+        key = str(state).strip().lower()
+        if key in PROGRESS_DONE:
+            mark = "<span class=\"q-done\">✓</span>"
+        elif key in PROGRESS_BAD:
+            mark = "<span class=\"q-now\">■</span>"
+        else:
+            mark = "<span class=\"q-todo\">○</span>"
+        rows.append(f"<li>{mark} {esc(label)} "
+                    f"<span class=\"muted\">[{esc(state)}]</span></li>")
+    return (
+        f"<div class=\"panel\"><h3>{esc(title)}</h3>"
+        f"<p role=\"img\" aria-label=\"{esc(title)}: {percent}%\">"
+        f"<code>[{bar}] {percent}%</code></p>"
+        f"<ul class=\"quest\">{''.join(rows) or '<li>No stages.</li>'}</ul>"
+        f"</div>")
 
 
 def guide_card(item: dict) -> str:

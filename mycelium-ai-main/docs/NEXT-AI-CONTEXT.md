@@ -1,6 +1,6 @@
 # NEXT-AI-CONTEXT — continue Mycelium development here
 
-Date: 2026-09-18. HEAD: `BIG #34 - build camera ecosystem`
+Date: 2026-09-18. HEAD: `BIG #35 - build 3D workshop ecosystem`
 (main, pushed to origin/main). Start with `git log --oneline -5`
 and `git status` (a pre-existing `Mycelium/agent/agent_ui.py`
 modification is NOT ours — leave it).
@@ -17,51 +17,54 @@ agent is the only hands (pull-only, outbound). Provenance always;
 health scoped; no shell/RCE; no background threads (jobs run on
 explicit trigger). Tests: `pytest -v` per project with tmp DB
 env vars (`MYCELIUM_DATABASE_PATH`, `MYCELIUM_CHAT_DATABASE_PATH`
-before TestClient). Full Mycelium suite: 1186 tests, batch-run
-(single run exceeds 10-min timeout); INVENTory: 179 + 1
-pre-existing byte-size failure (do not touch that test).
+before TestClient; `MYCELIUM_FABRICATION_DIR` for fab tests).
+Full Mycelium suite: 1199 tests, batch-run (single run exceeds
+10-min timeout); INVENTory: 179 + 1 pre-existing byte-size
+failure (do not touch that test).
 
-## What BIG #34 added (where)
+## What BIG #35 added (where)
 
-- `coordinator/app/camera_ecosystem.py` — `cing_…` sessions
-  (≤8 files, sha256 dedupe, per-file states, additive table),
-  VLM wrapper (REAL Ollama / UNAVAILABLE fallback, stored
-  distinguishably), per-label idempotent candidates, bounded
-  possible-matches, connection-candidate link proposals,
-  timeline from the shared bus, IN_APP fan-out to nodes.
-- `main.py` — 9 API routes (`/api/v1/camera-sessions*`,
-  `/observations/{id}/describe|propose-candidates`,
-  `/camera-match`, `/camera-suggest-link`,
-  `/camera-timeline`) + 5 web routes; Camera Lab page +
-  8-step Insta360 guide; detail page (sessions, Describe /
-  Propose / Review buttons, link form, timeline); mobile
-  camera panel.
-- `guide.py` — camera items (inbox files, undescribed
-  observations with deep links).
-- `symbiosis.py` — `obs_`/`obs-`/`cam_`/`cing_` prefixes so
-  camera entities participate (regex allows `-`).
-- Tests: `tests/test_big34_camera_ecosystem.py` (13).
-- Scripts: `scripts/b34_smoke.py` (full chain on tmp DBs).
-- Heading lesson (again): page `<h1>` strings are test
-  contracts — reframe via paragraphs; fix double-numbering
-  when mixing `<ol>` with manual "1." prefixes.
-- Route lesson: `/api/v1/camera-sessions/{id}` + `/run`
-  suffix is safe (no sub-path shadowing like nodes/{id}).
+- `coordinator/app/workshop3d.py` — `mdl_`/`mat_`/`fabjob_`
+  registries (additive chat-DB tables), inbox-pattern model
+  ingest (STL/OBJ scanned, 3MF/GLB/GLTF metadata-only,
+  sha256 dedupe), closed link predicates → connection
+  candidates, 13-stage fab-job machine deriving
+  approval/execution from write records + PrintResult,
+  camera two-half verification, presence checklists,
+  continuation packet.
+- `main.py` — 16 API routes (`/api/v1/workshop/*`) + 5 web
+  routes; /3d workbench (Models/Materials/Presence/
+  Fabrication/Machines/Connect/Workspace/Runs); mobile
+  Workbench; honest printer badges.
+- `ui.py` — `stage_progress()` (real bars, no XP);
+  `living_bg()` reads living_state (density 8–48, amber on
+  waiting approvals; ambient only, reduced-motion safe).
+- `guide.py` — workshop items + `workshop` kind.
+- `symbiosis.py` — `mdl_`/`mat_`/`fabjob_` prefixes.
+- Tests: `tests/test_big35_workshop.py` (13).
+- Scripts: `scripts/b35_smoke.py` (tmp-DB full chain).
+- Lessons: WriteResult uses `outcome` (+
+  `after.print_result.status`), NOT `result.status`;
+  SlicerResult field is `sha256`; check_artifact_ref covers
+  only STL/OBJ/G-code (models need their own gate);
+  binary-STL header is 80 bytes; never insert helpers
+  between a route decorator and its function.
 
 ## Docs to read first
 
 `docs/ARCHITECTURE_STATUS.md` (truth), `docs/ROADMAP.md` +
-`docs/ROADMAP-V2.md` (BIG #35–40), `docs/camera-ecosystem.md`,
-`docs/camera-workflow.md`, `docs/living-ecosystem.md`,
-`docs/knowledge-lifecycle.md`, `docs/research-routing.md`,
-`docs/context-packets.md`, `docs/mycelium-ui-personality.md`,
-`docs/BIG34-final-report.md` (§19 = commit/push record).
+`docs/ROADMAP-V2.md` (BIG #36–40), `docs/3d-workshop.md`,
+`docs/3d-workflow.md`, `docs/camera-ecosystem.md`,
+`docs/living-ecosystem.md`, `docs/knowledge-lifecycle.md`,
+`docs/research-routing.md`, `docs/context-packets.md`,
+`docs/mycelium-ui-personality.md`,
+`docs/BIG35-final-report.md` (§2 = commit/push record).
 
-## Next BIG (from BIG34 report §21 / ROADMAP-V2)
+## Next BIG (from BIG35 report §13 / ROADMAP-V2)
 
-BIG #35: 3D Workshop — models ↔ projects ↔ materials ↔
-fabrication as visible relations; verify loop with camera
-observations; no printer transport claims. Constraints: no
-new stores, existing gates, honest labels, tmp DBs,
-screenshots in `docs/r35-shots/`, one commit `BIG #35 -
-...`, push to `origin/main`.
+BIG #36: Mobile Mycelium — phone as primary input surface
+(approval triage, packet handoff, per-node notification
+deep-links, camera-inbox guidance, all on existing flows).
+Constraints: no new stores, existing gates, honest labels,
+tmp DBs, screenshots in `docs/r36-shots/`, one commit
+`BIG #36 - ...`, push to `origin/main`.

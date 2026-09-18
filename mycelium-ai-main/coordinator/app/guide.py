@@ -21,6 +21,7 @@ from __future__ import annotations
 GUIDE_KINDS = (
     "approval", "candidate", "conversation", "research",
     "camera", "fabrication", "node", "project", "mission",
+    "workshop",
 )
 
 
@@ -202,6 +203,73 @@ def guide_items(limit: int = 12) -> list[dict]:
                 "No mission is currently running.",
                 "Paused work waits; pick one quest to wake up.",
                 "Open missions", "/missions"))
+    except Exception:
+        pass
+    try:
+        from .workshop3d import list_fabjobs, list_models
+        models = list_models(limit=50)
+        jobs = list_fabjobs(limit=50)
+        try:
+            from .knowledge import list_candidates
+            candidates = list_candidates(limit=300)
+        except Exception:
+            candidates = []
+        linked_models: set[str] = set()
+        model_projects: dict[str, set[str]] = {}
+        for entry in candidates:
+            try:
+                data = entry.model_dump(mode="json")
+            except Exception:
+                continue
+            if data.get("candidate_type") != "connection":
+                continue
+            refs = data.get("entity_refs") or []
+            for ref in refs:
+                if str(ref).startswith("mdl_"):
+                    linked_models.add(str(ref))
+                    model_projects.setdefault(str(ref), set()).update(
+                        other for other in refs
+                        if str(other).startswith("proj_"))
+        bare = [model for model in models
+                if model.get("model_id") not in linked_models]
+        if bare:
+            items.append(_item(
+                "workshop", "🧊",
+                f"{bare[0]['filename'][:60]} has a model but no "
+                "material or project.",
+                "A model alone builds nothing — link material "
+                "and a project to start a craft chain.",
+                "Open 3D workbench", "/3d"))
+        awaiting = [job for job in jobs
+                    if job.get("stage") in ("observed", "verifying")]
+        if awaiting:
+            items.append(_item(
+                "workshop", "📷",
+                f"Fab job {awaiting[0]['job_id'][:24]} waits for "
+                "human verification.",
+                "Camera evidence exists but is not reviewed. "
+                "Verify or send it back.",
+                "Verify the print", "/3d"))
+        blocked = [job for job in jobs
+                   if job.get("stage") == "blocked"]
+        if blocked:
+            items.append(_item(
+                "workshop", "■",
+                f"Fab job {blocked[0]['job_id'][:24]} is blocked.",
+                "Something in the chain refused — inspect before "
+                "retrying.",
+                "Inspect the job", "/3d"))
+        reusable = [(model_id, projects) for model_id, projects
+                    in model_projects.items() if len(projects) >= 2]
+        if reusable:
+            model_id, projects = reusable[0]
+            items.append(_item(
+                "workshop", "🔗",
+                f"Model {model_id[:16]} serves "
+                f"{len(projects)} projects.",
+                "One model, several craft chains — check whether "
+                "they can share material and machine time.",
+                "Open symbiosis", "/symbiosis"))
     except Exception:
         pass
     return items[: max(1, min(int(limit or 12), 20))]
