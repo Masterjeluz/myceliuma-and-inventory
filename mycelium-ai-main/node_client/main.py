@@ -36,6 +36,125 @@ def detected_memory_mb() -> int:
         return 0
 
 
+FETCH_MAX_CHARS = 65536
+FETCH_TIMEOUT_SECONDS = 20.0
+FETCH_ALLOWED_CONTENT = ("text/", "application/json",
+                         "application/xml")
+
+
+def _fetch_host_blocked(host: str) -> bool:
+    """Local numeric/host check on the node. The coordinator
+    validates every URL fully first (research_transport); this is
+    defense in depth for the bytes this host actually opens."""
+    import ipaddress as _ip
+    cleaned = (host or "").lower().rstrip(".")
+    if not cleaned:
+        return True
+    try:
+        parsed = _ip.ip_address(cleaned)
+        return (parsed.is_private or parsed.is_loopback
+                or parsed.is_link_local or parsed.is_multicast
+                or parsed.is_reserved or parsed.is_unspecified)
+    except ValueError:
+        pass
+    if cleaned in ("localhost",):
+        return True
+    if all(part.isdigit() and 0 <= int(part) <= 255
+           for part in cleaned.split(".") if part) and \
+            "." in cleaned:
+        return True
+    return False
+
+
+async def fetch_url_narrow_async(
+        url: str, max_chars: int = FETCH_MAX_CHARS
+        ) -> tuple[bool, dict, str | None]:
+    """Async variant for tests. Same guards as the sync path."""
+    checked = _check_fetch_url(url, max_chars)
+    if isinstance(checked, str):
+        return False, {}, checked
+    text, cap = checked
+    try:
+        async with httpx.AsyncClient(
+                timeout=FETCH_TIMEOUT_SECONDS,
+                follow_redirects=False) as client:
+            response = await client.get(
+                text, headers={"User-Agent": "MyceliumNode/1 "
+                                            "(research fetch)"})
+    except Exception as error:
+        return False, {}, f"fetch failed: {error}"
+    return _fetch_result(response, text, cap)
+
+
+def _check_fetch_url(url: str, max_chars: int
+                     ) -> tuple[str, int] | str:
+    """Shared URL guards. Returns (url, cap) or an error string."""
+    from urllib.parse import urlparse as _urlparse
+    if not isinstance(url, str) or not url.strip():
+        return "fetch needs a URL"
+    text = url.strip()
+    if len(text) > 2000:
+        return "URL too long; refusing"
+    try:
+        parsed = _urlparse(text)
+    except ValueError as error:
+        return f"URL unparsable: {error}"
+    if parsed.scheme.lower() not in ("https", "http"):
+        return "https/http URLs only; refusing"
+    if not parsed.hostname or _fetch_host_blocked(
+            parsed.hostname):
+        return "host refused (local/numeric/empty)"
+    if "@" in text.split("://", 1)[1].split("/", 1)[0]:
+        return "credentials in URLs are refused"
+    try:
+        cap = max(1024, min(int(max_chars or FETCH_MAX_CHARS),
+                            FETCH_MAX_CHARS))
+    except (TypeError, ValueError):
+        return "max_chars must be an integer"
+    return text, cap
+
+
+def _fetch_result(response, text: str, cap: int
+                  ) -> tuple[bool, dict, str | None]:
+    """Shared bounded response handling. No redirects, text only."""
+    if response.status_code in (301, 302, 303, 307, 308):
+        return False, {}, "redirects are never followed; refusing"
+    if not 200 <= response.status_code < 300:
+        return False, {}, f"HTTP {response.status_code}; refusing"
+    content_type = response.headers.get("content-type", "").lower()
+    if content_type and not content_type.startswith(
+            FETCH_ALLOWED_CONTENT):
+        return False, {}, (f"content-type '{content_type}' refused; "
+                            "text only")
+    body = response.content[:cap + 1]
+    truncated = len(body) > cap
+    decoded = body[:cap].decode("utf-8", errors="replace")
+    return True, {"url": text, "status_code": response.status_code,
+                  "content_type": content_type[:120],
+                  "text": decoded, "truncated": truncated,
+                  "chars": len(decoded)}, None
+
+
+def fetch_url_narrow(url: str, max_chars: int = FETCH_MAX_CHARS
+                     ) -> tuple[bool, dict, str | None]:
+    """Fetch one coordinator-approved URL as bounded text (sync,
+    for the claim loop). No redirects, no credentials, no
+    binaries, no shell — bytes in, text out."""
+    checked = _check_fetch_url(url, max_chars)
+    if isinstance(checked, str):
+        return False, {}, checked
+    text, cap = checked
+    try:
+        with httpx.Client(timeout=FETCH_TIMEOUT_SECONDS,
+                          follow_redirects=False) as client:
+            response = client.get(
+                text, headers={"User-Agent": "MyceliumNode/1 "
+                                            "(research fetch)"})
+    except Exception as error:
+        return False, {}, f"fetch failed: {error}"
+    return _fetch_result(response, text, cap)
+
+
 def execute_safe_task(task: dict[str, object]) -> tuple[bool, dict[str, object], str | None]:
     """Execute only allow-listed, non-invasive local tasks.
 
@@ -43,12 +162,22 @@ def execute_safe_task(task: dict[str, object]) -> tuple[bool, dict[str, object],
     paths or Python code. New executors need their own explicit review.
 
     The claim loop auto-executes, so it may only serve read-only kinds:
-    system_inventory and desktop_screenshot. Desktop INPUT (click, type,
-    key presses, ...) is never auto-executed here: those actions run
-    exclusively in the local desktop runtime after explicit human
-    approval (see coordinator/app/agent_loop.py). A node that claims
-    input tasks receives a refusal, never silent execution.
+    system_inventory, desktop_screenshot and research.fetch_url.
+    Desktop INPUT (click, type, key presses, ...) is never
+    auto-executed here: those actions run exclusively in the local
+    desktop runtime after explicit human approval (see
+    coordinator/app/agent_loop.py). A node that claims input tasks
+    receives a refusal, never silent execution.
     """
+    if task["kind"] == "research.fetch_url":
+        payload = task.get("payload", {})
+        if not isinstance(payload, dict):
+            return False, {}, "fetch payload must be an object"
+        return fetch_url_narrow(
+            str(payload.get("url", "")),
+            int(payload.get("max_chars", FETCH_MAX_CHARS))
+            if str(payload.get("max_chars", "")).strip().isdigit()
+            else FETCH_MAX_CHARS)
     if task["kind"] == "system_inventory":
         return True, {
             "operating_system": platform.system(),

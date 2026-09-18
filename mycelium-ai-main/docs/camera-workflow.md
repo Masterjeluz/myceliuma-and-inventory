@@ -25,6 +25,11 @@ honestly what works.
   (`POST /api/v1/vision/analyze`, `/api/v1/vision/propose`) feeding
   the existing approval flow: OBSERVATION → CANDIDATE → HUMAN
   REVIEW → INVENTORY.
+- Observations carry "Review as candidate" buttons (detail page,
+  API `POST /api/v1/observations/{id}/candidate`): a photo becomes
+  a knowledge candidate with sensor provenance, maturing through
+  `/knowledge`. The Insta360 requirements stay documented on the
+  adapter (`requirements()`) and the detail page.
 
 ## What is missing (UNAVAILABLE)
 

@@ -365,7 +365,7 @@ verbindingen, geen fake functionaliteit.
   procedural/test REAL, reconstructie UNAVAILABLE) — DONE
 - Activity met Mycelium voice + echte links — DONE
 
-## PHASE R — ACTIVATION (BIG #31, in uitvoering)
+## PHASE R — ACTIVATION (BIG #31, DONE)
 
 Zie `docs/living-ecosystem.md`, `docs/context-packets.md`,
 `docs/overnight-research.md`. Van gebouwd naar levend: dezelfde
@@ -384,6 +384,28 @@ stores, zichtbare verbindingen, geen fake functionaliteit.
 - Overnight-modus + research queue + GOOD MORNING — DONE
 - Startup start/stop/status/restart (Windows + Linux-user-unit) —
   DONE
+
+## PHASE S — LIVING KNOWLEDGE (BIG #32, in uitvoering)
+
+Zie `docs/knowledge-lifecycle.md`, `docs/research-routing.md`,
+`docs/ROADMAP-V2.md`. Van verzamelen naar laten rijpen: dezelfde
+stores, zichtbare rijping, geen stille feiten.
+
+- Kenniscyclus (`knowledge.py` + `/knowledge`): observatie →
+  kandidaat → gesteund → gepromoveerd geheugen (of rejected) —
+  in uitvoering
+- Promotie met provenance-behoud, conflictweigering,
+  idempotentie, revision-fencing — in uitvoering
+- Graffilters (truth/source/kind/recency) + memory-,
+  kandidaat- en conversatie-overlays — in uitvoering
+- Linux `research.fetch_url`-executor + capability-routing +
+  queue-integratie — in uitvoering
+- Packet-kennissecties, finding/observatie/vraag-naar-kandidaat,
+  mobiele remember/queue/missed — in uitvoering
+- Statusvolle notificaties, empty states, V2-roadmap — in
+  uitvoering
+
+Volledige V2-richting (BIG #33–40): `docs/ROADMAP-V2.md`.
 
 ## Expliciet niet op de kaart
 

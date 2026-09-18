@@ -67,6 +67,15 @@ ENTITIES / NEXT STEP + USER MESSAGE block to paste into any model.
 - `GET /api/v1/conversation-imports/{id}/markdown` — the import as
   portable Markdown (open/download elsewhere).
 
+## Findings become candidates (BIG #32)
+
+`POST /api/v1/conversation-imports/{id}/findings/{i}/candidate`
+(and "Remember as candidate" buttons) turn one finding into a
+knowledge candidate with provenance, evidence and entity refs.
+Health-flagged findings refuse. The candidate then matures
+through `/knowledge`: support → promote → memory. See
+`docs/knowledge-lifecycle.md`.
+
 ## Security
 
 Imported text is data, never instructions (prompt-injection safe by

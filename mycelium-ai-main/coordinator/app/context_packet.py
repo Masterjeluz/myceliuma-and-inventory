@@ -331,6 +331,66 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _knowledge_section(intent: str, project_id: str,
+                       conversation_id: str,
+                       max_items: int = 8) -> dict:
+    """Knowledge lifecycle for the packet: what is observed,
+    candidate, supported, verified — plus contradictions and what
+    research already ran. Bounded; health never included."""
+    section: dict = {
+        "observations": [], "candidates": [], "supported": [],
+        "memories_by_tier": {}, "contradictions": [],
+        "research_performed": [],
+    }
+    try:
+        from .knowledge import list_candidates, support_count
+        for entry in list_candidates(limit=max_items * 2):
+            item = {"id": entry.candidate_id,
+                    "title": entry.title[:140],
+                    "type": entry.candidate_type,
+                    "state": entry.state,
+                    "supporters": support_count(entry),
+                    "why": "active candidate"}
+            if entry.state == "observation":
+                section["observations"].append(item)
+            elif entry.state == "supported":
+                section["supported"].append(item)
+            elif entry.state in ("candidate",):
+                section["candidates"].append(item)
+    except Exception:
+        pass
+    try:
+        from .memory import list_memories
+        for entry in list_memories(limit=max_items * 2):
+            if entry.memory_type == "health":
+                continue
+            tier = section["memories_by_tier"].setdefault(
+                entry.truth, [])
+            if len(tier) < max_items:
+                tier.append({"id": entry.memory_id,
+                             "title": entry.title[:140]})
+    except Exception:
+        pass
+    try:
+        from .research_engine import list_dossiers
+        for dossier in list_dossiers(limit=max_items):
+            section["research_performed"].append({
+                "id": dossier.dossier_id,
+                "title": dossier.title[:140],
+                "claims": len(dossier.claims),
+                "open_questions": len(dossier.open_questions)})
+            for group in dossier.contradictions[:3]:
+                section["contradictions"].append({
+                    "subject": str(group.get("subject", ""))[:120],
+                    "dossier": dossier.dossier_id})
+    except Exception:
+        pass
+    for key in ("observations", "candidates", "supported"):
+        section[key] = section[key][:max_items]
+    section["contradictions"] = section["contradictions"][:8]
+    return section
+
+
 def build_packet_v2(*, task: str = "", intent: str = "",
                     project_id: str = "", conversation_id: str = "",
                     include_health: bool = False,
@@ -372,6 +432,9 @@ def build_packet_v2(*, task: str = "", intent: str = "",
     except Exception:
         state = {"state": "QUIET", "glyph": "", "line": "",
                  "reasons": []}
+    knowledge = _knowledge_section(
+        intent or task, project_id, conversation_id,
+        max_items=max_items)
     packet = {
         "packet": PACKET_VERSION_2,
         "task": _clip(task, 500),
@@ -388,6 +451,7 @@ def build_packet_v2(*, task: str = "", intent: str = "",
         "observations": composed["sections"].get(
             "observations", [])[:max_items],
         "research": composed["sections"].get("research", [])[:max_items],
+        "knowledge": knowledge,
         "decisions": decisions,
         "unresolved_questions": unresolved[:12],
         "constraints": [
@@ -451,9 +515,30 @@ def render_packet_v2_markdown(packet: dict) -> str:
         or lines.append("-")
     lines.append("")
     lines.append("## RESEARCH")
-    lines.extend(f"- {item.get('id', '')} — {item.get('title', '')}"
+    lines.extend(f"- {item['id']}: {item['title']} [{item['state']}]"
                  for item in packet.get("research", [])) \
         or lines.append("-")
+    lines.append("")
+    lines.append("## KNOWLEDGE LIFECYCLE")
+    knowledge = packet.get("knowledge", {})
+    for item in knowledge.get("supported", [])[:5]:
+        lines.append(
+            f"- SUPPORTED: {item.get('title', '')} "
+            f"({item.get('supporters', 0)} backing)")
+    for item in knowledge.get("candidates", [])[:5]:
+        lines.append(f"- CANDIDATE: {item.get('title', '')}")
+    for item in knowledge.get("observations", [])[:5]:
+        lines.append(f"- OBSERVED: {item.get('title', '')}")
+    for tier, items in knowledge.get("memories_by_tier", {}).items():
+        lines.append(
+            f"- MEMORY [{tier}]: "
+            + ", ".join(item.get("id", "") for item in items[:4]))
+    for item in knowledge.get("contradictions", [])[:4]:
+        lines.append(
+            f"- CONTRADICTION (unresolved): {item.get('subject', '')}")
+    if not knowledge.get("supported") and not knowledge.get(
+            "candidates") and not knowledge.get("observations"):
+        lines.append("- (no active candidates)")
     lines.append("")
     lines.append("## UNRESOLVED QUESTIONS")
     lines.extend(f"- {item}" for item in packet.get(

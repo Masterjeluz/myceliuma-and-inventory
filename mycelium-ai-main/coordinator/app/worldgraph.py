@@ -33,6 +33,14 @@ MYCELIUM_NODE_TYPES = frozenset({"mission", "agent", "node"})
 OVERLAY_NODE_TYPES = frozenset({
     "mission", "agent", "node", "observation", "artifact",
     "print_job", "printer", "live_session", "research",
+    "memory", "candidate", "conversation",
+})
+
+#: Truth classes for filtering (BIG #32). Inventory nodes map by
+#: provenance; overlays map by kind. Health-tagged content is
+#: refused at the overlay builders, never filtered client-side.
+TRUTH_FILTERS = frozenset({
+    "all", "verified", "memory", "candidate", "observation",
 })
 
 MAX_NODE_OVERLAY = 50
@@ -68,12 +76,19 @@ def _inventory_edge(edge) -> dict:
 async def build_world_graph(reader, entity_id: str, depth: int = 1, *,
                             include_missions: bool = False,
                             agent_nodes: list[dict] | None = None,
-                           observations: list[dict] | None = None,
-                           fabrication: list[dict] | None = None,
-                           registry_nodes: list[dict] | None = None,
-                           printers: list[dict] | None = None,
-                           research_runs: list[dict] | None = None
-                           ) -> dict:
+                            observations: list[dict] | None = None,
+                            fabrication: list[dict] | None = None,
+                            registry_nodes: list[dict] | None = None,
+                            printers: list[dict] | None = None,
+                            research_runs: list[dict] | None = None,
+                            memories: list[dict] | None = None,
+                            candidates: list[dict] | None = None,
+                            conversations: list[dict] | None = None,
+                            truth: str = "all",
+                            source: str = "all",
+                            kind: str = "all",
+                            since: str = "",
+                            ) -> dict:
     """Project inventory graph + optional Mycelium overlay."""
     if isinstance(depth, bool) or depth not in GRAPH_DEPTHS:
         raise ValueError("Graph depth must be 1 or 2")
@@ -102,6 +117,12 @@ async def build_world_graph(reader, entity_id: str, depth: int = 1, *,
         _overlay_registry_nodes(nodes, edges, registry_nodes)
     if printers:
         _overlay_printers(nodes, edges, printers)
+    if memories:
+        _overlay_memories(nodes, edges, memories)
+    if candidates:
+        _overlay_candidates(nodes, edges, candidates)
+    if conversations:
+        _overlay_conversations(nodes, edges, conversations)
     for agent in (agent_nodes or [])[:50]:
         node_id = str(agent.get("node_id", ""))
         if not node_id or node_id in nodes:
@@ -116,9 +137,198 @@ async def build_world_graph(reader, entity_id: str, depth: int = 1, *,
         }
         if len(nodes) >= MAX_NODES:
             break
-    return {"entity_id": entity_id, "depth": depth,
-            "nodes": list(nodes.values())[:MAX_NODES],
-            "edges": edges[:MAX_EDGES]}
+    filtered = filter_graph(
+        {"entity_id": entity_id, "depth": depth,
+         "nodes": list(nodes.values())[:MAX_NODES],
+         "edges": edges[:MAX_EDGES]},
+        truth=truth, source=source, kind=kind, since=since)
+    filtered["filters"] = {"truth": truth, "source": source,
+                           "kind": kind, "since": since}
+    return filtered
+
+
+def _truth_class(node: dict) -> str:
+    """Map one graph node to a truth filter class."""
+    kind = str(node.get("type", ""))
+    if kind == "candidate":
+        return "candidate"
+    if kind in ("observation",):
+        return "observation"
+    if kind in ("memory",):
+        return "memory"
+    if node.get("source") == "inventory":
+        metadata = node.get("metadata", {})
+        if isinstance(metadata, dict) and metadata.get(
+                "human_verified"):
+            return "verified"
+        return "memory"
+    return "memory"
+
+
+def filter_graph(graph: dict, *, truth: str = "all",
+                 source: str = "all", kind: str = "all",
+                 since: str = "") -> dict:
+    """Bounded post-filter over a built graph. Pure: no fetching,
+    caps preserved, edges pruned to surviving nodes."""
+    cleaned_truth = str(truth or "all").strip().lower()
+    if cleaned_truth not in TRUTH_FILTERS:
+        raise ValueError(
+            f"Unknown truth filter '{truth}'; expected one of "
+            f"{sorted(TRUTH_FILTERS)}")
+    cleaned_source = str(source or "all").strip().lower()
+    cleaned_kind = str(kind or "all").strip().lower()
+    cutoff = str(since or "").strip()[:10]
+    if cleaned_truth == "all" and cleaned_source == "all" and \
+            cleaned_kind == "all" and not cutoff:
+        return {"entity_id": graph.get("entity_id", ""),
+                "depth": graph.get("depth", 1),
+                "nodes": list(graph.get("nodes", []))[:MAX_NODES],
+                "edges": list(graph.get("edges", []))[:MAX_EDGES]}
+    keep: dict[str, dict] = {}
+    for node in graph.get("nodes", []):
+        if cleaned_truth != "all" and _truth_class(node) != \
+                cleaned_truth:
+            continue
+        if cleaned_source != "all" and str(
+                node.get("source", "")).lower() != cleaned_source:
+            continue
+        if cleaned_kind != "all" and str(
+                node.get("type", "")).lower() != cleaned_kind:
+            continue
+        if cutoff:
+            stamp = str((node.get("metadata", {}) or {}).get(
+                "created_at", node.get("metadata", {}).get(
+                    "updated_at", "")) or "")[:10]
+            if stamp and stamp < cutoff:
+                continue
+        keep[str(node.get("id", ""))] = node
+        if len(keep) >= MAX_NODES:
+            break
+    edges = [edge for edge in graph.get("edges", [])
+             if str(edge.get("from", "")) in keep
+             and str(edge.get("to", "")) in keep][:MAX_EDGES]
+    return {"entity_id": graph.get("entity_id", ""),
+            "depth": graph.get("depth", 1),
+            "nodes": list(keep.values()),
+            "edges": edges}
+
+
+MAX_MEMORY_NODES = 20
+MAX_CANDIDATE_NODES = 20
+MAX_CONVERSATION_NODES = 10
+
+
+def _overlay_memories(nodes: dict, edges: list,
+                      memories: list[dict]) -> None:
+    """Memory entries as overlay (never health: callers must pass
+    health-scoped lists; entries with memory_type health refuse)."""
+    for item in list(memories or [])[:MAX_MEMORY_NODES]:
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("memory_type", "")) == "health":
+            continue
+        memory_id = str(item.get("memory_id", ""))
+        if not memory_id or memory_id in nodes:
+            continue
+        nodes[memory_id] = {
+            "id": memory_id,
+            "type": "memory",
+            "label": str(item.get("title", memory_id))[:120],
+            "source": "mycelium",
+            "metadata": {
+                "memory_type": str(item.get("memory_type", "")),
+                "truth": str(item.get("truth", "")),
+                "human_verified": str(item.get("truth", "")) in (
+                    "user_fact", "verified"),
+                "project_ref": str(item.get("project_ref", "")),
+            },
+        }
+        for ref in list(item.get("entity_refs", []))[:10]:
+            target = str(ref or "")
+            if not target or target not in nodes:
+                continue
+            if len(edges) >= MAX_EDGES:
+                return
+            edges.append({
+                "from": memory_id,
+                "predicate": "remembers",
+                "to": target,
+                "provenance": {"source_type": "memory",
+                               "creator_id": "memory-layer",
+                               "human_verified": str(item.get(
+                                   "truth", "")) in (
+                                       "user_fact", "verified")},
+            })
+        if len(nodes) >= MAX_NODES:
+            return
+
+
+def _overlay_candidates(nodes: dict, edges: list,
+                        candidates: list[dict]) -> None:
+    """Knowledge candidates as overlay with lifecycle state."""
+    for item in list(candidates or [])[:MAX_CANDIDATE_NODES]:
+        if not isinstance(item, dict):
+            continue
+        candidate_id = str(item.get("candidate_id", ""))
+        if not candidate_id or candidate_id in nodes:
+            continue
+        nodes[candidate_id] = {
+            "id": candidate_id,
+            "type": "candidate",
+            "label": str(item.get("title", candidate_id))[:120],
+            "source": "mycelium",
+            "metadata": {
+                "candidate_type": str(
+                    item.get("candidate_type", "")),
+                "state": str(item.get("state", "")),
+                "supporters": len(item.get("support", []) or []),
+                "project_ref": str(item.get("project_ref", "")),
+                "created_at": str(item.get("created_at", "")),
+                "updated_at": str(item.get("updated_at", "")),
+            },
+        }
+        for ref in list(item.get("entity_refs", []))[:10]:
+            target = str(ref or "")
+            if not target or target not in nodes:
+                continue
+            if len(edges) >= MAX_EDGES:
+                return
+            edges.append({
+                "from": candidate_id,
+                "predicate": "may_relate_to",
+                "to": target,
+                "provenance": {"source_type": "ai-generated",
+                               "creator_id": "knowledge-lifecycle",
+                               "human_verified": False},
+            })
+        if len(nodes) >= MAX_NODES:
+            return
+
+
+def _overlay_conversations(nodes: dict, edges: list,
+                           imports: list[dict]) -> None:
+    """Imported conversations as overlay (context, never truth)."""
+    for item in list(imports or [])[:MAX_CONVERSATION_NODES]:
+        if not isinstance(item, dict):
+            continue
+        conversation_id = str(item.get("conversation_id", ""))
+        if not conversation_id or conversation_id in nodes:
+            continue
+        nodes[conversation_id] = {
+            "id": conversation_id,
+            "type": "conversation",
+            "label": str(item.get("title", conversation_id))[:120],
+            "source": "mycelium",
+            "metadata": {
+                "source_platform": str(
+                    item.get("source_platform", "")),
+                "message_count": item.get("message_count", 0),
+                "imported_at": str(item.get("imported_at", "")),
+                "human_verified": False,
+            },
+        }
+        if len(nodes) >= MAX_NODES:
+            return
 
 
 def _overlay_missions(nodes: dict, edges: list) -> None:

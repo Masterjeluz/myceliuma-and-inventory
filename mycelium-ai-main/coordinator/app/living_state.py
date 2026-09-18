@@ -73,6 +73,16 @@ def current_state() -> dict:
             reasons.append(f"{waiting} openstaande goedkeuring(en)")
     except Exception:
         pass
+    candidates_waiting = 0
+    try:
+        from .knowledge import list_candidates
+        candidates_waiting = len(list_candidates(limit=200))
+        if candidates_waiting:
+            reasons.append(
+                f"{candidates_waiting} kandidaat/kandidaten wachten "
+                "op review")
+    except Exception:
+        pass
     running_missions = 0
     try:
         from .missions import list_missions
@@ -100,11 +110,24 @@ def current_state() -> dict:
         pass
     recent_complete = False
     recent_blocked = False
+    new_observations = 0
+    new_candidates = 0
+    new_connections = 0
     try:
         from .events import list_events
-        for event in list_events(limit=20):
+        for event in list_events(limit=40):
             moment = _parse_time(event.created_at)
-            if moment is None or now - moment > timedelta(hours=1):
+            if moment is None or now - moment > timedelta(hours=24):
+                continue
+            if event.event_type == "observation.created":
+                new_observations += 1
+            if event.event_type in ("candidate.observed",
+                                    "candidate.supported"):
+                new_candidates += 1
+            if event.event_type in ("relation.proposed",
+                                    "candidate.promoted"):
+                new_connections += 1
+            if now - moment > timedelta(hours=1):
                 continue
             if event.event_type in ("mission.completed",
                                     "task.completed",
@@ -115,6 +138,35 @@ def current_state() -> dict:
                 recent_blocked = True
     except Exception:
         pass
+    fabrication_waiting = 0
+    try:
+        from . import main as _main
+        for record in _main.list_fabrications(50):
+            if record.status in ("proposed", "approved",
+                                 "ready", "waiting"):
+                fabrication_waiting += 1
+    except Exception:
+        pass
+    camera_ready = False
+    try:
+        from .vision_ingest import list_inbox_files
+        camera_ready = bool(list_inbox_files(limit=1))
+    except Exception:
+        pass
+    if new_observations:
+        reasons.append(
+            f"{new_observations} nieuwe observatie(s) vandaag")
+    if new_candidates:
+        reasons.append(
+            f"{new_candidates} kandidaat-activiteit vandaag")
+    if new_connections:
+        reasons.append(
+            f"{new_connections} nieuwe verbinding(en) vandaag")
+    if fabrication_waiting:
+        reasons.append(
+            f"{fabrication_waiting} fabricatie wacht")
+    if camera_ready:
+        reasons.append("cameramateriaal klaar voor analyse")
     unlinked = 0
     try:
         from .conversation_bridge import list_imports, load_analysis
@@ -148,6 +200,12 @@ def current_state() -> dict:
     return {"state": state, "glyph": GLYPHS[state],
             "line": LINES[state], "reasons": reasons[:5],
             "waiting_approvals": waiting,
+            "candidates_waiting": candidates_waiting,
             "running_missions": running_missions,
             "active_research_runs": active_runs,
-            "online_nodes": online_nodes}
+            "online_nodes": online_nodes,
+            "new_observations_24h": new_observations,
+            "new_candidates_24h": new_candidates,
+            "new_connections_24h": new_connections,
+            "fabrication_waiting": fabrication_waiting,
+            "camera_ready": camera_ready}

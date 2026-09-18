@@ -78,3 +78,13 @@ inventory.read, file.inspect`
 Only what is really implemented. No wildcard, no `shell`/`exec`/
 `command.run` — refused fail-closed. Contract:
 `GET /api/v1/linux-nodes`.
+
+## Research executor (BIG #32, REAL)
+
+Advertise `--capability research.fetch` and the node can execute
+`research.fetch_url` tasks: one coordinator-validated URL in,
+bounded text out (no redirects, text only, 64KB cap, 20s
+timeout). The claim loop enforces the capability; the
+coordinator re-validates and ingests results as run sources.
+See `docs/research-routing.md`. No shell, no other research
+kinds yet (`extract/analyze/compare` are FUTURE).

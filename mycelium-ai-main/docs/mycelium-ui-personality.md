@@ -53,6 +53,12 @@ Mission cards carry one honest glyph each: 🟢 RUNNING ·
 step, why it runs, what it waits for, last observation, next
 action.
 
+Knowledge lifecycle voice (BIG #32): "Dit is nog maar een
+kandidaat." · "2 bronnen steunen dit — klaar voor jouw YES."
+· "Dit spreekt een geverifieerde herinnering tegen; ik sla het
+niet zomaar op." · "Hier wacht ik op jou." States are always
+paired with evidence, never bare claims.
+
 ## Anti-goals
 
 Corporate, sterile, dystopian, cyberpunk, surveillance-like,

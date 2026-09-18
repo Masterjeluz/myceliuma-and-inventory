@@ -58,6 +58,14 @@ VALID_EVENT_TYPES = frozenset({
     "integration.duplicate",
     "integration.conflict",
     "integration.rejected",
+    "candidate.observed",
+    "candidate.supported",
+    "candidate.promoted",
+    "candidate.rejected",
+    "research.queued",
+    "research.routed",
+    "research.fetched",
+    "relation.proposed",
 })
 
 VALID_SEVERITIES = frozenset({"info", "approval_required",

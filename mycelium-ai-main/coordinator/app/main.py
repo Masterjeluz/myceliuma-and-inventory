@@ -1026,6 +1026,92 @@ def _complete_task(task_id: int, result: TaskResult, completing_node_id: str | N
     emit_event(f"task.{status}", f"Task {task_id} {status}",
                task_id=str(task_id),
                node_id=completing_node_id or "")
+    if status == "completed":
+        try:
+            _ingest_research_fetch(task_id, result,
+                                   completing_node_id or "")
+        except Exception as error:
+            logger.warning("research_fetch_ingest_skipped task_id=%s "
+                           "cause=%s", task_id, error)
+
+
+def _ingest_research_fetch(task_id: int, result: TaskResult,
+                           node_id: str) -> None:
+    """Completion hook: a finished research.fetch_url task becomes
+    a real SourceRecord on its run. Validates everything again —
+    node output is data, never trusted. Never breaks completion
+    (callers swallow all errors)."""
+    from .research import (content_hash_for, extract_source,
+                           get_source_by_hash, new_source,
+                           save_source)
+    from .research_engine import load_run, save_run
+    with connection() as db:
+        row = db.execute(
+            "SELECT kind, payload FROM tasks WHERE id=?",
+            (task_id,)).fetchone()
+    if row is None or row["kind"] != "research.fetch_url":
+        return
+    try:
+        payload = load(row["payload"] or "{}")
+    except ValueError:
+        return
+    run_id = str((payload or {}).get("run_id", ""))
+    if not run_id:
+        return
+    data = result.result if isinstance(result.result, dict) else {}
+    url = str(data.get("url", ""))[:500]
+    text = str(data.get("text", ""))[:20000]
+    if not url or not text.strip():
+        return
+    from .research_transport import (TransportRefusedError,
+                                     validate_url)
+    try:
+        canonical = validate_url(url)
+    except TransportRefusedError:
+        return
+    if get_source_by_hash(content_hash_for(text.strip())) \
+            is not None:
+        return
+    entry = new_source(
+        "web", title=f"Node fetch: {canonical[:200]}",
+        content=text.strip(), reference=canonical,
+        topics=["node-fetched"],
+        provenance=None)
+    entry = entry.model_copy(update={
+        "provenance": entry.provenance.model_copy(update={
+            "creator_id": f"node:{node_id or 'unknown'}",
+            "notes": ((entry.provenance.notes or "") +
+                      " | fetched by a Linux node task; "
+                      "coordinator-validated URL").strip(" |")})})
+    try:
+        entry = extract_source(entry)
+    except ValueError:
+        pass
+    try:
+        save_source(entry)
+    except ValueError:
+        return
+    run = load_run(run_id)
+    if run is None:
+        return
+    if entry.source_id not in (run.source_ids or []):
+        updated = run.model_copy(update={
+            "source_ids": [*list(run.source_ids or []),
+                           entry.source_id],
+            "sources_meta": [*list(run.sources_meta or []), {
+                "source_id": entry.source_id,
+                "title": entry.title, "url": canonical,
+                "provider": f"node:{node_id or 'unknown'}",
+                "retrieved_at": entry.captured_at}],
+            "metadata": {**(run.metadata or {}),
+                         "node_fetched": int(
+                             (run.metadata or {}).get(
+                                 "node_fetched", 0)) + 1}})
+        save_run(updated)
+    emit_event("research.fetched",
+               f"Node {node_id or '?'} fetched {canonical[:120]} "
+               f"for run {run_id}",
+               task_id=str(task_id), node_id=node_id or "")
 
 
 def expire_leases(now_str: str | None = None) -> dict[str, int]:
@@ -6744,7 +6830,13 @@ async def world_graph_unified(entity_id: str, depth: int = 1,
                               include_fabrication: bool = False,
                               fabrication_id: str = "",
                               include_nodes: bool = False,
-                              include_printers: bool = False) -> dict:
+                              include_printers: bool = False,
+                              include_knowledge: bool = False,
+                              include_conversations: bool = False,
+                              truth: str = "all",
+                              source: str = "all",
+                              kind: str = "all",
+                              since: str = "") -> dict:
     try:
         with connection() as db:
             agent_rows = db.execute(
@@ -6762,11 +6854,36 @@ async def world_graph_unified(entity_id: str, depth: int = 1,
         printers = ([device.model_dump(mode="json")
                      for device in list_stored_printers()]
                     if include_printers else None)
+        memories = None
+        candidates = None
+        conversations = None
+        if include_knowledge:
+            try:
+                from .memory import list_memories
+                memories = [entry.model_dump(mode="json")
+                            for entry in list_memories(limit=60)]
+            except Exception:
+                memories = None
+            try:
+                from .knowledge import list_candidates
+                candidates = [entry.model_dump(mode="json")
+                              for entry in list_candidates(limit=60)]
+            except Exception:
+                candidates = None
+        if include_conversations:
+            try:
+                from .conversation_bridge import list_imports
+                conversations = list_imports(limit=20)
+            except Exception:
+                conversations = None
         graph = await build_world_graph(
             _world_reader(), entity_id, depth,
             include_missions=include_missions, agent_nodes=agents,
             observations=observations, fabrication=fabrication,
-            registry_nodes=registry_nodes, printers=printers)
+            registry_nodes=registry_nodes, printers=printers,
+            memories=memories, candidates=candidates,
+            conversations=conversations, truth=truth,
+            source=source, kind=kind, since=since)
     except ValueError as error:
         raise HTTPException(status_code=422, detail=str(error))
     except InventoryRefusedError as error:
@@ -7295,11 +7412,43 @@ def _last_flow_panel() -> str:
 
 
 async def _graph_data(entity_id: str, depth: int,
-                      flags: set) -> tuple:
+                      flags: set, filters: dict | None = None) -> tuple:
     """Shared graph builder for /, /world, /workshop/graph."""
     from .worldgraph import GRAPH_DEPTHS
     graph: dict = {"nodes": [], "edges": []}
     error = ""
+    selected = dict(filters or {})
+
+    def _overlay_memories() -> list[dict] | None:
+        if "memory" not in flags and "knowledge" not in flags:
+            return None
+        try:
+            from .memory import list_memories
+            return [entry.model_dump(mode="json")
+                    for entry in list_memories(limit=60)]
+        except Exception:
+            return None
+
+    def _overlay_candidates() -> list[dict] | None:
+        if "knowledge" not in flags and "candidates" not in flags:
+            return None
+        try:
+            from .knowledge import list_candidates
+            return [entry.model_dump(mode="json")
+                    for entry in list_candidates(limit=60)]
+        except Exception:
+            return None
+
+    def _overlay_conversations() -> list[dict] | None:
+        if "conversations" not in flags and \
+                "knowledge" not in flags:
+            return None
+        try:
+            from .conversation_bridge import list_imports
+            return list_imports(limit=20)
+        except Exception:
+            return None
+
     try:
         clean_depth = depth if depth in GRAPH_DEPTHS else 1
         graph = await build_world_graph(
@@ -7319,7 +7468,14 @@ async def _graph_data(entity_id: str, depth: int,
                       if "printers" in flags else None),
             research_runs=([run.model_dump(mode="json")
                             for run in _research_runs(20)]
-                           if "research" in flags else None))
+                           if "research" in flags else None),
+            memories=_overlay_memories(),
+            candidates=_overlay_candidates(),
+            conversations=_overlay_conversations(),
+            truth=str(selected.get("truth", "all")),
+            source=str(selected.get("source", "all")),
+            kind=str(selected.get("kind", "all")),
+            since=str(selected.get("since", "")))
     except (ValueError, InventoryRefusedError) as exc:
         error = str(exc)
     except InventoryUnavailable:
@@ -7356,17 +7512,37 @@ async def _world_seeds() -> list:
 
 @app.get("/world", response_class=HTMLResponse)
 async def world_page(entity_id: str = "", depth: int = 1,
-                     show: str = "missions,nodes") -> str:
+                     show: str = "missions,nodes",
+                     truth: str = "all", source: str = "all",
+                     kind: str = "all", since: str = "") -> str:
     """Full world-graph explorer: pan, zoom, select, focus,
     neighborhood expansion, source + type filters. Real data
     only, bounded depth, keyboard navigable."""
     from . import ui as _ui
     import json as _json
+    from .worldgraph import TRUTH_FILTERS
     flags = {part.strip() for part in show.split(",")}
+    filters = {"truth": truth[:20], "source": source[:20],
+               "kind": kind[:20], "since": since[:10]}
+    if filters["truth"] not in TRUTH_FILTERS:
+        filters["truth"] = "all"
     graph, error = ({"nodes": [], "edges": []}, "")
     if entity_id:
         graph, error = await _graph_data(entity_id, depth,
-                                         flags)
+                                         flags, filters)
+    truth_options = "".join(
+        f"<option value='{name}'"
+        + (" selected" if name == filters["truth"] else "")
+        + f">{name}</option>" for name in sorted(TRUTH_FILTERS))
+    shown = len(graph.get("nodes", []))
+    loaded = graph.get("node_count", shown)
+    filter_note = (
+        f"<p class=\"muted\">{shown} shown"
+        + (f" · truth={_ui.esc(filters['truth'])}" if filters["truth"] != "all" else "")
+        + (f" · source={_ui.esc(filters['source'])}" if filters["source"] != "all" else "")
+        + (f" · kind={_ui.esc(filters['kind'])}" if filters["kind"] != "all" else "")
+        + (f" · since={_ui.esc(filters['since'])}" if filters["since"] else "")
+        + ". Overlays are dashed Mycelium context, never world truth.</p>")
     main = f"""<h1>Living Workshop — one ecosystem</h1>
     <div class="panel"><h2>Command Center — wat kan ik voor je doen?</h2>
     <p>Typ hieronder in gewone taal. Ik maak een veilig lees-/onderzoeksplan, voer het zelfstandig uit tot ik je nodig heb, en leg precies uit waar ik stop.</p>
@@ -7378,6 +7554,17 @@ async def world_page(entity_id: str = "", depth: int = 1,
     <p><a href="/nodes">Nodes</a> · <a href="/conversations">Conversations</a> · <a href="/research">Research</a> · <a href="/missions">Missions</a> · <a href="/memory">Memory</a> · <a href="/cameras">Cameras</a> · <a href="/workshop/3d">3D</a> · <a href="/mobile">Mobile input</a> · <a href="/activity">Activity</a> · <a href="/search">Search</a></p>
     <p class="muted">Jelles ↔ chat ↔ mobile ↔ brain ↔ missions ↔ research ↔ memory ↔ INVENTory ↔ cameras ↔ 3D ↔ projects ↔ files ↔ nodes ↔ fabrication ↔ verification — one workshop, no loose pages. Statuses stay honest: REAL / TEST / SIMULATED / UNAVAILABLE.</p></div>
     {_last_flow_panel()}
+    <div class="panel"><h2>Layers & truth</h2>
+    <form method="get" action="/world" aria-label="Graph layers and filters">
+    <input type="hidden" name="entity_id" value="{_ui.esc(entity_id)}">
+    <input type="hidden" name="depth" value="{depth}">
+    <label>Overlays <input type="text" name="show" value="{_ui.esc(show)}" style="width:14rem" aria-label="Overlays"></label>
+    <label>Truth <select name="truth" aria-label="Truth filter">{truth_options}</select></label>
+    <label>Source <select name="source" aria-label="Source filter"><option value="all">all</option><option value="inventory">world</option><option value="mycelium">mycelium</option></select></label>
+    <label>Since <input type="text" name="since" placeholder="2026-01-01" value="{_ui.esc(filters['since'])}" style="width:7rem" aria-label="Since date"></label>
+    <button type="submit">Grow</button></form>
+    <p class="muted">Overlay layers: missions, nodes, research, observations, printers, memory, candidates, conversations. Truth: all · verified · memory · candidate · observation. Health never enters the graph.</p></div>
+    {filter_note}
     <p class="muted">Every node is real: world entities from INVENTory, overlays from Mycelium. Select to inspect — the context rail opens here, no page jump — or open a neighborhood to grow.</p>
     {_ui.graph_panel(_json.dumps(graph), "/world", entity_id, depth, show, error)}
     <div class="panel"><h2>Do something with this</h2>
@@ -7806,8 +7993,12 @@ def research_dossier_page(dossier_id: str):
         f"[onopgelost]</span></li>"
         for group in dossier.contradictions)
     questions = "".join(
-        f"<li>{_ui.esc(question[:220])}</li>"
-        for question in dossier.open_questions)
+        f"<li>{_ui.esc(question[:220])}<br>"
+        f"<form method=\"post\" action=\"/web/research/dossiers/"
+        f"{_ui.esc(dossier.dossier_id)}/questions/{number}/candidate\" "
+        f"style=\"display:inline\">"
+        f"<button type=\"submit\">Remember as candidate</button></form></li>"
+        for number, question in enumerate(dossier.open_questions))
     entities = "".join(
         f"<li>{_ui.esc(str(link.get('entity_id', '')))} — "
         f"{_ui.esc(str(link.get('reason', ''))[:120])}"
@@ -7833,6 +8024,44 @@ def research_dossier_page(dossier_id: str):
     <h2>Timeline</h2><ul>{timeline}</ul>"""
     return _ui.shell("Dossier", "/research", main, "",
                      _ui.command_bar())
+
+
+@app.post("/web/research/dossiers/{dossier_id}/questions/{index}/candidate")
+async def web_question_to_candidate(dossier_id: str,
+                                    index: int) -> Response:
+    from .events import new_event as _bus_new, \
+        save_event as _bus_save
+    from .inventory_read import Provenance
+    from .knowledge import (CandidateRefusedError, new_candidate,
+                            save_candidate)
+    from .research_engine import load_dossier
+    dossier = load_dossier(dossier_id)
+    try:
+        question = (dossier.open_questions or [])[int(index)]
+    except (AttributeError, IndexError, ValueError, TypeError):
+        return RedirectResponse(f"/research/{dossier_id}",
+                                status_code=303)
+    if dossier is None:
+        return RedirectResponse("/research", status_code=303)
+    try:
+        entry = new_candidate(
+            f"research question: {question[:140]}", "question",
+            summary=question[:1500],
+            provenance=Provenance(
+                source_type="external-source",
+                creator_id=f"research:{dossier.run_id}",
+                human_verified=False),
+            source_refs=[{"kind": "research", "id": dossier_id,
+                          "label": dossier.title[:120]}])
+        save_candidate(entry)
+        _bus_save(_bus_new(
+            "candidate.observed",
+            f"Candidate {entry.candidate_id} from dossier "
+            f"{dossier_id}"))
+    except CandidateRefusedError:
+        pass
+    return RedirectResponse(f"/research/{dossier_id}",
+                            status_code=303)
 
 
 @app.post("/web/research")
@@ -8576,6 +8805,17 @@ def mobile_page(node: str = "") -> str:
     <div class="panel"><h2>Observe & add</h2>
     <p><a href="/cameras">Camera ingest</a> · <a href="/writes">Propose object/link</a> · <a href="/conversations">Import conversation</a></p>
     <p><a href="/api/v1/context/packet.md">Copy context (Markdown)</a> <span class="muted">— neem mee naar een ander model</span></p></div>
+    <div class="panel"><h2>Remember this</h2>
+    <form method="post" action="/web/candidates">
+    <input type="text" name="title" placeholder="Onthoud dit…" style="width:70%" aria-label="Remember" autocomplete="off">
+    <input type="hidden" name="candidate_type" value="note">
+    <button type="submit">Remember</button></form>
+    <p class="muted">Becomes a candidate (never a fact) in <a href="/knowledge">Knowledge</a>.</p></div>
+    <div class="panel"><h2>Look into this</h2>
+    <form method="post" action="/web/research/queue">
+    <input type="text" name="question" placeholder="Zoek dit uit…" style="width:70%" aria-label="Research question" autocomplete="off">
+    <button type="submit">Queue research</button></form>
+    <p><a href="/api/v1/discoveries">What did we miss?</a></p></div>
     <div class="panel"><h2>Notifications{_ui.esc(' for ' + node) if node else ''}</h2>
     <p class="muted">IN_APP is live (polling); WEB PUSH is UNAVAILABLE — <a href="/api/v1/notifications/capability">capability (JSON)</a>.</p>
     <ul>{notifications_html or "<li>link ?node=&lt;node_id&gt; for notifications</li>"}</ul></div>
@@ -8822,12 +9062,17 @@ def conversation_detail_page(conversation_id: str):
         f"<article class='sprout'><b>{_ui.esc(str(msg.get('role', '')))}</b>"
         f"<p>{_ui.link_entities(str(msg.get('content', ''))[:2000])}</p></article>"
         for msg in messages)
+    findings_list = list((analysis or {}).get("findings", [])[:40])
     findings = "".join(
         f"<li><span class=\"chip\">{_ui.esc(str(item.get('state', '')))}</span> "
         f"<b>{_ui.esc(str(item.get('kind', '')))}</b> - "
         f"{_ui.esc(str(item.get('text', ''))[:220])}<br>"
-        f"<span class=\"muted\">evidence: {_ui.esc(str(item.get('evidence', ''))[:160])}</span></li>"
-        for item in (analysis or {}).get("findings", [])[:40])
+        f"<span class=\"muted\">evidence: {_ui.esc(str(item.get('evidence', ''))[:160])}</span><br>"
+        f"<form method=\"post\" action=\"/web/conversations/"
+        f"{_ui.esc(conversation_id)}/findings/{number}/candidate\" "
+        f"style=\"display:inline\">"
+        f"<button type=\"submit\">Remember as candidate</button></form></li>"
+        for number, item in enumerate(findings_list))
     missed_html = "".join(
         f"<li><b>{_ui.esc(str(item.get('kind', '')))}</b> — "
         f"{_ui.esc(str(item.get('text', ''))[:220])}<br>"
@@ -8876,6 +9121,30 @@ async def web_conversation_import(request: Request) -> Response:
         f"/conversations/{record['conversation_id']}", status_code=303)
 
 
+@app.post("/web/conversations/{conversation_id}/findings/{index}/candidate")
+async def web_finding_to_candidate(conversation_id: str,
+                                   index: int) -> Response:
+    from .conversation_bridge import load_analysis
+    from .events import new_event as _bus_new, \
+        save_event as _bus_save
+    from .knowledge import (CandidateRefusedError,
+                            candidate_from_finding)
+    analysis = load_analysis(conversation_id) or {}
+    findings = analysis.get("findings", [])
+    try:
+        entry = candidate_from_finding(
+            conversation_id, findings[int(index)])
+        _bus_save(_bus_new(
+            "candidate.observed",
+            f"Candidate {entry.candidate_id} from "
+            f"{conversation_id} finding {index}"))
+    except (CandidateRefusedError, IndexError, ValueError,
+            TypeError):
+        pass
+    return RedirectResponse(f"/conversations/{conversation_id}",
+                            status_code=303)
+
+
 @app.post("/web/conversations/{conversation_id}/analyze")
 async def web_conversation_analyze(conversation_id: str) -> Response:
     from .conversation_bridge import BridgeRefusedError, analyze_import
@@ -8888,7 +9157,7 @@ async def web_conversation_analyze(conversation_id: str) -> Response:
 
 
 @app.get("/nodes", response_class=HTMLResponse)
-def nodes_page() -> str:
+def nodes_page(check_cap: str = "") -> str:
     """Nodes as ecosystem machines: what each can do, honest status."""
     from . import ui as _ui
     rows = list_nodes()
@@ -8905,14 +9174,19 @@ def nodes_page() -> str:
     main = f"""<h1>Nodes — small ecosystem machines</h1>
     <p class="muted">Pull-only: nodes poll, the coordinator never pushes commands. ONLINE / STALE (60s) / OFFLINE / DISABLED. Capabilities are owner-advertised, never wildcard. Each card shows WHAT IT CAN DO.</p>
     <div class="panel"><h2>Linux node onboarding</h2>
-    <p class="muted">Old laptop → Mycelium node. <a href="/api/v1/linux-nodes">Contract (JSON)</a> · <a href="/api/v1/agent/status">agent JSON</a></p>
+    <p class="muted">Old laptop → Mycelium node. <a href="/api/v1/linux-nodes">Contract (JSON)</a> · <a href="/api/v1/agent/status">agent JSON</a> · one command: <code>python3 node_client/bootstrap.py --node-id linux-laptop-1</code></p>
     <p>Capabilities that exist: <code>node.status, research.search, research.fetch, analysis.ollama, inventory.read, file.inspect</code> — no shell, no arbitrary commands.</p></div>
+    <div class="panel"><h2>Which node can do this?</h2>
+    <form method="get" action="/nodes" aria-label="Routing check">
+    <input type="text" name="check_cap" placeholder="research.fetch" value="{_ui.esc(check_cap[:80])}" style="width:50%" aria-label="Capability" autocomplete="off">
+    <button type="submit">Check</button></form>
+    {_routing_answer_html(check_cap)}</div>
     <div class="grove">{cards}</div>"""
     return _ui.shell("Nodes", "/nodes", main, _ui.command_bar())
 
 
 @app.get("/3d", response_class=HTMLResponse)
-def model_3d_page() -> str:
+def model_3d_page(entity_id: str = "") -> str:
     """3D workflow pipeline: honest stage chips, no fake meshes."""
     from . import ui as _ui
     from .fab_flow import list_fabrications
@@ -8923,6 +9197,32 @@ def model_3d_page() -> str:
     rows = "".join(
         f"<li><a href=\"/workshop?fabrication_id={_ui.esc(record.fabrication_id)}\">{_ui.esc(record.fabrication_id)}</a> — {_ui.esc(record.status)}</li>"
         for record in runs) or "<li>No runs yet.</li>"
+    related_html = ""
+    if entity_id.strip():
+        import anyio as _anyio
+        try:
+            from .ecosystem import entity_context
+            context = _anyio.run(
+                entity_context, entity_id.strip()[:100], 1)
+            links = "".join(
+                f"<li><code>{_ui.esc(item['entity_id'][:40])}</code> "
+                f"<span class=\"muted\">"
+                f"{_ui.esc(item['predicate'])}</span></li>"
+                for item in context.get("connected_to", [])[:12])
+            empty_relations = (
+                "<li>No stored relations yet - propose one "
+                "below.</li>")
+            related_html = (
+                "<div class=\"panel\"><h2>Connected to "
+                f"{_ui.esc(entity_id[:40])}</h2>"
+                f"<ul>{links or empty_relations}</ul>"
+                f"<p><a href=\"/world?entity_id="
+                f"{_ui.esc(entity_id)}\">Open in world graph</a></p>"
+                "</div>")
+        except Exception:
+            related_html = (
+                "<div class=\"panel\"><p class=\"muted\">Relations "
+                "unavailable right now.</p></div>")
     main = """<h1>3D — from photo to verified object</h1>
     <div class="panel"><div class="path" aria-label="3D pipeline">
     <span class="step done">PHOTO / OBJECT</span><span class="arrow">→</span>
@@ -8943,7 +9243,9 @@ def model_3d_page() -> str:
     <input type="text" name="to_id" placeholder="to: proj_… / obj_…" style="width:28%" aria-label="To entity">
     <button type="submit">Propose link</button></form></div>
     <div class="filament" aria-hidden="true"></div>
-    <div class="panel"><h2>Workspace</h2><p><a href="/workshop/3d">Open 3D workshop</a> · <a href="/fabrication">Fabrication</a> · <a href="/workshop">Chain view</a></p></div>
+    """ + related_html + """
+    <div class="panel"><h2>Workspace</h2><p><a href="/workshop/3d">Open 3D workshop</a> · <a href="/fabrication">Fabrication</a> · <a href="/workshop">Chain view</a></p>
+    <p><form method="get" action="/3d" aria-label="Related relations"><input type="text" name="entity_id" placeholder="mod_… / file_… / proj_…" value="{_ui.esc(entity_id)}" style="width:40%" aria-label="Entity"> <button type="submit">Show relations</button></form></p></div>
     <div class="panel"><h2>Recent runs</h2><ul>""" + rows + """</ul></div>"""
     return _ui.shell("3D", "/workshop/3d", main, _ui.command_bar())
 
@@ -9077,6 +9379,29 @@ def _node_role_list(record: dict) -> list[str]:
         return ["GENERAL"]
 
 
+def _routing_answer_html(check_cap: str) -> str:
+    """Deterministic routing answer: which online nodes carry one
+    capability. Read-only dry-run, same rules as task assignment."""
+    from . import ui as _ui
+    wanted = str(check_cap or "").strip()[:80]
+    if not wanted:
+        return "<p class=\"muted\">Ask for a capability, e.g. "
+        "<code>research.fetch</code> — Mycelium answers from live "
+        "registrations, never guesses.</p>"
+    eligible = eligible_nodes_for(wanted)
+    if not eligible:
+        return (f"<p>“{_ui.esc(wanted)}”: <b>WAITING_FOR_AGENT</b> — "
+                "no online node advertises this. Add a Linux node or "
+                "let the coordinator handle it.</p>")
+    rows = "".join(
+        f"<li><b>{_ui.esc(entry['node_id'])}</b> "
+        f"<span class=\"muted\">[{_ui.esc(entry['status'])} · "
+        f"{_ui.esc(entry['tier'])}]</span></li>"
+        for entry in eligible)
+    return (f"<p>“{_ui.esc(wanted)}” → {len(eligible)} eligible "
+            f"node(s):</p><ul>{rows}</ul>")
+
+
 @app.get("/api/v1/node-roles")
 def api_node_roles() -> dict:
     return {"roles": {record["node_id"]: _node_role_list(record)
@@ -9201,7 +9526,11 @@ def camera_detail_page(device_id: str):
     obs_rows = "".join(
         f"<li><code>{_ui.esc(obs.observation_id)}</code> "
         f"<span class=\"muted\">{_ui.esc(obs.created_at[:16])} · "
-        f"{_ui.esc(obs.media_ref or 'no media')}</span></li>"
+        f"{_ui.esc(obs.media_ref or 'no media')}</span><br>"
+        f"<form method=\"post\" action=\"/web/observations/"
+        f"{_ui.esc(obs.observation_id)}/candidate\" "
+        f"style=\"display:inline\">"
+        f"<button type=\"submit\">Review as candidate</button></form></li>"
         for obs in latest) or "<li>No observations yet.</li>"
     inbox = "".join(
         f"<li><code>{_ui.esc(entry['filename'])}</code> "
@@ -9277,6 +9606,48 @@ async def web_camera_ingest_file(device_id: str,
                f"File ingest {result.observation.observation_id} "
                f"via {device_id}", node_id=device_id)
     return RedirectResponse(f"/cameras/{device_id}", status_code=303)
+
+
+@app.post("/web/observations/{observation_id}/candidate")
+async def web_observation_to_candidate(observation_id: str,
+                                       request: Request) -> Response:
+    from .events import new_event as _bus_new, \
+        save_event as _bus_save
+    from .inventory_read import Provenance
+    from .knowledge import (CandidateRefusedError, new_candidate,
+                            save_candidate)
+    fields = await _form_fields(request)
+    observation = _observation_load(observation_id)
+    if observation is None:
+        return RedirectResponse("/cameras", status_code=303)
+    try:
+        entry = new_candidate(
+            f"observation {observation_id}: "
+            f"{observation.media_ref or 'capture'}",
+            "observation",
+            summary=fields.get("summary", "")[:1000] or
+            f"Camera {observation.device_id} saw "
+            f"{observation.media_ref or 'something'}; needs human "
+            "review before it means anything.",
+            state="observation",
+            provenance=Provenance(
+                source_type="sensor-observed",
+                creator_id=f"camera:{observation.device_id}",
+                human_verified=False),
+            source_refs=[{"kind": "observation",
+                          "id": observation_id,
+                          "label": observation.media_ref or ""}],
+            evidence=[{"text": f"media {observation.media_ref}",
+                       "source": observation.device_id}])
+        save_candidate(entry)
+        _bus_save(_bus_new(
+            "candidate.observed",
+            f"Candidate {entry.candidate_id} from observation "
+            f"{observation_id}"))
+    except CandidateRefusedError:
+        pass
+    return RedirectResponse(
+        f"/cameras/{observation.device_id}", status_code=303)
 
 
 def _write_list(limit: int = 50) -> list[dict]:
@@ -9429,6 +9800,25 @@ def _queue_list(limit: int = 50) -> list[dict]:
             for run in drafts[: max(1, min(int(limit or 50), 100))]]
 
 
+@app.post("/web/research/queue")
+async def web_research_queue_add(request: Request) -> Response:
+    fields = await _form_fields(request)
+    question = fields.get("question", "").strip()
+    if not question:
+        return RedirectResponse("/research", status_code=303)
+    from .research_engine import new_run, save_run
+    try:
+        run = new_run(question[:500], requested_by="mobile",
+                      metadata={"priority": "MEDIUM",
+                                "provider": "wikipedia",
+                                "max_sources": 6,
+                                "route": "local"})
+        save_run(run)
+    except ValueError:
+        pass
+    return RedirectResponse("/research", status_code=303)
+
+
 @app.get("/api/v1/research/queue")
 def api_research_queue(limit: int = 50) -> dict:
     from .context_engine import get_mode
@@ -9438,6 +9828,8 @@ def api_research_queue(limit: int = 50) -> dict:
 @app.post("/api/v1/research/queue", status_code=201)
 def api_research_queue_add(body: dict) -> dict:
     from .research_engine import new_run, save_run
+    from .research_transport import (TransportRefusedError,
+                                     validate_url)
     if not isinstance(body, dict):
         raise HTTPException(status_code=422, detail="JSON body required")
     question = str(body.get("question", "")).strip()
@@ -9448,6 +9840,17 @@ def api_research_queue_add(body: dict) -> dict:
         raise HTTPException(
             status_code=422,
             detail=f"priority must be one of {list(QUEUE_PRIORITIES)}")
+    route = str(body.get("route", "local")).strip().lower()
+    if route not in ("local", "node-first"):
+        raise HTTPException(
+            status_code=422,
+            detail="route must be local or node-first")
+    seed_urls: list[str] = []
+    for raw in (body.get("seed_urls", []) or [])[:3]:
+        try:
+            seed_urls.append(validate_url(str(raw)))
+        except TransportRefusedError as exc:
+            raise HTTPException(status_code=422, detail=str(exc))
     try:
         run = new_run(
             question[:500],
@@ -9458,20 +9861,44 @@ def api_research_queue_add(body: dict) -> dict:
                       "provider": str(body.get("provider",
                                                "wikipedia"))[:20],
                       "max_sources": max(1, min(int(body.get(
-                          "max_sources", 6)), 10))})
+                          "max_sources", 6)), 10)),
+                      "route": route, "seed_urls": seed_urls})
         save_run(run)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
+    try:
+        from .events import new_event as _bus_new, \
+            save_event as _bus_save
+        _bus_save(_bus_new(
+            "research.queued",
+            f"Queued {run.run_id} [{priority}/{route}]: "
+            f"{question[:120]}"))
+    except Exception:
+        pass
     return {"run_id": run.run_id, "priority": priority,
-            "status": run.status}
+            "status": run.status, "route": route,
+            "seed_urls": seed_urls}
 
 
 @app.post("/api/v1/research/queue/run-once")
 async def api_research_queue_run_once() -> dict:
     """Execute the top queued draft once, bounded. Manual or
     scheduler-triggered (n8n cron); never a background thread.
-    Physical/desktcomputed steps stay behind existing gates."""
+    route=node-first with seed URLs routes validated fetches to
+    eligible nodes (pull-only); otherwise the coordinator fetches
+    locally. Physical steps stay behind existing gates."""
     queued = _queue_list(limit=1)
+    if not queued:
+        return {"ran": False, "reason": "queue empty"}
+    top = queued[0]
+    from .research_engine import load_run
+    run = load_run(top["run_id"])
+    if run is None:
+        raise HTTPException(status_code=404, detail="Run vanished")
+    metadata = run.metadata or {}
+    if str(metadata.get("route", "local")) == "node-first" and \
+            metadata.get("seed_urls"):
+        return _route_run_to_nodes(run)
     if not queued:
         return {"ran": False, "reason": "queue empty"}
     top = queued[0]
@@ -9495,3 +9922,508 @@ async def api_research_queue_run_once() -> dict:
                 "reason": str(exc.detail)}
     return {"ran": True, "run_id": run.run_id,
             "dossier_id": finished.get("dossier_id", "")}
+
+
+def eligible_nodes_for(capability: str) -> list[dict]:
+    """Online nodes advertising one capability. Deterministic,
+    read-only: capability providers, never pushed work."""
+    wanted = str(capability or "").strip()[:80]
+    if not wanted:
+        return []
+    return [{"node_id": record["node_id"],
+             "tier": record.get("tier", ""),
+             "status": record.get("derived_status", ""),
+             "last_seen": str(record.get("last_seen", ""))[:19],
+             "capabilities": list(record.get("capabilities", []))[:20]}
+            for record in list_nodes()
+            if record.get("derived_status") in ("online", "busy")
+            and wanted in (record.get("capabilities") or [])]
+
+
+@app.get("/api/v1/eligible-nodes")
+def api_nodes_eligible(capability: str = "") -> dict:
+    return {"capability": str(capability or "")[:80],
+            "eligible": eligible_nodes_for(capability)}
+
+
+def _route_run_to_nodes(run) -> dict:
+    """Queue a run's validated seed URLs as research.fetch_url tasks
+    for eligible nodes. Nothing executes here: nodes pull, fetch
+    bounded text, and report; the completion hook ingests each
+    result as a run source. Honest waiting when nobody qualifies."""
+    from .research_engine import save_run
+    metadata = run.metadata or {}
+    seed_urls = [str(url) for url in
+                 (metadata.get("seed_urls", []) or [])][:3]
+    if not seed_urls:
+        return {"ran": False, "run_id": run.run_id,
+                "reason": "node-first needs seed_urls"}
+    eligible = eligible_nodes_for("research.fetch")
+    if not eligible:
+        try:
+            from .events import new_event as _bus_new, \
+                save_event as _bus_save
+            _bus_save(_bus_new(
+                "research.routed",
+                f"Run {run.run_id} waits: no eligible research "
+                "node (WAITING_FOR_AGENT)",
+                mission_id=run.mission_id or ""))
+        except Exception:
+            pass
+        return {"ran": False, "run_id": run.run_id,
+                "routed": False,
+                "reason": "WAITING_FOR_AGENT: no online node with "
+                          "research.fetch; fetch locally or add a "
+                          "Linux node",
+                "eligible": []}
+    created: list[int] = []
+    for url in seed_urls:
+        try:
+            made = create_task(TaskCreate(
+                kind="research.fetch_url",
+                payload={"url": url, "run_id": run.run_id,
+                         "max_chars": 65536},
+                required_capabilities=["research.fetch"]))
+            created.append(int(made.get("id", 0)))
+        except HTTPException:
+            continue
+    created = [task_id for task_id in created if task_id]
+    if not created:
+        return {"ran": False, "run_id": run.run_id,
+                "reason": "task creation refused"}
+    updated = run.model_copy(update={
+        "metadata": {**metadata, "routed_task_ids": created,
+                     "routed_to": [entry["node_id"]
+                                   for entry in eligible[:3]]}})
+    save_run(updated)
+    try:
+        from .events import new_event as _bus_new, \
+            save_event as _bus_save
+        _bus_save(_bus_new(
+            "research.routed",
+            f"Run {run.run_id}: {len(created)} fetch task(s) "
+            f"queued for {len(eligible)} eligible node(s)",
+            mission_id=run.mission_id or ""))
+    except Exception:
+        pass
+    return {"ran": False, "run_id": run.run_id, "routed": True,
+            "task_ids": created,
+            "eligible": [entry["node_id"] for entry in eligible],
+            "reason": "tasks queued; nodes pull, fetch and report; "
+                      "sources land on the run via completion"}
+
+
+# =============================================================================
+# BIG #32 — KNOWLEDGE LIFECYCLE. Candidates mature visibly:
+# observation -> candidate -> supported -> promoted memory.
+# Promotion is explicit, conflict-safe, provenance-preserving.
+# =============================================================================
+
+
+def _candidate_to_json(entry) -> dict:
+    from .knowledge import support_count
+    data = entry.model_dump(mode="json")
+    data["supporters"] = support_count(entry)
+    return data
+
+
+@app.get("/api/v1/candidates")
+def api_candidates_list(state: str = "", candidate_type: str = "",
+                        project_ref: str = "",
+                        limit: int = 50) -> dict:
+    from .knowledge import CandidateRefusedError, list_candidates
+    try:
+        entries = list_candidates(
+            state=state[:20], candidate_type=candidate_type[:20],
+            project_ref=project_ref[:100], limit=limit)
+    except CandidateRefusedError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    return {"candidates": [_candidate_to_json(entry)
+                           for entry in entries]}
+
+
+@app.post("/api/v1/candidates", status_code=201)
+def api_candidate_create(body: dict) -> dict:
+    from .knowledge import (CandidateRefusedError, new_candidate,
+                            save_candidate)
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=422, detail="JSON body required")
+    try:
+        from .inventory_read import Provenance
+        entry = new_candidate(
+            str(body.get("title", "")), str(body.get(
+                "candidate_type", "note")),
+            summary=str(body.get("summary", "")),
+            state=str(body.get("state", "candidate")),
+            provenance=Provenance(
+                source_type="user-created", creator_id="candidate-form",
+                human_verified=True),
+            source_refs=body.get("source_refs", []),
+            evidence=body.get("evidence", []),
+            entity_refs=body.get("entity_refs", []),
+            project_ref=str(body.get("project_ref", "")))
+        save_candidate(entry)
+    except CandidateRefusedError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    try:
+        from .events import new_event as _bus_new, \
+            save_event as _bus_save
+        _bus_save(_bus_new(
+            "candidate.observed",
+            f"Candidate {entry.candidate_id}: {entry.title[:120]}"))
+    except Exception:
+        pass
+    return _candidate_to_json(entry)
+
+
+@app.get("/api/v1/candidates/{candidate_id}")
+def api_candidate_get(candidate_id: str) -> dict:
+    from .knowledge import get_candidate
+    entry = get_candidate(candidate_id)
+    if entry is None:
+        raise HTTPException(status_code=404, detail="Unknown candidate")
+    return _candidate_to_json(entry)
+
+
+@app.post("/api/v1/candidates/{candidate_id}/support")
+def api_candidate_support(candidate_id: str, body: dict) -> dict:
+    from .knowledge import CandidateRefusedError, support_candidate
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=422, detail="JSON body required")
+    try:
+        entry = support_candidate(
+            candidate_id, str(body.get("supporter", "")),
+            rationale=str(body.get("rationale", "")))
+    except CandidateRefusedError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    try:
+        from .events import new_event as _bus_new, \
+            save_event as _bus_save
+        _bus_save(_bus_new(
+            "candidate.supported",
+            f"Candidate {candidate_id} supported "
+            f"({len(entry.support)} backing(s))"))
+    except Exception:
+        pass
+    return _candidate_to_json(entry)
+
+
+@app.post("/api/v1/candidates/{candidate_id}/promote")
+def api_candidate_promote(candidate_id: str, body: dict) -> dict:
+    from .knowledge import CandidateRefusedError, promote_candidate
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=422, detail="JSON body required")
+    try:
+        result = promote_candidate(
+            candidate_id, truth=str(body.get("truth", "")),
+            verified_by=str(body.get("verified_by", "")),
+            importance=body.get("importance", 0.6))
+    except CandidateRefusedError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    try:
+        from .events import new_event as _bus_new, \
+            save_event as _bus_save
+        _bus_save(_bus_new(
+            "candidate.promoted",
+            f"Candidate {candidate_id} promoted to "
+            f"{result['memory_id']} [{result['truth']}]"))
+    except Exception:
+        pass
+    return result
+
+
+@app.post("/api/v1/candidates/{candidate_id}/reject")
+def api_candidate_reject(candidate_id: str, body: dict) -> dict:
+    from .knowledge import CandidateRefusedError, reject_candidate
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=422, detail="JSON body required")
+    try:
+        entry = reject_candidate(
+            candidate_id, reason=str(body.get("reason", "")),
+            decided_by=str(body.get("decided_by", "human")))
+    except CandidateRefusedError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    try:
+        from .events import new_event as _bus_new, \
+            save_event as _bus_save
+        _bus_save(_bus_new("candidate.rejected",
+                           f"Candidate {candidate_id} rejected"))
+    except Exception:
+        pass
+    return _candidate_to_json(entry)
+
+
+@app.post("/api/v1/candidates/{candidate_id}/keep")
+def api_candidate_keep(candidate_id: str) -> dict:
+    from .knowledge import CandidateRefusedError, touch_candidate
+    try:
+        entry = touch_candidate(candidate_id)
+    except CandidateRefusedError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    return _candidate_to_json(entry)
+
+
+@app.post("/api/v1/conversation-imports/{conversation_id}/findings/{index}/candidate",
+          status_code=201)
+def api_finding_to_candidate(conversation_id: str, index: int) -> dict:
+    from .conversation_bridge import load_analysis
+    from .knowledge import (CandidateRefusedError,
+                            candidate_from_finding)
+    analysis = load_analysis(conversation_id) or {}
+    findings = analysis.get("findings", [])
+    if not isinstance(index, int) or not 0 <= index < len(findings):
+        raise HTTPException(status_code=404,
+                            detail="Finding not found; analyze first")
+    try:
+        entry = candidate_from_finding(conversation_id,
+                                       findings[index])
+    except CandidateRefusedError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    try:
+        from .events import new_event as _bus_new, \
+            save_event as _bus_save
+        _bus_save(_bus_new(
+            "candidate.observed",
+            f"Candidate {entry.candidate_id} from "
+            f"{conversation_id} finding {index}"))
+    except Exception:
+        pass
+    return _candidate_to_json(entry)
+
+
+@app.post("/api/v1/observations/{observation_id}/candidate",
+          status_code=201)
+def api_observation_to_candidate(observation_id: str,
+                                 body: dict | None = None) -> dict:
+    from .inventory_read import Provenance
+    from .knowledge import (CandidateRefusedError, new_candidate,
+                            save_candidate)
+    observation = _observation_load(observation_id)
+    if observation is None:
+        raise HTTPException(status_code=404,
+                            detail="Observation not found")
+    try:
+        entry = new_candidate(
+            f"observation {observation_id}: "
+            f"{observation.media_ref or 'capture'}",
+            "observation",
+            summary=str((body or {}).get("summary", "") or
+                        f"Camera {observation.device_id} saw "
+                        f"{observation.media_ref or 'something'}; "
+                        "needs human review before it means anything."),
+            state="observation",
+            provenance=Provenance(
+                source_type="sensor-observed",
+                creator_id=f"camera:{observation.device_id}",
+                human_verified=False),
+            source_refs=[{"kind": "observation",
+                          "id": observation_id,
+                          "label": observation.media_ref or ""}],
+            evidence=[{"text": f"media {observation.media_ref}",
+                       "source": observation.device_id}])
+        save_candidate(entry)
+    except CandidateRefusedError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    return _candidate_to_json(entry)
+
+
+@app.post("/api/v1/research/dossiers/{dossier_id}/questions/{index}/candidate",
+          status_code=201)
+def api_question_to_candidate(dossier_id: str, index: int) -> dict:
+    from .inventory_read import Provenance
+    from .knowledge import (CandidateRefusedError, new_candidate,
+                            save_candidate)
+    from .research_engine import load_dossier
+    dossier = load_dossier(dossier_id)
+    if dossier is None:
+        raise HTTPException(status_code=404, detail="Unknown dossier")
+    questions = dossier.open_questions or []
+    if not isinstance(index, int) or not 0 <= index < len(questions):
+        raise HTTPException(status_code=404,
+                            detail="Question not found")
+    try:
+        entry = new_candidate(
+            f"research question: {questions[index][:140]}",
+            "question", summary=questions[index][:1500],
+            provenance=Provenance(
+                source_type="external-source",
+                creator_id=f"research:{dossier.run_id}",
+                human_verified=False),
+            source_refs=[{"kind": "research", "id": dossier_id,
+                          "label": dossier.title[:120]}])
+        save_candidate(entry)
+    except CandidateRefusedError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    return _candidate_to_json(entry)
+
+
+@app.get("/knowledge", response_class=HTMLResponse)
+def knowledge_page(state: str = "", candidate_type: str = "") -> str:
+    """Knowledge lifecycle: observations mature into candidates,
+    supported claims, memories. Nothing promotes itself."""
+    from . import ui as _ui
+    from .knowledge import (ACTIVE_STATES, CANDIDATE_STATES,
+                            CANDIDATE_TYPES, list_candidates,
+                            support_count)
+    try:
+        entries = list_candidates(
+            state=state, candidate_type=candidate_type, limit=60)
+    except Exception:
+        entries = []
+    counts = {name: 0 for name in CANDIDATE_STATES}
+    try:
+        for entry in list_candidates(limit=200):
+            counts[entry.state] = counts.get(entry.state, 0) + 1
+    except Exception:
+        pass
+    state_options = "".join(
+        f"<option value='{name}'"
+        + (" selected" if name == state else "")
+        + f">{name or 'all states'}</option>"
+        for name in ["", *CANDIDATE_STATES])
+    type_options = "".join(
+        f"<option value='{name}'"
+        + (" selected" if name == candidate_type else "")
+        + f">{name or 'all types'}</option>"
+        for name in ["", *CANDIDATE_TYPES])
+    cards = ""
+    for entry in entries:
+        supporters = support_count(entry)
+        evidence = "".join(
+            f"<li><small>{_ui.esc(item.get('text', '')[:160])} "
+            f"<span class=\"muted\">[{_ui.esc(item.get('source', ''))}]"
+            f"</span></small></li>"
+            for item in entry.evidence[:4])
+        counter = "".join(
+            f"<li><small>{_ui.esc(item.get('text', '')[:160])}</small>"
+            f"</li>" for item in entry.counter_evidence[:3])
+        next_action = {
+            "observation": "Review it — support, research, or reject.",
+            "candidate": "Find a second source, link it, or research it.",
+            "supported": "Ready for your YES to promote to memory.",
+            "promoted": f"Promoted to {entry.promoted_to}.",
+            "rejected": "Rejected — kept as audit trail.",
+        }.get(entry.state, "")
+        actions = (
+            f"<form method=\"post\" action=\"/web/candidates/"
+            f"{_ui.esc(entry.candidate_id)}/support\" "
+            f"style=\"display:inline\">"
+            f"<input type=\"text\" name=\"supporter\" placeholder=\"You\" "
+            f"style=\"width:5rem\" aria-label=\"Supporter\">"
+            f"<button type=\"submit\">Support</button></form> "
+            f"<form method=\"post\" action=\"/web/candidates/"
+            f"{_ui.esc(entry.candidate_id)}/promote\" "
+            f"style=\"display:inline\">"
+            f"<input type=\"text\" name=\"verified_by\" "
+            f"placeholder=\"verified by (for fact tier)\" "
+            f"style=\"width:9rem\" aria-label=\"Verified by\">"
+            f"<button type=\"submit\">Promote</button></form> "
+            f"<form method=\"post\" action=\"/web/candidates/"
+            f"{_ui.esc(entry.candidate_id)}/reject\" "
+            f"style=\"display:inline\">"
+            f"<button type=\"submit\">Reject</button></form>"
+            if entry.state in ACTIVE_STATES else "")
+        cards += (
+            f"<div class=\"sprout grain\"><b>{_ui.esc(entry.title[:110])}</b><br>"
+            f"{_ui.chip(entry.candidate_type)}"
+            f"{_ui.chip(entry.state)}"
+            f"<span class=\"chip\">♥ {supporters}</span><br>"
+            f"<small>{_ui.esc(entry.summary[:200])}</small><br>"
+            f"<span class=\"muted\">from "
+            f"{_ui.esc(entry.provenance.source_type)} · "
+            f"{_ui.esc(entry.provenance.creator_id)} · "
+            f"{_ui.esc(entry.created_at[:10])}</span>"
+            f"<ul>{evidence}</ul>"
+            + (f"<p><small>⚠ counter: </small></p><ul>{counter}</ul>"
+               if counter else "")
+            + (f"<p><small>→ linked: "
+                f"{_ui.esc(', '.join(entry.entity_refs[:5]))}</small></p>"
+                if entry.entity_refs else "")
+            + f"<p class=\"muted\">Next: {_ui.esc(next_action)}</p>"
+            f"<p>{actions}</p></div>")
+    pipeline = " → ".join(
+        f"{name} ({counts.get(name, 0)})" for name in CANDIDATE_STATES)
+    main = f"""<h1>Knowledge — what Mycelium is learning</h1>
+    <p class="muted">OBSERVATION → CANDIDATE → SUPPORTED → PROMOTED MEMORY. { _ui.esc(pipeline) }. Nothing promotes itself; verified memories are never overwritten.</p>
+    <div class="panel"><form method="get" action="/knowledge" aria-label="Filter candidates">
+    <select name="state" aria-label="State">{state_options}</select>
+    <select name="candidate_type" aria-label="Type">{type_options}</select>
+    <button type="submit">Filter</button></form></div>
+    <div class="panel"><h2>New candidate</h2>
+    <form method="post" action="/web/candidates">
+    <input type="text" name="title" placeholder="Title" style="width:35%" aria-label="Title">
+    <select name="candidate_type" aria-label="Type">{"".join(f"<option value='{name}'>{name}</option>" for name in CANDIDATE_TYPES)}</select>
+    <input type="text" name="summary" placeholder="Summary" style="width:35%" aria-label="Summary">
+    <button type="submit">Remember as candidate</button></form></div>
+    <div class="grove">{cards or _ui.empty("🌱 This part of the ecosystem is quiet. Give Mycelium an observation, import a conversation, or run research — candidates grow here, never facts.")}</div>"""
+    return _ui.shell("Knowledge", "/knowledge", main, _ui.command_bar())
+
+
+@app.post("/web/candidates")
+async def web_candidate_create(request: Request) -> Response:
+    from .inventory_read import Provenance
+    from .knowledge import (CandidateRefusedError, new_candidate,
+                            save_candidate)
+    fields = await _form_fields(request)
+    try:
+        entry = new_candidate(
+            fields.get("title", ""),
+            fields.get("candidate_type", "note") or "note",
+            summary=fields.get("summary", ""),
+            provenance=Provenance(
+                source_type="user-created", creator_id="web",
+                human_verified=True),
+            project_ref=fields.get("project_ref", ""))
+        save_candidate(entry)
+    except CandidateRefusedError:
+        pass
+    return RedirectResponse("/knowledge", status_code=303)
+
+
+@app.post("/web/candidates/{candidate_id}/support")
+async def web_candidate_support(candidate_id: str,
+                                request: Request) -> Response:
+    from .knowledge import CandidateRefusedError, support_candidate
+    fields = await _form_fields(request)
+    try:
+        support_candidate(
+            candidate_id, fields.get("supporter", "Jelles") or
+            "Jelles",
+            rationale=fields.get("rationale", "")[:300])
+    except CandidateRefusedError:
+        pass
+    return RedirectResponse("/knowledge", status_code=303)
+
+
+@app.post("/web/candidates/{candidate_id}/promote")
+async def web_candidate_promote(candidate_id: str,
+                                request: Request) -> Response:
+    from .events import new_event as _bus_new, \
+        save_event as _bus_save
+    from .knowledge import CandidateRefusedError, promote_candidate
+    fields = await _form_fields(request)
+    try:
+        result = promote_candidate(
+            candidate_id,
+            verified_by=fields.get("verified_by", ""))
+        _bus_save(_bus_new(
+            "candidate.promoted",
+            f"Candidate {candidate_id} promoted to "
+            f"{result['memory_id']} [{result['truth']}]"))
+    except CandidateRefusedError:
+        pass
+    return RedirectResponse("/knowledge", status_code=303)
+
+
+@app.post("/web/candidates/{candidate_id}/reject")
+async def web_candidate_reject(candidate_id: str,
+                               request: Request) -> Response:
+    from .knowledge import CandidateRefusedError, reject_candidate
+    fields = await _form_fields(request)
+    try:
+        reject_candidate(candidate_id,
+                         reason=fields.get("reason", "")[:300],
+                         decided_by="web")
+    except CandidateRefusedError:
+        pass
+    return RedirectResponse("/knowledge", status_code=303)

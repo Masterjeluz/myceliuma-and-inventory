@@ -115,6 +115,7 @@ Momentopname van wat het systeem IS. Voor flows, zie
 | Conversation bridge | `conversation_bridge.py`, `routes_conversations.py`, `context_packet.py` | DONE (BIG #30: import pasted/TXT/MD/JSON/safe-HTML als conv_..., OBSERVATION/CANDIDATE-analyse + missed-items met evidence, universeel + continuation packet Markdown+JSON, health-scoped) |
 | Living ecosystem | `ecosystem.py`, `notify_center.py`, `linux_node.py` + `/world` cockpit, `/conversations`, `/nodes`, `/3d`, `/mobile`, `/activity` | DONE (BIG #30: entity CONNECTED TO, voice-activity, IN_APP real / WEB_PUSH unavailable, Linux starter-set + runbook, Insta360/3D eerlijke workflows) |
 | Activation | `context_engine.py`, `living_state.py`, packet v2, `/search`, `/writes`-inbox, file-ingest, node-rollen, overnight-queue + mode, `node_client/bootstrap.py` | DONE (BIG #31: composer + traces, living state topbar, handoff-downloads, archaeology depth, propose-link-YES, camera-detail, one-command + systemd, GOOD MORNING) |
+| Living knowledge | `knowledge.py` + `/knowledge`, graffilters + overlays, `research.fetch_url` + routing, packet-kennis, mobiele remember/queue | DONE (BIG #32: cyclus + promotie met conflicten, Linux-executor + queue-integratie, truth-filters, candidate-knoppen overal) |
 | Skills | `skills.py` | DONE (evidence-progressie, discovery) |
 | Advanced 3D/CAD | `meshops.py`, `cad.py` | DONE/PARTIAL (procedural bouwt; extern UNAVAILABLE) |
 | Fabricatie-orkestratie | `fabrication.py` | PARTIAL (plant/selecteert; start blijft gated) |
@@ -130,11 +131,13 @@ Momentopname van wat het systeem IS. Voor flows, zie
 
 ## Teststatus (gemeten, niet geschat)
 
-- Mycelium: **1140 passed** (`pytest -v` in `mycelium-ai-main/`,
-  batch-gewijs i.v.m. runner-duur; 0 failures) — 1124 baseline
-  (BIG #30) + 16 nieuwe BIG #31-tests
-  (`test_big31_activation.py`; camera-ctypes geeft dezelfde
-  pre-existing access-violation-meldingen als altijd)
+- Mycelium: **1162 passed** (`pytest -v` in `mycelium-ai-main/`,
+  batch-gewijs i.v.m. runner-duur; 0 failures) — 1140 baseline
+  (BIG #31) + 22 nieuwe BIG #32-tests
+  (`test_big32_knowledge.py`; camera-ctypes geeft dezelfde
+  pre-existing access-violation-meldingen als altijd; tijdens
+  ontwikkeling 1 echte wereldgrafiek-regressie gevonden en
+  hersteld — ongefilterde output is weer byte-identiek)
 - Screenshots: `docs/r31-shots/` (10 PNG's, headless Chrome tegen
   een coordinator op tmp-DB's met echte seed-data: node, Insta360
   + file-observation, conversation-import + analyse, chat, missie,

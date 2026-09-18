@@ -40,3 +40,11 @@ proposals with closed predicates (`used_in`, `part_of`,
 `/writes` inbox for an exact YES — nothing links itself. Object
 creation from mobile follows the same inbox (`/web/objects/propose`
 → YES → execute → verify).
+
+## Related relations (BIG #32)
+
+`/3d?entity_id=mod_…` shows the entity's CONNECTED TO panel
+(stored relations via the ecosystem context) with a link into
+the world graph — model ↔ project ↔ file ↔ object ↔ research
+becomes navigable instead of implied. Links themselves are still
+proposed through `/writes` and need YES.

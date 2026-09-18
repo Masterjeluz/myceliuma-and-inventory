@@ -14,6 +14,11 @@ Antigravity) are advisors — never the database.
   `task`, `intent`, `current_state` (living state), `decisions`,
   `unresolved_questions`, `suggested_next_actions`, `timestamps`,
   `source_references`, `mycelium_state`, `continuation_instructions`.
+- v2 knowledge (BIG #32): `knowledge` section with observations,
+  candidates, supported (with backer counts), `memories_by_tier`
+  (health excluded), contradictions from dossiers, and
+  `research_performed`. Rendered in Markdown under KNOWLEDGE
+  LIFECYCLE.
 
 ## Endpoints
 

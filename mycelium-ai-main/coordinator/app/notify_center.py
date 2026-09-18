@@ -1,8 +1,13 @@
 """Notification center (BIG #30): one abstraction, honest transports.
 
-Types (closed):
-  research_completed, mission_waiting, approval_required, node_offline,
-  task_completed, research_finding, system_attention
+Types (closed, BIG #32 extends the set additively — every type
+must be backed by stored state, never a claim):
+  research_completed, research_ready, mission_waiting,
+  approval_required, candidate_waiting, node_offline,
+  node_connected, task_completed, research_finding,
+  new_observation, new_connection, camera_ready,
+  fabrication_ready, morning_report, conversation_analyzed,
+  system_attention
 
 Transports:
   IN_APP — REAL (polling via existing notifications store; the /mobile
@@ -18,11 +23,20 @@ from __future__ import annotations
 
 NOTIFICATION_TYPES = frozenset({
     "research_completed",
+    "research_ready",
     "mission_waiting",
     "approval_required",
+    "candidate_waiting",
     "node_offline",
+    "node_connected",
     "task_completed",
     "research_finding",
+    "new_observation",
+    "new_connection",
+    "camera_ready",
+    "fabrication_ready",
+    "morning_report",
+    "conversation_analyzed",
     "system_attention",
 })
 
@@ -31,11 +45,20 @@ WEB_PUSH_TRANSPORT = "WEB_PUSH"
 
 _SEVERITY_MAP = {
     "research_completed": "completed",
+    "research_ready": "completed",
     "mission_waiting": "approval_required",
     "approval_required": "approval_required",
+    "candidate_waiting": "approval_required",
     "node_offline": "node_status",
+    "node_connected": "node_status",
     "task_completed": "completed",
     "research_finding": "info",
+    "new_observation": "info",
+    "new_connection": "info",
+    "camera_ready": "info",
+    "fabrication_ready": "info",
+    "morning_report": "info",
+    "conversation_analyzed": "info",
     "system_attention": "warning",
 }
 

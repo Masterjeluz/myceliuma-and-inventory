@@ -32,6 +32,12 @@ persoonlijke computer-agent (verticale slice, live bewezen):
   (INPUT→NODE→RESULT), notification center (IN_APP real, WEB_PUSH
   unavailable), Linux-starter-set + runbook, Insta360/3D eerlijke
   workflows; zie `docs/living-ecosystem.md`
+- **Living Knowledge** (`/knowledge`, graffilters, research
+  routing): observatie → kandidaat → gesteund → gepromoveerd
+  geheugen (mens beslist, conflicten weigeren, provenance
+  blijft), Linux `research.fetch_url`-executor met
+  capability-routing, waarheidsfilters op de wereldgrafiek; zie
+  `docs/knowledge-lifecycle.md` en `docs/research-routing.md`
 - **Controlled writes** (`/api/v1/writes/*`): voorstel → exact YES →
   allow-list-mutatie (INVENTory object/project/idee/relatie, git-commit
   via allow-list) → onafhankelijke verificatie (readback, geen
@@ -270,11 +276,11 @@ coordinator/app/nodes.py, routing.py, sim_nodes.py
 coordinator/app/conversation_bridge.py, context_packet.py,
                  ecosystem.py, notify_center.py, linux_node.py
 coordinator/app/context_engine.py, living_state.py,
-                 node_client/bootstrap.py (one-command onboarding)
+                 knowledge.py, node_client/bootstrap.py (one-command)
 desktop_agent/   standalone lokale agent (poll, claim, voer uit, rapporteer)
 node_client/     lichte client voor seed/worker/core nodes (pull-only, token-optie)
 docs/            architectuurstatus, roadmap, principes, oorsprong
-tests/           1140 tests (pytest -v)
+tests/           1162 tests (pytest -v)
 ```
 
 Zie `docs/ARCHITECTURE_STATUS.md` (wat het systeem is),
@@ -293,9 +299,11 @@ Zie `docs/ARCHITECTURE_STATUS.md` (wat het systeem is),
 `docs/autonomous-mission-loop.md`, `docs/desktop-hands.md`,
 `docs/living-ecosystem.md`, `docs/conversation-bridge.md`,
 `docs/context-packets.md`, `docs/overnight-research.md`,
+`docs/knowledge-lifecycle.md`, `docs/research-routing.md`,
+`docs/ROADMAP-V2.md`,
 `docs/mobile-node-flow.md`, `docs/linux-node-setup.md`,
 `docs/camera-workflow.md`, `docs/3d-workflow.md` en
-`docs/ROADMAP.md` (wat volgt). Teststatus: **1140 passed**.
+`docs/ROADMAP.md` (wat volgt). Teststatus: **1162 passed**.
 
 ## Bijdragen
 

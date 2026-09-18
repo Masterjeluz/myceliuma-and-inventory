@@ -33,6 +33,13 @@ screen). Observe & add links camera ingest, object/link proposals
 (`/writes`) and conversation import; context download
 (`/api/v1/context/packet.md`) travels with the phone to any model.
 
+Input surface (BIG #32): **Remember this** (phone note →
+candidate, never fact), **Look into this** (research queue),
+**What did we miss?** (discoveries). Every input enters the same
+coordinator ecosystem: candidate → research → relation →
+notification → Jelles decides. Photo upload does not exist —
+camera entry points at `/cameras` file ingest honestly.
+
 ## Notifications (`notify_center.py`)
 
 Closed types: `research_completed, mission_waiting,

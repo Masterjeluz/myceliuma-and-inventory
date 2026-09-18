@@ -57,6 +57,20 @@ memory runs through the existing provenance flow (`memory.py`).
 - Node roles (RESEARCH/ANALYSIS/INVENTORY/CAMERA/3D/INPUT/GENERAL) derived from advertised capabilities.
 - Overnight mode + research queue (`/api/v1/research/queue`, run-once); morning opens with GOOD MORNING + overnight + mode switch.
 
+## Living knowledge (BIG #32)
+
+- `/knowledge`: candidates mature OBSERVATION → CANDIDATE →
+  SUPPORTED → PROMOTED MEMORY (or REJECTED), with provenance,
+  evidence, supporters, conflicts and next actions. See
+  `docs/knowledge-lifecycle.md`.
+- Graph truth/source/kind/recency filters + memory, candidate
+  and conversation overlays (`/api/v1/graph`,
+  `include_knowledge`, `include_conversations`).
+- Research routing to Linux nodes (`research.fetch_url` REAL;
+  see `docs/research-routing.md`).
+- Packets carry the knowledge lifecycle; mobile remembers and
+  queues; V2 roadmap in `docs/ROADMAP-V2.md`.
+
 ## Mycelium is the world + orchestration layer
 
 ChatGPT / Claude / Gemini / Ollama / OpenCode / Antigravity are

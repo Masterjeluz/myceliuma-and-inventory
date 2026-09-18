@@ -1,6 +1,6 @@
 # NEXT-AI-CONTEXT — continue Mycelium development here
 
-Date: 2026-09-18. HEAD: `BIG #31 - activate the living ecosystem`
+Date: 2026-09-18. HEAD: `BIG #32 - build living knowledge and research network`
 (main, pushed to origin/main). Start with `git log --oneline -5`
 and `git status` (a pre-existing `Mycelium/agent/agent_ui.py`
 modification is NOT ours — leave it).
@@ -17,48 +17,42 @@ agent is the only hands (pull-only, outbound). Provenance always;
 health scoped; no shell/RCE; no background threads (jobs run on
 explicit trigger). Tests: `pytest -v` per project with tmp DB
 env vars (`MYCELIUM_DATABASE_PATH`, `MYCELIUM_CHAT_DATABASE_PATH`
-before TestClient). Full Mycelium suite: 1140 tests, batch-run
+before TestClient). Full Mycelium suite: 1162 tests, batch-run
 (single run exceeds 10-min timeout); INVENTory: 179 + 1
 pre-existing byte-size failure (do not touch that test).
 
-## What BIG #31 added (where)
+## What BIG #32 added (where)
 
-- `coordinator/app/context_engine.py` — `compose(intent, ...)`,
-  `record_trace/recent_traces`, `get_mode/set_mode` (tables
-  `command_traces`, `system_mode`).
-- `coordinator/app/living_state.py` — `current_state()`; rendered
-  by `ui.shell()` topbar on every page.
-- `coordinator/app/context_packet.py` — v2 (`build_packet_v2`,
-  `render_packet_v2_markdown`); v1 untouched.
-- `coordinator/app/ecosystem.py` — `node_roles`, `discoveries`,
-  clickable notification links.
-- `coordinator/app/conversation_bridge.py` — `compare_imports`,
-  `render_import_markdown`.
-- `coordinator/app/vision_ingest.py` — `FileIngestAdapter`,
-  `list_inbox_files` (camera dir = system temp `mycelium-cameras`).
-- `node_client/bootstrap.py` + `mycelium-node.service`.
-- `main.py` routes: `/api/v1/state`, `/context/compose`,
-  `/context/packet2`, `/context/packet.md`, `/command/traces`,
-  `/api/v1/search` + `/search`, `/writes` + `/web/links|objects|
-  writes/*`, `/cameras/{id}` + ingest-file + `/camera-inbox`,
-  `/node-roles`, `/mode`, `/discoveries`, `/imports-compare`,
-  import markdown/relevance, `/research/queue*`.
-- Route-conflict lesson: `/api/v1/nodes/{id}` etc. shadow
-  sub-paths — use distinct prefixes (`/node-roles`,
-  `/camera-inbox`, `/imports-compare`, `/linux-nodes`,
-  `/conversation-imports` list at `/api/v1/conversation-imports`).
-- Tests: `tests/test_big31_activation.py` (16).
+- `coordinator/app/knowledge.py` — candidates + support +
+  promotion (`knowledge_candidates` table); `GET/POST
+  /api/v1/candidates*`, finding/observation/question → candidate,
+  `/knowledge` + web forms.
+- `worldgraph.py` — `filter_graph()` + memory/candidate/
+  conversation overlays; `/world` Layers & truth panel.
+- `node_client/main.py` — `research.fetch_url` executor;
+  `main.py` eligible/routing/queue-seed/completion hook.
+- `context_packet.py` — v2 knowledge section; `living_state.py`
+  — 24h reasons; `notify_center.py` +9 types; `events.py` +8
+  types; mobile remember/queue/missed; camera/dossier candidate
+  buttons; `/3d` relations.
+- Tests: `tests/test_big32_knowledge.py` (22).
+- Route-conflict lesson (again): `/api/v1/nodes/{id}` shadows
+  sub-paths — `/api/v1/eligible-nodes` used instead.
+- F-string lesson: never split nested-quote f-strings across
+  lines via implicit concatenation (SyntaxError even on 3.14).
 
 ## Docs to read first
 
-`docs/ARCHITECTURE_STATUS.md` (truth), `docs/ROADMAP.md`
-(PHASE R), `docs/living-ecosystem.md`, `docs/context-packets.md`,
-`docs/overnight-research.md`, `docs/mycelium-ui-personality.md`,
-`docs/BIG31-final-report.md` (§21 = next BIG).
+`docs/ARCHITECTURE_STATUS.md` (truth), `docs/ROADMAP.md` +
+`docs/ROADMAP-V2.md` (BIG #33–40), `docs/living-ecosystem.md`,
+`docs/knowledge-lifecycle.md`, `docs/research-routing.md`,
+`docs/context-packets.md`, `docs/mycelium-ui-personality.md`,
+`docs/BIG32-final-report.md` (§21 = commit/push record).
 
-## Next BIG (from final report §21)
+## Next BIG (from BIG32 report §20 / ROADMAP-V2)
 
-BIG #32: candidate→memory promotion UX + Linux research executors
-+ graph layer filters. Constraints: no new stores, existing gates,
-honest labels, tmp DBs, screenshots in `docs/r32-shots/`, one
-commit `BIG #32 - ...`, push to `origin/main`.
+BIG #33: reviewed `research.extract` executor + per-node
+capability matrix + queue fan-out. Constraints: no new stores,
+existing gates, honest labels, tmp DBs, screenshots in
+`docs/r33-shots/`, one commit `BIG #33 - ...`, push to
+`origin/main`.

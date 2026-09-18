@@ -121,7 +121,7 @@ svg.world text{fill:var(--ink-dim);font-size:11px;font-family:var(--font)}
 NAV = [
     ("WORLD", [("/", "Living World"), ("/world", "World Graph"),
                ("/search", "Search"), ("/projects", "Projects"),
-               ("/memory", "Memory"),
+               ("/memory", "Memory"), ("/knowledge", "Knowledge"),
                ("/conversations", "Conversations")]),
     ("MIND", [("/missions", "Missions"), ("/chat", "Chat"),
               ("/research", "Research"), ("/morning", "Morning"),
