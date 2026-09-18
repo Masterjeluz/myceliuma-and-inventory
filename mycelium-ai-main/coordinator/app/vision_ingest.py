@@ -359,6 +359,93 @@ class SyntheticTestAdapter(TestCameraAdapter):
         return super().snapshot(device)
 
 
+class FileIngestAdapter(CameraAdapter):
+    """Reviewed file-ingest path (BIG #31): the operator copies
+    camera files (Insta360 storage, phone, USB) into the camera
+    dir; this adapter turns one NAMED file into an observation.
+
+    REAL for file-mode; direct hardware transport stays
+    UNAVAILABLE. Fail-closed: plain filename only (check_image_ref),
+    inside the camera dir, capped size, known suffix. Provenance
+    says file-ingest explicitly — never a live capture.
+    """
+
+    name = "file-ingest"
+
+    def __init__(self, filename: str):
+        from .observations import check_image_ref as _check
+        try:
+            reference = _check(filename)
+        except ValueError as error:
+            raise IngestRefusedError(str(error)) from error
+        if not reference:
+            raise IngestRefusedError(
+                "File ingest needs a media filename")
+        import os as _os
+        root = _os.path.abspath(camera_dir())
+        path = _os.path.abspath(_os.path.join(root, reference))
+        if path != root and not path.startswith(root + _os.sep):
+            raise IngestRefusedError(
+                "Media escapes the camera directory")
+        if not _os.path.isfile(path):
+            raise IngestRefusedError(
+                f"Media '{reference}' is not in the camera inbox; "
+                "copy the file there first")
+        size = _os.path.getsize(path)
+        if size <= 0:
+            raise IngestRefusedError("Media is empty; refusing")
+        if size > MAX_MEDIA_BYTES:
+            raise IngestRefusedError(
+                f"Media is {size} bytes (max {MAX_MEDIA_BYTES}); "
+                "refusing")
+        self.filename = reference
+        self.capabilities = ["camera.snapshot"]
+
+    def snapshot(self, device: CameraDevice) -> CameraObservation:
+        import time as _time
+        if "snapshot" not in device.kinds:
+            raise IngestRefusedError(
+                f"Device '{device.device_id}' has no snapshot kind")
+        observation_id = f"obs-{int(_time.time() * 1000):x}"
+        from .cameras import new_observation as _new_obs
+        observation = _new_obs(
+            observation_id, device.device_id, "snapshot",
+            media_ref=self.filename)
+        notes = str(observation.provenance.notes or "")
+        return observation.model_copy(update={
+            "provenance": observation.provenance.model_copy(update={
+                "notes": (notes + " | file-ingest: operator-provided "
+                          f"file '{self.filename}'; not a live "
+                          "capture").strip(" |")})})
+
+
+def list_inbox_files(limit: int = 100) -> list[dict]:
+    """Operator-visible media inbox: files in the camera dir with
+    known suffixes. Names only + size; never pixels."""
+    import os as _os
+    count = max(1, min(int(limit or 100), 200))
+    try:
+        entries = _os.listdir(camera_dir())
+    except OSError:
+        return []
+    out = []
+    for entry in sorted(entries):
+        lowered = entry.lower()
+        if not lowered.endswith(MEDIA_SUFFIXES):
+            continue
+        try:
+            size = _os.path.getsize(
+                _os.path.join(camera_dir(), entry))
+        except OSError:
+            continue
+        out.append({"filename": entry, "size_bytes": size,
+                    "origin": "capture" if entry.startswith("cam-")
+                    else "inbox"})
+        if len(out) >= count:
+            break
+    return out
+
+
 # -- adapter registry (empty in production: fail-closed) ------------------
 
 _ADAPTERS: dict[str, CameraAdapter] = {}

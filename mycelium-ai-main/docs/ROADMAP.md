@@ -365,6 +365,26 @@ verbindingen, geen fake functionaliteit.
   procedural/test REAL, reconstructie UNAVAILABLE) — DONE
 - Activity met Mycelium voice + echte links — DONE
 
+## PHASE R — ACTIVATION (BIG #31, in uitvoering)
+
+Zie `docs/living-ecosystem.md`, `docs/context-packets.md`,
+`docs/overnight-research.md`. Van gebouwd naar levend: dezelfde
+stores, zichtbare verbindingen, geen fake functionaliteit.
+
+- Context engine (`context_engine.py`) + globale `/search` +
+  command traces met last-flow op `/world` — DONE
+- Packet v2 handoff-schema + Markdown/download + Copy-context —
+  DONE
+- Living state in elke topbar (`/api/v1/state`) — DONE
+- Archaeology depth (compare, INVENTory-relevantie, discoveries,
+  markdown-export) — DONE
+- Camera file-ingest (REAL) + detailpagina — DONE
+- Writes-inbox (propose links/objecten, exact YES) — DONE
+- Node-rollen + one-command bootstrap + systemd-unit — DONE
+- Overnight-modus + research queue + GOOD MORNING — DONE
+- Startup start/stop/status/restart (Windows + Linux-user-unit) —
+  DONE
+
 ## Expliciet niet op de kaart
 
 Autonome ongelimiteerde computerbediening, credential-automatisering,

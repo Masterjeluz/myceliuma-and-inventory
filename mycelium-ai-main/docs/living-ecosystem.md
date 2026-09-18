@@ -39,11 +39,23 @@ memory runs through the existing provenance flow (`memory.py`).
 ## Modules
 
 - `coordinator/app/conversation_bridge.py` — import/analysis/missed
-- `coordinator/app/context_packet.py` — universal + continuation packets
-- `coordinator/app/ecosystem.py` — entity CONNECTED TO, summary, voice
+- `coordinator/app/context_packet.py` — universal + continuation packets (v1) + v2 handoff schema
+- `coordinator/app/context_engine.py` — one dynamic composer (intent → bounded, scored, traceable sections)
+- `coordinator/app/living_state.py` — global indicator (QUIET/RESEARCHING/THINKING/CONNECTING/DISTRIBUTED/WAITING/COMPLETE/BLOCKED) in every topbar
+- `coordinator/app/ecosystem.py` — entity CONNECTED TO, summary, voice, node roles, discoveries
 - `coordinator/app/notify_center.py` — IN_APP real, WEB_PUSH unavailable
 - `coordinator/app/linux_node.py` — starter capabilities + checks
 - `coordinator/app/routes_conversations.py` — real import route (mounted)
+- `node_client/bootstrap.py` — one-command onboarding generator + systemd unit
+
+## Activation (BIG #31)
+
+- Global `/search` across inventory/memory/conversations/missions/research/nodes/agenda.
+- Command traces: every Command Center run persists INTENT → CONTEXT → RESULT; `/world` shows the last flow.
+- `/writes` inbox: propose links/objects, decide with exact YES; approval ≠ verification.
+- Camera file ingest (REAL) + `/cameras/{id}` detail; direct transport stays UNAVAILABLE.
+- Node roles (RESEARCH/ANALYSIS/INVENTORY/CAMERA/3D/INPUT/GENERAL) derived from advertised capabilities.
+- Overnight mode + research queue (`/api/v1/research/queue`, run-once); morning opens with GOOD MORNING + overnight + mode switch.
 
 ## Mycelium is the world + orchestration layer
 

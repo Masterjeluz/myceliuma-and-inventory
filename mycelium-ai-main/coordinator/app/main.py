@@ -7270,6 +7270,30 @@ def _research_runs(limit: int = 20) -> list:
         return []
 
 
+def _last_flow_panel() -> str:
+    """Latest command flow as INTENT → CONTEXT → RESULT steps.
+    Read-only history; empty when nothing ran yet."""
+    from . import ui as _ui
+    try:
+        from .context_engine import recent_traces
+        traces = recent_traces(limit=1)
+    except Exception:
+        traces = []
+    if not traces:
+        return ""
+    trace = traces[0]
+    steps = "".join(
+        f"<span class=\"step done\">{_ui.esc(str(step.get('stage', '')))}"
+        f": {_ui.esc(str(step.get('detail', ''))[:80])}</span>"
+        for step in trace.get("steps", [])[:6])
+    return (
+        "<div class=\"panel\"><h2>Last flow</h2>"
+        f"<p class=\"muted\">“{_ui.esc(trace.get('intent', ''))}” · "
+        f"{_ui.esc(str(trace.get('created_at', ''))[:16])}</p>"
+        f"<div class=\"path\" aria-label=\"Last command flow\">"
+        f"{steps}</div></div>")
+
+
 async def _graph_data(entity_id: str, depth: int,
                       flags: set) -> tuple:
     """Shared graph builder for /, /world, /workshop/graph."""
@@ -7351,8 +7375,9 @@ async def world_page(entity_id: str = "", depth: int = 1,
     <input type="text" name="message" placeholder="Onderzoek mijn projecten en kijk wat er vandaag logisch is…" style="width:70%" aria-label="Command" autocomplete="off">
     <button type="submit">Ask Mycelium</button></form></div>
     <div class="panel"><h2>Ecosystem — alive at a glance</h2>
-    <p><a href="/nodes">Nodes</a> · <a href="/conversations">Conversations</a> · <a href="/research">Research</a> · <a href="/missions">Missions</a> · <a href="/memory">Memory</a> · <a href="/cameras">Cameras</a> · <a href="/workshop/3d">3D</a> · <a href="/mobile">Mobile input</a> · <a href="/activity">Activity</a></p>
+    <p><a href="/nodes">Nodes</a> · <a href="/conversations">Conversations</a> · <a href="/research">Research</a> · <a href="/missions">Missions</a> · <a href="/memory">Memory</a> · <a href="/cameras">Cameras</a> · <a href="/workshop/3d">3D</a> · <a href="/mobile">Mobile input</a> · <a href="/activity">Activity</a> · <a href="/search">Search</a></p>
     <p class="muted">Jelles ↔ chat ↔ mobile ↔ brain ↔ missions ↔ research ↔ memory ↔ INVENTory ↔ cameras ↔ 3D ↔ projects ↔ files ↔ nodes ↔ fabrication ↔ verification — one workshop, no loose pages. Statuses stay honest: REAL / TEST / SIMULATED / UNAVAILABLE.</p></div>
+    {_last_flow_panel()}
     <p class="muted">Every node is real: world entities from INVENTory, overlays from Mycelium. Select to inspect — the context rail opens here, no page jump — or open a neighborhood to grow.</p>
     {_ui.graph_panel(_json.dumps(graph), "/world", entity_id, depth, show, error)}
     <div class="panel"><h2>Do something with this</h2>
@@ -7463,14 +7488,40 @@ def morning_page() -> str:
     """Mobile-first morning report: cards per section."""
     from . import ui as _ui
     report = report_morning()
+    try:
+        from .context_engine import get_mode
+        mode = get_mode()
+    except Exception:
+        mode = {"mode": "DAY", "detail": "", "updated_at": ""}
+    try:
+        from .ecosystem import discoveries as _discoveries
+        found = _discoveries(limit=6)
+    except Exception:
+        found = {"items": [], "research_open_questions": []}
+    overnight_html = ""
+    try:
+        overnight_html = "".join(
+            f"<li>{_ui.esc(item['question'][:160])} "
+            f"<span class=\"muted\">(<a href=\"{_ui.esc(item['link'])}\">"
+            f"dossier</a>)</span></li>"
+            for item in found.get("research_open_questions", [])[:6])
+    except (AttributeError, TypeError, KeyError):
+        overnight_html = ""
     cards = "".join(
         f"<div class=\"sprout\"><h3>{_ui.esc(section['title'])}</h3><ul>"
         + "".join(f"<li>{_ui.esc(item)}</li>"
                   for item in section["items"][:15])
         + "</ul></div>"
         for section in report.get("sections", []))
-    main = f"""<h1>Morning report</h1>
-    <p class="muted">{_ui.esc(str(report.get('generated_at', '')))} · {_ui.esc(str(report.get('report_id', '')))}</p>
+    main = f"""<h1>Good morning, Jelles 🌱</h1>
+    <p class="muted">{_ui.esc(str(report.get('generated_at', '')))} · {_ui.esc(str(report.get('report_id', '')))} · mode: <b>{_ui.esc(mode.get('mode', 'DAY'))}</b></p>
+    <div class="panel"><h2>Overnight</h2>
+    <ul>{overnight_html or "<li>Nog niets onderzocht vannacht — zet de queue klaar via <a href=\"/research\">Research</a> of de <a href=\"/api/v1/research/queue\">queue (JSON)</a>.</li>"}</ul>
+    <form method="post" action="/web/mode">
+    <select name="mode" aria-label="Mode"><option value="DAY">DAY</option><option value="OVERNIGHT">OVERNIGHT</option></select>
+    <input type="text" name="detail" placeholder="Waarom (optioneel)" style="width:40%" aria-label="Detail">
+    <button type="submit">Set mode</button></form>
+    <p class="muted">OVERNIGHT betekent: veilige research, analyse en rapporten mogen doorlopen. Fysiek, desktop-input, publiceren en approvals blijven altijd mensenwerk.</p></div>
     <div class="grove">{cards or _ui.empty()}</div>"""
     return _ui.shell("Morning", "/morning", main, "",
                      _ui.command_bar())
@@ -7552,21 +7603,31 @@ async def web_command(request: Request) -> Response:
     except HTTPException:
         return RedirectResponse("/world", status_code=303)
     intent = result.get("intent", "chat")
+    landing = "/chat"
     if intent in ("research_project", "inventory_status",
                   "project_overview") and result.get("mission"):
-        return RedirectResponse(
-            f"/missions/{result['mission']['mission_id']}",
-            status_code=303)
-    if intent == "morning_report":
-        return RedirectResponse("/morning", status_code=303)
-    if intent == "agenda_today":
-        return RedirectResponse("/agenda", status_code=303)
-    if intent in ("mission_status", "mission_stop", "mission_resume"):
-        return RedirectResponse("/missions", status_code=303)
-    convo = result.get("conversation_id", "") or conversation_id
-    if convo:
-        return RedirectResponse(f"/chat?id={convo}", status_code=303)
-    return RedirectResponse("/chat", status_code=303)
+        landing = f"/missions/{result['mission']['mission_id']}"
+    elif intent == "morning_report":
+        landing = "/morning"
+    elif intent == "agenda_today":
+        landing = "/agenda"
+    elif intent in ("mission_status", "mission_stop", "mission_resume"):
+        landing = "/missions"
+    else:
+        convo = result.get("conversation_id", "") or conversation_id
+        landing = f"/chat?id={convo}" if convo else "/chat"
+    try:
+        from .context_engine import record_trace
+        record_trace(text[:300], [
+            {"stage": "INTENT", "detail": intent},
+            {"stage": "CONTEXT",
+             "detail": "bounded compose (inventory/memory/research/"
+                       "nodes/missions)"},
+            {"stage": "RESULT", "detail": f"landed on {landing}"},
+        ], {"intent": intent, "landing": landing})
+    except Exception:
+        pass
+    return RedirectResponse(landing, status_code=303)
 
 
 @app.get("/memory", response_class=HTMLResponse)
@@ -8007,12 +8068,14 @@ def missions_page() -> str:
               for mission in list_missions()]:
         loaded = load_mission(m["mission_id"])
         waiting = _v1_waiting_reason(loaded) if loaded else ""
-        dot = {"running": "🟢", "pending_approval": "🟡",
-               "paused": "⚫", "completed": "✓",
-               "failed": "✕", "blocked": "🟠"}.get(
-                   m["status"], "🔵")
+        dot = _ui.mission_glyph(m["status"])
+        done_steps = sum(1 for step in m["steps"]
+                         if step.get("status") in
+                         ("done", "completed", "skipped"))
+        growth = _ui.growth_class(m["status"], done_steps,
+                                  len(m["steps"]))
         cards += (
-            f"<div class=\"sprout\"><b>{dot} "
+            f"<div class=\"sprout {growth} grain\"><b>{dot} "
             f"{_ui.esc(m['goal'][:90])}</b><br>"
             f"{_ui.status_dot(m['status'])}{_ui.chip(m['status'])}"
             f"<span class=\"muted\">step {m['current_step']}/"
@@ -8440,6 +8503,29 @@ def workshop_3d_page(artifact: str = "") -> str:
                      _ui.command_bar())
 
 
+def _mobile_waiting_html() -> str:
+    """Waiting missions with inline approve buttons (exact-YES
+    semantics via the existing web op route). Read-only when quiet."""
+    from . import ui as _ui
+    try:
+        waiting = [mission for mission in list_missions(limit=20)
+                   if mission.status in ("pending_approval", "paused")]
+    except Exception:
+        return ""
+    if not waiting:
+        return "<p class=\"muted\">Nothing waiting — quiet. 🌱</p>"
+    rows = "".join(
+        f"<li><b>{_ui.esc(mission.goal[:90])}</b> "
+        f"<span class=\"muted\">[{_ui.esc(mission.status)}]</span><br>"
+        f"<form method=\"post\" action=\"/web/missions/"
+        f"{_ui.esc(mission.mission_id)}/approve\" style=\"display:inline\">"
+        f"<button type=\"submit\">YES, doorgaan</button></form> "
+        f"<a href=\"/missions/{_ui.esc(mission.mission_id)}\">details</a>"
+        f"</li>"
+        for mission in waiting[:5])
+    return f"<ul>{rows}</ul>"
+
+
 @app.get("/mobile", response_class=HTMLResponse)
 def mobile_page(node: str = "") -> str:
     """Deliberate mobile view: chat first, then approvals,
@@ -8481,11 +8567,15 @@ def mobile_page(node: str = "") -> str:
     <p class="muted">1. Typ wat je wilt. 2. Mycelium bepaalt wat nodig is. 3. Een node kan het uitvoeren. 4. Je ziet wat er gebeurt. 5. Toestemming blijft expliciet. 6. Resultaat komt terug op je telefoon. Jij blijft degene die acties goedkeurt.</p></div>
     <div class="panel"><h2>Approvals</h2>
     <p>Desktop {approvals['desktop_actions']} · writes {approvals['write_proposals']} · missions {approvals['missions']}</p>
-    <p><a href="/agents">Review desktop actions</a> · <a href="/missions">Review missions</a></p></div>
+    <p><a href="/agents">Review desktop actions</a> · <a href="/missions">Review missions</a> · <a href="/writes">Review writes</a></p>
+    {_mobile_waiting_html()}</div>
     <div class="panel"><b>Status:</b> nodes {status['nodes']['online']} online /
     {status['nodes']['stale']} stale · tasks {_ui.esc(str(status['tasks']))}</div>
     <div class="panel"><h2>Missions</h2>
     <p><a href="/missions">View plans</a> · <a href="/morning">Morning report</a></p></div>
+    <div class="panel"><h2>Observe & add</h2>
+    <p><a href="/cameras">Camera ingest</a> · <a href="/writes">Propose object/link</a> · <a href="/conversations">Import conversation</a></p>
+    <p><a href="/api/v1/context/packet.md">Copy context (Markdown)</a> <span class="muted">— neem mee naar een ander model</span></p></div>
     <div class="panel"><h2>Notifications{_ui.esc(' for ' + node) if node else ''}</h2>
     <p class="muted">IN_APP is live (polling); WEB PUSH is UNAVAILABLE — <a href="/api/v1/notifications/capability">capability (JSON)</a>.</p>
     <ul>{notifications_html or "<li>link ?node=&lt;node_id&gt; for notifications</li>"}</ul></div>
@@ -8679,8 +8769,29 @@ def conversations_page() -> str:
     platforms = "".join(
         f"<option value='{_ui.esc(name)}'>{_ui.esc(name)}</option>"
         for name in KNOWN_PLATFORMS)
+    try:
+        from .ecosystem import discoveries as _discoveries
+        found = _discoveries(limit=8)
+    except Exception:
+        found = {"items": [], "research_open_questions": []}
+    show_items = "".join(
+        f"<li><b>{_ui.esc(item['kind'])}</b> — "
+        f"{_ui.esc(item['text'][:160])}<br>"
+        f"<span class=\"muted\">uit: <a href=\"{_ui.esc(item['link'])}\">"
+        f"{_ui.esc(item['title'][:60])}</a> · evidence: "
+        f"{_ui.esc(item['evidence'][:100])}</span></li>"
+        for item in found.get("items", [])[:8])
+    show_research = "".join(
+        f"<li>{_ui.esc(item['question'][:160])} "
+        f"<span class=\"muted\">(<a href=\"{_ui.esc(item['link'])}\">"
+        f"dossier</a>)</span></li>"
+        for item in found.get("research_open_questions", [])[:6])
     main = f"""<h1>Conversations — bring outside chats in</h1>
     <p class="muted">Import from ChatGPT, Codex, OpenCode, Ollama, Claude, Gemini, Antigravity, Google AI Studio — any platform, no lock-in. Imports become <b>OBSERVATION/CANDIDATE</b> context with evidence; nothing is stored as fact. Direct connectors are future adapters.</p>
+    <div class="panel"><h2>Te tonen aan Jelles</h2>
+    <ul>{show_items or "<li>Nog niets — importeer een gesprek.</li>"}</ul>
+    <h3>Open researchvragen</h3><ul>{show_research or "<li>—</li>"}</ul>
+    <p><a href="/api/v1/discoveries">discoveries (JSON)</a> · <a href="/api/v1/imports-compare">compare imports (JSON)</a></p></div>
     <div class="panel"><h2>Import a conversation</h2>
     <form method="post" action="/web/conversations/import">
     <input type="text" name="title" placeholder="Title" style="width:40%" aria-label="Title"><br><br>
@@ -8727,9 +8838,23 @@ def conversation_detail_page(conversation_id: str):
     <div class="panel"><h2>What did we miss?</h2><ul>{missed_html or "<li>Nothing flagged — import more context.</li>"}</ul></div>
     <div class="panel"><h2>Analysis (OBSERVATION / CANDIDATE — never fact)</h2><ul>{findings or "<li>Not analyzed yet.</li>"}</ul>
     <p><form method="post" action="/web/conversations/{_ui.esc(conversation_id)}/analyze"><button type="submit">Analyze</button></form></p></div>
-    <div class="panel"><h2>Context bridge</h2>
-    <p><a href="/api/v1/context/packet?conversation_id={_ui.esc(conversation_id)}">Context packet (JSON)</a> · <a href="/api/v1/context/continue?conversation_id={_ui.esc(conversation_id)}">Continuation (JSON)</a></p>
-    <p class="muted">Take the packet to any model; bring the answer back as a new import. External AI never approves, never verifies.</p></div>
+    <div class="panel"><h2>Context bridge — continue elsewhere</h2>
+    <p><a href="/api/v1/context/packet?conversation_id={_ui.esc(conversation_id)}">Context packet (JSON)</a> · <a href="/api/v1/context/continue?conversation_id={_ui.esc(conversation_id)}">Continuation (JSON)</a> · <a href="/api/v1/context/packet.md?conversation_id={_ui.esc(conversation_id)}">Packet v2 (Markdown)</a> · <a href="/api/v1/conversation-imports/{_ui.esc(conversation_id)}/markdown">This import (Markdown)</a> · <a href="/api/v1/conversation-imports/{_ui.esc(conversation_id)}/relevance">INVENTory relevance (JSON)</a></p>
+    <p><button type="button" id="copypacket">Copy context (Markdown)</button> <span id="copied" class="muted" role="status"></span></p>
+    <script>
+    document.getElementById('copypacket').addEventListener('click', async e => {{
+        const btn = e.currentTarget;
+        try {{
+            const r = await fetch('/api/v1/context/packet.md?conversation_id={_ui.esc(conversation_id)}');
+            const text = await r.text();
+            await navigator.clipboard.writeText(text);
+            document.getElementById('copied').textContent = 'Copied — paste it into any model.';
+        }} catch (err) {{
+            document.getElementById('copied').textContent = 'Copy failed — use the Markdown link instead.';
+        }}
+    }});
+    </script>
+    <p class="muted">Mycelium is the persistent layer — take the packet to ChatGPT, Claude, Gemini, Codex or any model, bring the answer back as a new import. External AI never approves, never verifies.</p></div>
     <h2>Messages</h2>{turns or "<p>No messages.</p>"}"""
     return _ui.shell("Conversation", "/conversations", main,
                      _ui.command_bar())
@@ -8771,7 +8896,8 @@ def nodes_page() -> str:
         f"<div class=\"sprout\"><b>{_ui.status_dot(record['derived_status'])}"
         f"{_ui.esc(record['node_id'])}</b><br>"
         f"{_ui.chip(record['derived_status'])}"
-        f"{_ui.chip(record.get('tier', 'unknown'))}<br>"
+        f"{_ui.chip(record.get('tier', 'unknown'))}"
+        f"{''.join(_ui.chip(role) for role in _node_role_list(record))}<br>"
         f"<span class=\"muted\">WHAT IT CAN DO:</span><br>"
         f"<small>{_ui.esc(', '.join(record['capabilities'][:12]) or 'no capabilities advertised')}</small><br>"
         f"<span class=\"muted\">models {len(record.get('models', []))} · executors {len(record.get('executors', []))} · last seen {_ui.esc(str(record.get('last_seen', ''))[:16])}</span></div>"
@@ -8809,6 +8935,563 @@ def model_3d_page() -> str:
     <span class="step">PRINTER</span><span class="arrow">→</span>
     <span class="step">VERIFY</span></div>
     <p class="muted">Stages: READY / WAITING / SIMULATED / TEST / HARDWARE_REQUIRED / UNAVAILABLE. OBJECT → CREATE 3D MODEL uses the existing procedural/test workflow; true reconstruction transport is UNAVAILABLE and says so. No fake generated mesh.</p></div>
+    <div class="panel"><h2>Connect a model</h2>
+    <p class="muted">Link a model, file, object or project — as a proposal first, in <a href="/writes">Writes</a>. Example: model <code>mod_…</code> <code>used_in</code> project <code>proj_…</code>.</p>
+    <form method="post" action="/web/links/propose">
+    <input type="text" name="from_id" placeholder="from: mod_… / file_…" style="width:28%" aria-label="From entity">
+    <select name="predicate" aria-label="Predicate"><option value="used_in">used_in</option><option value="part_of">part_of</option><option value="produced_by">produced_by</option><option value="related_to">related_to</option><option value="depends_on">depends_on</option></select>
+    <input type="text" name="to_id" placeholder="to: proj_… / obj_…" style="width:28%" aria-label="To entity">
+    <button type="submit">Propose link</button></form></div>
+    <div class="filament" aria-hidden="true"></div>
     <div class="panel"><h2>Workspace</h2><p><a href="/workshop/3d">Open 3D workshop</a> · <a href="/fabrication">Fabrication</a> · <a href="/workshop">Chain view</a></p></div>
     <div class="panel"><h2>Recent runs</h2><ul>""" + rows + """</ul></div>"""
     return _ui.shell("3D", "/workshop/3d", main, _ui.command_bar())
+
+
+# =============================================================================
+# BIG #31 — ACTIVATION. Context engine, living state, global search,
+# packet v2 handoff, command traces. All reads bounded; no new truth
+# stores; mutations stay behind existing gates.
+# =============================================================================
+
+
+@app.get("/api/v1/state")
+def api_living_state() -> dict:
+    from .living_state import current_state
+    return current_state()
+
+
+@app.get("/api/v1/context/compose")
+def api_context_compose(intent: str = "", project_id: str = "",
+                        conversation_id: str = "",
+                        include_health: str = "") -> dict:
+    from .context_engine import compose
+    return compose(intent[:500], project_id=project_id[:80],
+                   conversation_id=conversation_id[:80],
+                   include_health=include_health.lower() == "true")
+
+
+@app.get("/api/v1/context/packet2")
+def api_context_packet_v2(task: str = "", intent: str = "",
+                          project_id: str = "",
+                          conversation_id: str = "",
+                          include_health: str = "",
+                          format: str = "json"):
+    from .context_packet import (build_packet_v2,
+                                 render_packet_v2_markdown)
+    packet = build_packet_v2(
+        task=task[:500], intent=intent[:500],
+        project_id=project_id[:80],
+        conversation_id=conversation_id[:80],
+        include_health=include_health.lower() == "true")
+    if format.lower() == "markdown":
+        return Response(content=render_packet_v2_markdown(packet),
+                        media_type="text/markdown; charset=utf-8")
+    return packet
+
+
+@app.get("/api/v1/context/packet.md")
+def api_context_packet_markdown(task: str = "", intent: str = "",
+                               project_id: str = "",
+                               conversation_id: str = "") -> Response:
+    from .context_packet import (build_packet_v2,
+                                 render_packet_v2_markdown)
+    packet = build_packet_v2(
+        task=task[:500], intent=intent[:500],
+        project_id=project_id[:80],
+        conversation_id=conversation_id[:80])
+    return Response(
+        content=render_packet_v2_markdown(packet),
+        media_type="text/markdown; charset=utf-8",
+        headers={"Content-Disposition":
+                 "attachment; filename=\"mycelium-context.md\""})
+
+
+@app.get("/api/v1/command/traces")
+def api_command_traces(limit: int = 5) -> dict:
+    from .context_engine import recent_traces
+    return {"traces": recent_traces(limit=limit)}
+
+
+@app.get("/api/v1/search")
+def api_global_search(query: str = "", limit: int = 10) -> dict:
+    """Global search across inventory, memory, conversations,
+    missions, research, nodes. Bounded, provenance-aware."""
+    from .context_engine import compose
+    cleaned = str(query or "").strip()[:200]
+    if not cleaned:
+        raise HTTPException(status_code=422,
+                            detail="A query is required")
+    context = compose(cleaned, limit_per_section=max(
+        1, min(int(limit or 10), 15)))
+    return {"query": cleaned, "engine": context["engine"],
+            "sections": context["sections"],
+            "total_items": context["total_items"]}
+
+
+@app.get("/search", response_class=HTMLResponse)
+def search_page(query: str = "") -> str:
+    """One search across the whole ecosystem: projects, ideas,
+    objects, memories, conversations, missions, research, nodes."""
+    from . import ui as _ui
+    results_html = ""
+    if query.strip():
+        from .context_engine import compose
+        context = compose(query.strip()[:200], limit_per_section=6)
+        blocks = []
+        for section, items in context["sections"].items():
+            if not items:
+                continue
+            rows = "".join(
+                f"<li><b>{_ui.esc(item['title'][:100])}</b> "
+                f"<span class=\"muted\">[{_ui.esc(item['source'])}] "
+                f"{_ui.esc(item['why'][:100])}</span><br>"
+                f"<small>{_ui.esc(item['snippet'][:160])}</small></li>"
+                for item in items)
+            blocks.append(
+                f"<div class=\"panel\"><h2>{_ui.esc(section)}</h2>"
+                f"<ul>{rows}</ul></div>")
+        results_html = "".join(blocks) or _ui.empty(
+            "Nothing found — try fewer or different words.")
+    main = f"""<h1>Search the ecosystem</h1>
+    <div class="panel"><form method="get" action="/search" role="search" aria-label="Global search">
+    <input type="text" name="query" placeholder="camper solar…" value="{_ui.esc(query[:200])}" style="width:70%" aria-label="Query" autocomplete="off">
+    <button type="submit">Search</button></form>
+    <p class="muted">Inventory + memory + conversations + missions + research + nodes + agenda. Bounded, with provenance — never a dump.</p></div>
+    {results_html}"""
+    return _ui.shell("Search", "/world", main, _ui.command_bar())
+
+
+# =============================================================================
+# BIG #31 — PHASE D/F. Camera detail + file ingest, writes inbox +
+# propose-link, archaeology depth, node roles, overnight mode +
+# research queue. Reads bounded; writes only via existing gates.
+# =============================================================================
+
+
+def _node_role_list(record: dict) -> list[str]:
+    from .ecosystem import node_roles
+    try:
+        return node_roles(record)
+    except Exception:
+        return ["GENERAL"]
+
+
+@app.get("/api/v1/node-roles")
+def api_node_roles() -> dict:
+    return {"roles": {record["node_id"]: _node_role_list(record)
+                      for record in list_nodes()}}
+
+
+@app.get("/api/v1/mode")
+def api_mode_get() -> dict:
+    from .context_engine import get_mode
+    return get_mode()
+
+
+@app.post("/api/v1/mode")
+def api_mode_set(body: dict) -> dict:
+    from .context_engine import set_mode
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=422, detail="JSON body required")
+    try:
+        return set_mode(str(body.get("mode", "")),
+                        str(body.get("detail", "")))
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+
+@app.post("/web/mode")
+async def web_mode(request: Request) -> Response:
+    from .context_engine import set_mode
+    fields = await _form_fields(request)
+    try:
+        set_mode(fields.get("mode", ""),
+                 fields.get("detail", "")[:300])
+    except ValueError:
+        pass
+    return RedirectResponse("/morning", status_code=303)
+
+
+@app.get("/api/v1/discoveries")
+def api_discoveries(limit: int = 20) -> dict:
+    from .ecosystem import discoveries
+    return discoveries(limit=limit)
+
+
+@app.get("/api/v1/imports-compare")
+def api_imports_compare(limit: int = 10) -> dict:
+    from .conversation_bridge import compare_imports
+    return compare_imports(limit=limit)
+
+
+@app.get("/api/v1/conversation-imports/{conversation_id}/markdown")
+def api_import_markdown(conversation_id: str) -> Response:
+    from .conversation_bridge import (BridgeRefusedError,
+                                      render_import_markdown)
+    try:
+        text = render_import_markdown(conversation_id)
+    except BridgeRefusedError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    return Response(
+        content=text, media_type="text/markdown; charset=utf-8",
+        headers={"Content-Disposition":
+                 f"attachment; filename=\"{conversation_id}.md\""})
+
+
+@app.get("/api/v1/conversation-imports/{conversation_id}/relevance")
+async def api_import_relevance(conversation_id: str) -> dict:
+    """Which existing INVENTory records are relevant to this import?
+    Read-only bridge search over finding keywords; candidates only."""
+    from .conversation_bridge import (get_import, load_analysis)
+    meta = get_import(conversation_id)
+    if meta is None:
+        raise HTTPException(status_code=404, detail="Unknown import")
+    analysis = load_analysis(conversation_id) or {}
+    keywords: list[str] = []
+    for item in analysis.get("findings", [])[:12]:
+        for word in str(item.get("text", "")).split():
+            cleaned = "".join(char for char in word if char.isalnum())
+            if len(cleaned) >= 4 and cleaned.lower() not in keywords:
+                keywords.append(cleaned.lower())
+            if len(keywords) >= 8:
+                break
+    query = " ".join(keywords[:8]) or meta.get("title", "")
+    candidates: list[dict] = []
+    error = ""
+    try:
+        records, inventory_error, _ = await _chat_world_context(
+            query[:200])
+        for record in records[:10]:
+            candidates.append({
+                "entity_type": record["entity_type"],
+                "entity_id": record["entity_id"],
+                "title": record["title"],
+                "state": "CANDIDATE",
+                "why": "keyword overlap with import findings",
+                "link": f"/world?entity_id={record['entity_id']}",
+            })
+        if inventory_error:
+            error = inventory_error
+    except HTTPException as exc:
+        error = str(exc.detail)
+    return {"conversation_id": conversation_id, "query": query,
+            "candidates": candidates, "inventory_error": error,
+            "note": "Candidates link existing records; creating new "
+                    "relations needs a write proposal + YES."}
+
+
+@app.get("/cameras/{device_id}", response_class=HTMLResponse)
+def camera_detail_page(device_id: str):
+    """One camera: identity, source, connection state, capabilities,
+    last observation, media inbox, available actions. Honest states."""
+    from . import ui as _ui
+    device = get_device(device_id)
+    if device is None:
+        return HTMLResponse("Camera not found", status_code=404)
+    from .vision_ingest import list_inbox_files, probe_availability
+    from .vision_ingest import adapter_for as _adapter_for
+    try:
+        availability = probe_availability(
+            device, _adapter_for(device_id))
+    except Exception as exc:
+        availability = {"state": "unknown", "capturable": False,
+                        "reason": str(exc)[:200]}
+    latest = list_observations(device.device_id, limit=5)
+    obs_rows = "".join(
+        f"<li><code>{_ui.esc(obs.observation_id)}</code> "
+        f"<span class=\"muted\">{_ui.esc(obs.created_at[:16])} · "
+        f"{_ui.esc(obs.media_ref or 'no media')}</span></li>"
+        for obs in latest) or "<li>No observations yet.</li>"
+    inbox = "".join(
+        f"<li><code>{_ui.esc(entry['filename'])}</code> "
+        f"<span class=\"muted\">{entry['size_bytes']} bytes · "
+        f"{_ui.esc(entry['origin'])}</span></li>"
+        for entry in list_inbox_files(limit=30)) or \
+        "<li>Inbox empty — copy Insta360/phone files into the camera dir.</li>"
+    main = f"""<h1>{_ui.esc(device.name)}</h1>
+    <p class="muted"><code>{_ui.esc(device.device_id)}</code> · source {_ui.esc(device.source)} · kinds {_ui.esc(', '.join(device.kinds))}</p>
+    <div class="panel"><h2>Connection</h2>
+    <p>State: <b>{_ui.esc(str(availability.get('state', '?')).upper())}</b> · capturable: <b>{_ui.esc(str(availability.get('capturable', False)))}</b></p>
+    <p class="muted">{_ui.esc(str(availability.get('reason', ''))[:300])}</p>
+    <p class="muted">Direct Insta360 transport: UNAVAILABLE. File ingest below is REAL.</p></div>
+    <div class="panel"><h2>Observe via file ingest</h2>
+    <p class="muted">FILE → OBSERVATION → ANALYSIS → CANDIDATE → HUMAN REVIEW → INVENTORY. Pick a file from the inbox; ingest creates an observation + inert File payload (registration still needs approval).</p>
+    <form method="post" action="/web/cameras/{_ui.esc(device.device_id)}/ingest-file">
+    <input type="text" name="filename" placeholder="IMG_0001.png" style="width:50%" aria-label="Inbox filename" autocomplete="off">
+    <button type="submit">Ingest file</button></form></div>
+    <div class="panel"><h2>Media inbox</h2><ul>{inbox}</ul></div>
+    <div class="panel"><h2>Observations</h2><ul>{obs_rows}</ul>
+    <p><a href="/api/v1/cameras/{_ui.esc(device.device_id)}/observations">observations (JSON)</a> · <a href="/api/v1/cameras/{_ui.esc(device.device_id)}/availability">availability (JSON)</a></p></div>"""
+    return _ui.shell(device.name, "/cameras", main, _ui.command_bar())
+
+
+@app.get("/api/v1/camera-inbox")
+def api_camera_inbox(limit: int = 100) -> dict:
+    from .vision_ingest import list_inbox_files
+    return {"inbox": list_inbox_files(limit=limit)}
+
+
+@app.post("/api/v1/cameras/{device_id}/ingest-file", status_code=201)
+def camera_ingest_file(device_id: str, body: dict) -> dict:
+    """Ingest one inbox file as an observation (REAL file-mode).
+    Filename only; traversal and missing files refuse."""
+    from .vision_ingest import (FileIngestAdapter, IngestRefusedError,
+                                ingest_snapshot)
+    device = get_device(device_id)
+    if device is None:
+        raise HTTPException(404, "Camera not found")
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=422, detail="JSON body required")
+    try:
+        adapter = FileIngestAdapter(str(body.get("filename", "")))
+        result = ingest_snapshot(device, adapter)
+    except IngestRefusedError as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    except CameraUnavailable as error:
+        raise HTTPException(status_code=409, detail=str(error))
+    save_observation(result.observation)
+    emit_event("observation.created",
+               f"File ingest {result.observation.observation_id} "
+               f"via {device_id}", node_id=device_id)
+    return result.model_dump(mode="json")
+
+
+@app.post("/web/cameras/{device_id}/ingest-file")
+async def web_camera_ingest_file(device_id: str,
+                                 request: Request) -> Response:
+    from .vision_ingest import (FileIngestAdapter, IngestRefusedError,
+                                ingest_snapshot)
+    fields = await _form_fields(request)
+    device = get_device(device_id)
+    if device is None:
+        return RedirectResponse("/cameras", status_code=303)
+    try:
+        adapter = FileIngestAdapter(fields.get("filename", ""))
+        result = ingest_snapshot(device, adapter)
+    except (IngestRefusedError, CameraUnavailable):
+        return RedirectResponse(f"/cameras/{device_id}",
+                                status_code=303)
+    save_observation(result.observation)
+    emit_event("observation.created",
+               f"File ingest {result.observation.observation_id} "
+               f"via {device_id}", node_id=device_id)
+    return RedirectResponse(f"/cameras/{device_id}", status_code=303)
+
+
+def _write_list(limit: int = 50) -> list[dict]:
+    init_chat_database()
+    with chat_connection() as db:
+        rows = db.execute(
+            "SELECT proposal_id, status, created_at FROM write_proposals "
+            "ORDER BY created_at DESC LIMIT ?",
+            (max(1, min(int(limit or 50), 100)),)).fetchall()
+    out = []
+    for row in rows:
+        record = _write_load(row["proposal_id"])
+        summary = ""
+        try:
+            proposal = record.get("record", {}) if record else {}
+            summary = str(proposal.get("mutation_type", ""))
+        except (AttributeError, TypeError):
+            summary = ""
+        out.append({"proposal_id": row["proposal_id"],
+                    "status": row["status"],
+                    "created_at": row["created_at"], "summary": summary})
+    return out
+
+
+@app.get("/writes", response_class=HTMLResponse)
+def writes_page() -> str:
+    """Write-proposal inbox: propose links/objects, approve with
+    exact YES. Approval ≠ verification; execution + verification
+    stay separate steps."""
+    from . import ui as _ui
+    from .inventory_writes import RELATIONSHIP_PREDICATES
+    rows = "".join(
+        f"<tr><td><code>{_ui.esc(item['proposal_id'])}</code></td>"
+        f"<td>{_ui.esc(item['summary'])}</td>"
+        f"<td>{_ui.status_dot(item['status'])}"
+        f"{_ui.esc(item['status'])}</td>"
+        f"<td class=\"muted\">{_ui.esc(item['created_at'][:16])}</td>"
+        f"<td><form method=\"post\" action=\"/web/writes/"
+        f"{_ui.esc(item['proposal_id'])}/approve\">"
+        f"<input type=\"text\" name=\"response\" placeholder=\"YES\" "
+        f"style=\"width:4rem\" aria-label=\"Exact YES\">"
+        f"<button type=\"submit\">Decide</button></form></td></tr>"
+        for item in _write_list(limit=50)) or \
+        "<tr><td colspan='5'>No proposals yet.</td></tr>"
+    predicates = "".join(
+        f"<option value='{_ui.esc(name)}'>{_ui.esc(name)}</option>"
+        for name in sorted(RELATIONSHIP_PREDICATES))
+    main = f"""<h1>Writes — propose, then YES</h1>
+    <p class="muted">Every mutation is a proposal first. Exact <code>YES</code> approves; anything else refuses. Execution and independent verification happen afterwards — approval is permission, verification is truth.</p>
+    <div class="panel"><h2>Propose a link (3D ↔ project ↔ object ↔ …)</h2>
+    <form method="post" action="/web/links/propose">
+    <input type="text" name="from_id" placeholder="from: obj_… / proj_… / file_…" style="width:28%" aria-label="From entity">
+    <select name="predicate" aria-label="Predicate">{predicates}</select>
+    <input type="text" name="to_id" placeholder="to: proj_… / obj_…" style="width:28%" aria-label="To entity">
+    <button type="submit">Propose link</button></form>
+    <p class="muted">Closed predicates only; endpoints must be known <code>xxx_</code> IDs. The proposal waits here for your YES.</p></div>
+    <div class="panel"><h2>Propose an object (e.g. from mobile)</h2>
+    <form method="post" action="/web/objects/propose">
+    <input type="text" name="name" placeholder="Name, e.g. Camper accu" style="width:40%" aria-label="Object name">
+    <input type="text" name="description" placeholder="Description (optional)" style="width:40%" aria-label="Description">
+    <button type="submit">Propose object</button></form></div>
+    <div class="panel"><h2>Inbox</h2><table><tr><th>Proposal</th><th>Mutation</th><th>Status</th><th>When</th><th>Decide</th></tr>{rows}</table></div>"""
+    return _ui.shell("Writes", "/writes", main, _ui.command_bar())
+
+
+@app.post("/web/links/propose")
+async def web_link_propose(request: Request) -> Response:
+    import secrets as _secrets
+    from .inventory_writes import (InventoryWriteRefusedError,
+                                   propose_inventory_write)
+    fields = await _form_fields(request)
+    try:
+        proposal = propose_inventory_write(
+            f"wrt-{_secrets.token_hex(4)}", "create_relationship", "",
+            {"from_id": fields.get("from_id", "").strip(),
+             "predicate": fields.get("predicate", "").strip(),
+             "to_id": fields.get("to_id", "").strip(),
+             "metadata": {"via": "link-proposal-form"},
+             "provenance": {"creator_id": "link-proposal-form"}},
+            actor="web")
+    except (InventoryWriteRefusedError, ValueError):
+        return RedirectResponse("/writes", status_code=303)
+    _write_save(proposal, "proposed")
+    return RedirectResponse("/writes", status_code=303)
+
+
+@app.post("/web/objects/propose")
+async def web_object_propose(request: Request) -> Response:
+    import secrets as _secrets
+    from .inventory_writes import (InventoryWriteRefusedError,
+                                   propose_inventory_write)
+    fields = await _form_fields(request)
+    name = fields.get("name", "").strip()
+    if not name:
+        return RedirectResponse("/writes", status_code=303)
+    try:
+        proposal = propose_inventory_write(
+            f"wrt-{_secrets.token_hex(4)}", "create", "object",
+            {"name": name[:200],
+             "description": fields.get("description", "")[:1000],
+             "provenance": {"creator_id": "object-proposal-form"}},
+            actor="web")
+    except (InventoryWriteRefusedError, ValueError):
+        return RedirectResponse("/writes", status_code=303)
+    _write_save(proposal, "proposed")
+    return RedirectResponse("/writes", status_code=303)
+
+
+@app.post("/web/writes/{proposal_id}/approve")
+async def web_write_approve(proposal_id: str,
+                            request: Request) -> Response:
+    from .controlled_writes import decide_write, request_write_approval
+    from .controlled_writes import WriteProposal as _WriteProposal
+    fields = await _form_fields(request)
+    record = _write_load(proposal_id)
+    if record is None or record["status"] != "proposed":
+        return RedirectResponse("/writes", status_code=303)
+    try:
+        proposal = _WriteProposal.model_validate(record["record"])
+        approval_request = request_write_approval(proposal)
+        approval = decide_write(
+            approval_request, proposal,
+            fields.get("response", ""), decided_by="web")
+    except ValueError:
+        return RedirectResponse("/writes", status_code=303)
+    status = "approved" if approval.approved else "rejected"
+    _write_save(proposal, status, approval=approval)
+    return RedirectResponse("/writes", status_code=303)
+
+
+# -- overnight research queue --------------------------------------------------
+
+QUEUE_PRIORITIES = ("HIGH", "MEDIUM", "LOW")
+
+
+def _queue_list(limit: int = 50) -> list[dict]:
+    from .research_engine import list_runs
+    drafts = [run for run in list_runs(limit=200)
+              if run.status in ("draft", "blocked", "failed")]
+    order = {"HIGH": 0, "MEDIUM": 1, "LOW": 2}
+    drafts.sort(key=lambda run: (
+        order.get(str((run.metadata or {}).get("priority", "MEDIUM")),
+                  1), run.created_at))
+    return [{"run_id": run.run_id, "question": run.question,
+             "status": run.status,
+             "priority": str((run.metadata or {}).get(
+                 "priority", "MEDIUM")),
+             "created_at": run.created_at,
+             "dossier_id": run.dossier_id}
+            for run in drafts[: max(1, min(int(limit or 50), 100))]]
+
+
+@app.get("/api/v1/research/queue")
+def api_research_queue(limit: int = 50) -> dict:
+    from .context_engine import get_mode
+    return {"mode": get_mode(), "queued": _queue_list(limit=limit)}
+
+
+@app.post("/api/v1/research/queue", status_code=201)
+def api_research_queue_add(body: dict) -> dict:
+    from .research_engine import new_run, save_run
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=422, detail="JSON body required")
+    question = str(body.get("question", "")).strip()
+    if not question:
+        raise HTTPException(status_code=422, detail="question required")
+    priority = str(body.get("priority", "MEDIUM")).strip().upper()
+    if priority not in QUEUE_PRIORITIES:
+        raise HTTPException(
+            status_code=422,
+            detail=f"priority must be one of {list(QUEUE_PRIORITIES)}")
+    try:
+        run = new_run(
+            question[:500],
+            objective=str(body.get("objective", ""))[:500],
+            project_ref=str(body.get("project_ref", ""))[:100],
+            requested_by="queue",
+            metadata={"priority": priority,
+                      "provider": str(body.get("provider",
+                                               "wikipedia"))[:20],
+                      "max_sources": max(1, min(int(body.get(
+                          "max_sources", 6)), 10))})
+        save_run(run)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    return {"run_id": run.run_id, "priority": priority,
+            "status": run.status}
+
+
+@app.post("/api/v1/research/queue/run-once")
+async def api_research_queue_run_once() -> dict:
+    """Execute the top queued draft once, bounded. Manual or
+    scheduler-triggered (n8n cron); never a background thread.
+    Physical/desktcomputed steps stay behind existing gates."""
+    queued = _queue_list(limit=1)
+    if not queued:
+        return {"ran": False, "reason": "queue empty"}
+    top = queued[0]
+    from .research_engine import load_run
+    run = load_run(top["run_id"])
+    if run is None:
+        raise HTTPException(status_code=404, detail="Run vanished")
+    metadata = run.metadata or {}
+    provider_name = str(metadata.get("provider", "wikipedia"))
+    max_sources = max(1, min(int(metadata.get("max_sources", 6)), 10))
+    try:
+        provider = _research_provider(provider_name, None)
+    except HTTPException as exc:
+        return {"ran": False, "run_id": run.run_id,
+                "reason": str(exc.detail)}
+    try:
+        finished = await _execute_research_run(
+            run.run_id, provider, max_sources)
+    except HTTPException as exc:
+        return {"ran": False, "run_id": run.run_id,
+                "reason": str(exc.detail)}
+    return {"ran": True, "run_id": run.run_id,
+            "dossier_id": finished.get("dossier_id", "")}

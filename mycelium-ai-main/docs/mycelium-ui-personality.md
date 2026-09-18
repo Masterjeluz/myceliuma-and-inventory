@@ -41,6 +41,12 @@ backgrounds. Motion suggests growth, connection, attention,
 activity — never chaos, hype, or game UI. `prefers-reduced-motion`
 is respected.
 
+Ecological elements (BIG #31, all CSS/SVG, all subtle): mycelium
+filament dividers, grain texture overlay, greenhouse-light
+gradients, mission growth states (seed → sprout → grown → bloom
+borders next to the honest status text), breathing halos on the
+graph. Cards stay readable; ornament never carries meaning alone.
+
 Mission cards carry one honest glyph each: 🟢 RUNNING ·
 🟡 WAITING FOR JELLES · 🔵 RESEARCHING · 🟠 BLOCKED ·
 ⚫ PAUSED · ✓ COMPLETED · ✕ FAILED — each with goal, current

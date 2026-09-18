@@ -714,3 +714,113 @@ def missed_items(conversation_id: str,
                 str(item.get("evidence", "")), item.get("message_index"))
             break
     return missed[:10]
+
+
+# -- cross-import archaeology (BIG #31) ----------------------------------------
+
+_COMPARE_WORD_RE = _re.compile(r"[a-zA-Z0-9]{4,}")
+
+
+def _compare_key(sentence: str) -> str:
+    words = sorted({word.lower() for word in
+                    _COMPARE_WORD_RE.findall(sentence or "")})
+    return " ".join(words[:12])
+
+
+def compare_imports(limit: int = 10) -> dict:
+    """Compare all imported conversations: repeated topics across
+    imports, shared platforms, shared entity candidates. Every
+    comparison carries evidence (which conversations, which
+    messages). Deterministic, read-only."""
+    metas = list_imports(limit=20)
+    analyses: dict[str, dict] = {}
+    for meta in metas:
+        conversation_id = meta["conversation_id"]
+        try:
+            analyses[conversation_id] = (
+                load_analysis(conversation_id)
+                or analyze_import(conversation_id))
+        except BridgeRefusedError:
+            continue
+    by_sentence: dict[str, list[dict]] = {}
+    for conversation_id, record in analyses.items():
+        for item in record.get("findings", []):
+            if item.get("kind") not in (
+                    "idea", "todo", "open_question", "decision",
+                    "technical_claim", "proposed_action"):
+                continue
+            key = _compare_key(str(item.get("text", "")))
+            if len(key) < 12:
+                continue
+            by_sentence.setdefault(key, []).append({
+                "conversation_id": conversation_id,
+                "message_index": item.get("message_index"),
+                "kind": item.get("kind", ""),
+                "text": str(item.get("text", ""))[:180],
+            })
+    repeated = [
+        {"topic": key[:160], "state": "OBSERVATION",
+         "occurrences": occurrences}
+        for key, occurrences in by_sentence.items()
+        if len({occ["conversation_id"] for occ in occurrences}) >= 2
+    ][: max(1, min(int(limit or 10), 20))]
+    platforms: dict[str, int] = {}
+    for meta in metas:
+        platform = str(meta.get("source_platform", "other"))
+        platforms[platform] = platforms.get(platform, 0) + 1
+    shared_entities: dict[str, list[str]] = {}
+    for conversation_id, record in analyses.items():
+        for item in record.get("findings", []):
+            candidate = str(item.get("entity_candidate", ""))
+            if candidate:
+                shared_entities.setdefault(candidate, []).append(
+                    conversation_id)
+    shared = {entity: sorted(set(conversations))
+              for entity, conversations in shared_entities.items()
+              if len(set(conversations)) >= 2}
+    return {"imports_compared": len(analyses),
+            "repeated_across_imports": repeated,
+            "platforms": platforms,
+            "shared_entity_candidates": dict(list(shared.items())[:20]),
+            "note": "Herhaling over gesprekken heen is een OBSERVATION "
+                    "met evidence; koppeling aan projecten blijft "
+                    "mensenwerk."}
+
+
+def render_import_markdown(conversation_id: str) -> str:
+    """One import as portable Markdown (OPEN AS MARKDOWN): messages,
+    analysis states, missed items, provenance. For reading and
+    re-importing elsewhere — never authority."""
+    meta = get_import(conversation_id)
+    if meta is None:
+        raise BridgeRefusedError("Unknown imported conversation")
+    messages = import_messages(conversation_id)
+    analysis = load_analysis(conversation_id) or {}
+    lines = [f"# {meta.get('title', conversation_id)}", "",
+             f"source_platform: {meta.get('source_platform', '')}",
+             f"imported_at: {meta.get('imported_at', '')}",
+             f"messages: {meta.get('message_count', 0)}",
+             f"execution_state: {meta.get('execution_state', '')}",
+             "provenance: imported / human_verified=false", "",
+             "## Messages", ""]
+    for message in messages:
+        lines.append(f"### {message.get('role', 'user')}")
+        lines.append(str(message.get("content", ""))[:3500])
+        lines.append("")
+    lines.append("## Analysis (OBSERVATION / CANDIDATE — never fact)")
+    lines.append("")
+    for item in analysis.get("findings", [])[:60]:
+        lines.append(
+            f"- [{item.get('state', '')}] {item.get('kind', '')}: "
+            f"{str(item.get('text', ''))[:220]} "
+            f"(evidence: {str(item.get('evidence', ''))[:140]})")
+    if not analysis.get("findings"):
+        lines.append("- (not analyzed yet)")
+    lines.append("")
+    lines.append("## What was missed")
+    lines.append("")
+    for item in missed_items(conversation_id, analysis or None)[:10]:
+        lines.append(
+            f"- {item.get('kind', '')}: "
+            f"{str(item.get('text', ''))[:220]}")
+    return "\n".join(lines)[:60000]

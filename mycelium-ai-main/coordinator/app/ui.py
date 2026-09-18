@@ -95,6 +95,16 @@ input[type=text],select,textarea{background:var(--surface);border:1px solid var(
 .empty{color:var(--ink-faint);font-style:italic;padding:var(--space-2)}
 .muted{color:var(--ink-faint);font-size:.85rem}
 .flowline{display:flex;gap:.4rem;align-items:center;flex-wrap:wrap}
+.filament{height:14px;background-repeat:repeat-x;background-position:center;opacity:.5;
+background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='72' height='14'%3E%3Cpath d='M0 10 C 18 4, 30 12, 44 7 S 64 4, 72 8' fill='none' stroke='%234c6b4f' stroke-width='1.4'/%3E%3Ccircle cx='22' cy='8' r='1.8' fill='%237d9b6a'/%3E%3Ccircle cx='52' cy='6' r='1.5' fill='%23c9d66b'/%3E%3C/svg%3E")}
+.sun{background:linear-gradient(180deg, rgba(217,164,65,.10), rgba(217,164,65,0) 70%)}
+.grain{position:relative}
+.grain::after{content:"";position:absolute;inset:0;pointer-events:none;opacity:.05;border-radius:inherit;
+background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='90' height='90'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='2'/%3E%3C/filter%3E%3Crect width='90' height='90' filter='url(%23n)' opacity='.6'/%3E%3C/svg%3E")}
+.growth-seed{border-top:2px dotted var(--ink-faint)}
+.growth-sprout{border-top:2px solid var(--fern)}
+.growth-grown{border-top:2px solid var(--moss-bright)}
+.growth-bloom{border-top:2px solid var(--amber)}
 svg.world{width:100%;height:auto;background:var(--soil-2);border:1px solid var(--line);border-radius:var(--r)}
 svg.world .w-node{cursor:pointer}
 svg.world .w-node:focus{outline:2px solid var(--amber);outline-offset:2px}
@@ -110,7 +120,8 @@ svg.world text{fill:var(--ink-dim);font-size:11px;font-family:var(--font)}
 
 NAV = [
     ("WORLD", [("/", "Living World"), ("/world", "World Graph"),
-               ("/projects", "Projects"), ("/memory", "Memory"),
+               ("/search", "Search"), ("/projects", "Projects"),
+               ("/memory", "Memory"),
                ("/conversations", "Conversations")]),
     ("MIND", [("/missions", "Missions"), ("/chat", "Chat"),
               ("/research", "Research"), ("/morning", "Morning"),
@@ -122,7 +133,7 @@ NAV = [
                   ("/devices", "Devices"), ("/nodes", "Nodes"),
                   ("/cameras", "Cameras")]),
     ("SYSTEM", [("/skills", "Skills"), ("/health", "Health"),
-                ("/mobile", "Mobile")]),
+                ("/writes", "Writes"), ("/mobile", "Mobile")]),
 ]
 
 
@@ -158,25 +169,88 @@ def state_chip(state: str) -> str:
     return chip(state, f"state-{state}")
 
 
+MISSION_GLYPHS = {
+    "running": "🟢",
+    "approved": "🟢",
+    "pending_approval": "🟡",
+    "paused": "⚫",
+    "blocked": "🟠",
+    "failed": "✕",
+    "completed": "✓",
+    "cancelled": "✕",
+    "draft": "🌱",
+}
+
+
+def mission_glyph(status: str) -> str:
+    return MISSION_GLYPHS.get(str(status or "").strip().lower(), "🌱")
+
+
+def growth_class(status: str, done: int = 0, total: int = 0) -> str:
+    """Organic growth state for cards: seed → sprout → grown → bloom.
+    Purely presentational; status text stays next to it."""
+    key = str(status or "").strip().lower()
+    if key in ("completed",):
+        return "growth-bloom"
+    if key in ("failed", "blocked", "cancelled"):
+        return "growth-seed"
+    try:
+        if total > 0 and done >= total:
+            return "growth-bloom"
+        if total > 0 and done > 0:
+            return "growth-grown"
+    except TypeError:
+        pass
+    if key in ("running", "approved"):
+        return "growth-sprout"
+    return "growth-seed"
+
+
 def empty(text: str = "Nothing here yet.") -> str:
     return f"<p class=\"empty\">{esc(text)}</p>"
 
 
+def _living_chip_default() -> str:
+    """Global living-state indicator for the topbar (BIG #31).
+
+    Exception to the no-fetch rule, deliberately: the indicator is
+    global chrome, not page data, and every page must show the same
+    state without per-page wiring. Best-effort — an empty string on
+    any failure, so a page never breaks on the indicator. Callers
+    may still pass `living=` explicitly to override (tests, embeds).
+    """
+    try:
+        from .living_state import current_state
+        state = current_state()
+        return (f"<span aria-label=\"Mycelium state: "
+                f"{esc(state.get('line', ''))}\" role=\"status\">"
+                f"{esc(state.get('glyph', ''))} "
+                f"{esc(state.get('line', ''))}</span>")
+    except Exception:
+        return ""
+
+
 def shell(title: str, active: str, main: str, context: str = "",
-          command: str = "") -> str:
+          command: str = "", living: str | None = None) -> str:
     """Full workshop shell. `main` is the workspace column,
-    `context` the right rail, `command` the bottom bar."""
+    `context` the right rail, `command` the bottom bar, `living`
+    an optional pre-rendered living-state chip for the topbar
+    (None = compute the global indicator)."""
     context_html = f"<aside class=\"context\" " \
         f"aria-label=\"Context\">{context}</aside>" if context \
         else ""
     cmd_html = f"<div class=\"cmdbar\">{command}</div>" \
         if command else ""
+    living_html = ""
+    chip = living if living is not None else _living_chip_default()
+    if chip:
+        living_html = f"<span class=\"ext\">{chip}</span>"
     return f"""<!doctype html><html lang="en"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>{esc(title)} — Mycelium Living Workshop</title>
 <style>{BASE_CSS}</style></head>
 <body><div class="shell">
-<header class="topbar"><span class="brand">MYCELIUM <small>living workshop · local-first</small></span><span class="spacer"></span><a class="ext" href="http://127.0.0.1:8080" target="_blank" rel="noopener">INVENTory :8080</a> <a class="ext" href="/api/v1/agent/status">agent JSON</a></header>
+<header class="topbar"><span class="brand">MYCELIUM <small>living workshop · local-first</small></span><span class="spacer"></span>{living_html}<a class="ext" href="http://127.0.0.1:8080" target="_blank" rel="noopener">INVENTory :8080</a> <a class="ext" href="/api/v1/agent/status">agent JSON</a></header>
 {nav_html(active)}
 <main class="workspace" id="main">{main}</main>
 {context_html}

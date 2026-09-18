@@ -52,6 +52,21 @@ provenance, live system state. Rendered as Markdown + JSON metadata.
 handoff: CURRENT STATE / DONE / IN PROGRESS / REMAINS / DECISIONS /
 ENTITIES / NEXT STEP + USER MESSAGE block to paste into any model.
 
+## Archaeology depth (BIG #31)
+
+- `GET /api/v1/imports-compare` — repeated topics across imports
+  (evidence per conversation/message), shared platforms, shared
+  entity candidates.
+- `GET /api/v1/conversation-imports/{id}/relevance` — read-only
+  bridge search over finding keywords → CANDIDATE links to
+  existing INVENTory records (creating relations needs a write
+  proposal + YES).
+- `GET /api/v1/discoveries` — "Te tonen aan Jelles": missed items
+  + open research questions across imports, surfaced on
+  `/conversations` and `/morning`.
+- `GET /api/v1/conversation-imports/{id}/markdown` — the import as
+  portable Markdown (open/download elsewhere).
+
 ## Security
 
 Imported text is data, never instructions (prompt-injection safe by

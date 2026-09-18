@@ -27,6 +27,12 @@ Tasks, Import conversation — all deep-link existing routes
 (`/research`, `/cameras`, `/chat`, `/world`, `/workshop/3d`,
 `/projects`, `/nodes`, `/missions`, `/conversations`).
 
+Waiting missions render inline **YES, doorgaan** buttons (exact-YES
+semantics via the existing mission op route — same gates, smaller
+screen). Observe & add links camera ingest, object/link proposals
+(`/writes`) and conversation import; context download
+(`/api/v1/context/packet.md`) travels with the phone to any model.
+
 ## Notifications (`notify_center.py`)
 
 Closed types: `research_completed, mission_waiting,

@@ -38,15 +38,57 @@ Disable:
 # or: Task Scheduler → MyceliumCoordinator → Disable
 ```
 
-## Manual start / stop
+## Manual start / stop / status / restart (Windows)
 
 ```powershell
 cd mycelium-ai-main
-.\scripts\start-mycelium.ps1        # coordinator :8000
+.\scripts\start-mycelium.ps1        # coordinator :8000 (start)
 .\scripts\start-mycelium.ps1 -Agent # + desktop agent (safe mode)
-# stop: Ctrl+C in each window, or:
-Get-Process python | Stop-Process   # last resort
+# status:
+Invoke-WebRequest http://127.0.0.1:8000/api/v1/health          # coordinator
+Invoke-WebRequest http://127.0.0.1:8000/api/v1/status          # nodes/leases/approvals
+Invoke-WebRequest http://127.0.0.1:8000/api/v1/mode            # DAY / OVERNIGHT
+# stop: Ctrl+C in each window, or per task:
+Get-ScheduledTask -TaskName MyceliumCoordinator | Stop-ScheduledTask  # scheduled task only
+# restart: stop, then start again (missions resume via recovery scan, read-only)
 ```
+
+## Linux: coordinator as a user service (no root)
+
+Same pattern as the node unit (`node_client/mycelium-node.service`):
+
+```ini
+[Unit]
+Description=Mycelium coordinator (local-first)
+After=network-online.target
+[Service]
+Type=simple
+WorkingDirectory=%h/mycelium-ai-main
+ExecStart=%h/mycelium-ai-main/.venv/bin/python -m uvicorn coordinator.app.main:app --host 127.0.0.1 --port 8000
+Restart=on-failure
+NoNewPrivileges=true
+[Install]
+WantedBy=default.target
+```
+
+```bash
+# save as ~/.config/systemd/user/mycelium-coordinator.service, then:
+systemctl --user daemon-reload
+systemctl --user enable --now mycelium-coordinator  # start
+systemctl --user status mycelium-coordinator        # status
+systemctl --user restart mycelium-coordinator       # restart
+systemctl --user stop mycelium-coordinator          # stop
+```
+
+## Overnight mode
+
+Set `OVERNIGHT` from `/morning` (or `POST /api/v1/mode`) to let
+safe research, analysis and reports proceed; queue work via
+`POST /api/v1/research/queue`, run it via
+`POST /api/v1/research/queue/run-once` (manual, scheduler, or n8n
+cron — never a background thread). See `overnight-research.md`.
+BOOT ≠ APPROVAL still holds: physical, desktop input, publishing
+and approvals never run overnight.
 
 ## What startup NEVER does
 

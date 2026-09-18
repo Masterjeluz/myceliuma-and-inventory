@@ -1,8 +1,45 @@
-# Linux Node Setup (BIG #30)
+# Linux Node Setup (BIG #31: one command)
 
 Old Linux laptop → Mycelium node → coordinator. Pull-only: the node
 polls; the coordinator never opens connections into your network and
 never sends shell commands.
+
+## One command
+
+On the laptop, with the repo present:
+
+```bash
+python3 node_client/bootstrap.py --coordinator http://127.0.0.1:8000 --node-id linux-laptop-1 --capability node.status --capability inventory.read
+```
+
+This prints the exact install + run commands (venv, `pip install
+-e .`, token export, `node_client.main` with your flags). Nothing
+is installed or started by the script itself — you stay in control.
+
+Pre-flight only (no registration):
+
+```bash
+python3 node_client/bootstrap.py --check --coordinator http://127.0.0.1:8000 --node-id linux-laptop-1
+```
+
+Systemd user service (no root):
+
+```bash
+python3 node_client/bootstrap.py --write-systemd --node-id linux-laptop-1
+```
+
+or copy `node_client/mycelium-node.service` to
+`~/.config/systemd/user/mycelium-node.service`, put the token in
+`~/.config/mycelium/node-token` (`chmod 600`), then:
+
+```bash
+systemctl --user daemon-reload
+systemctl --user enable --now mycelium-node   # start
+systemctl --user status mycelium-node         # status
+systemctl --user stop mycelium-node           # stop
+systemctl --user restart mycelium-node        # restart
+journalctl --user -u mycelium-node -f         # logs
+```
 
 ## 10 steps
 

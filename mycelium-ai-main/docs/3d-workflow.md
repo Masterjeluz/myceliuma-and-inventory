@@ -32,3 +32,11 @@ A model links visibly to project / file / object / research / mission
 explicit candidate relations (dashed overlays in `/world`) where the
 source is a Mycelium domain. Chain inspection: `/workshop`, per-run
 `/workshop?fabrication_id=...`, `/fabrication`.
+
+New in BIG #31: the **Connect a model** panel on `/3d` (and the
+propose forms on `/writes`) create `create_relationship` write
+proposals with closed predicates (`used_in`, `part_of`,
+`produced_by`, `related_to`, …). The proposal waits in the
+`/writes` inbox for an exact YES — nothing links itself. Object
+creation from mobile follows the same inbox (`/web/objects/propose`
+→ YES → execute → verify).

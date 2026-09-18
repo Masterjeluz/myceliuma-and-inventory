@@ -269,10 +269,12 @@ coordinator/app/controlled_writes.py, inventory_writes.py,
 coordinator/app/nodes.py, routing.py, sim_nodes.py
 coordinator/app/conversation_bridge.py, context_packet.py,
                  ecosystem.py, notify_center.py, linux_node.py
+coordinator/app/context_engine.py, living_state.py,
+                 node_client/bootstrap.py (one-command onboarding)
 desktop_agent/   standalone lokale agent (poll, claim, voer uit, rapporteer)
 node_client/     lichte client voor seed/worker/core nodes (pull-only, token-optie)
 docs/            architectuurstatus, roadmap, principes, oorsprong
-tests/           1124 tests (pytest -v)
+tests/           1140 tests (pytest -v)
 ```
 
 Zie `docs/ARCHITECTURE_STATUS.md` (wat het systeem is),
@@ -290,9 +292,10 @@ Zie `docs/ARCHITECTURE_STATUS.md` (wat het systeem is),
 `docs/stabilization.md`, `docs/n8n-integration.md`,
 `docs/autonomous-mission-loop.md`, `docs/desktop-hands.md`,
 `docs/living-ecosystem.md`, `docs/conversation-bridge.md`,
+`docs/context-packets.md`, `docs/overnight-research.md`,
 `docs/mobile-node-flow.md`, `docs/linux-node-setup.md`,
 `docs/camera-workflow.md`, `docs/3d-workflow.md` en
-`docs/ROADMAP.md` (wat volgt). Teststatus: **1124 passed**.
+`docs/ROADMAP.md` (wat volgt). Teststatus: **1140 passed**.
 
 ## Bijdragen
 

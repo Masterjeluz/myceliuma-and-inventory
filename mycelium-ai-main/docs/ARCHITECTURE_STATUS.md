@@ -114,6 +114,7 @@ Momentopname van wat het systeem IS. Voor flows, zie
 | Research Engine | `research_transport.py`, `research_extract.py`, `research_engine.py` | DONE (BIG #29: runs/dossiers, REAL/TEST/UNAVAILABLE, missie+chat+morning+UI; Wikipedia vanaf dit netwerk UNAVAILABLE, direct-fetch REAL, Ollama DOWN→fallback) |
 | Conversation bridge | `conversation_bridge.py`, `routes_conversations.py`, `context_packet.py` | DONE (BIG #30: import pasted/TXT/MD/JSON/safe-HTML als conv_..., OBSERVATION/CANDIDATE-analyse + missed-items met evidence, universeel + continuation packet Markdown+JSON, health-scoped) |
 | Living ecosystem | `ecosystem.py`, `notify_center.py`, `linux_node.py` + `/world` cockpit, `/conversations`, `/nodes`, `/3d`, `/mobile`, `/activity` | DONE (BIG #30: entity CONNECTED TO, voice-activity, IN_APP real / WEB_PUSH unavailable, Linux starter-set + runbook, Insta360/3D eerlijke workflows) |
+| Activation | `context_engine.py`, `living_state.py`, packet v2, `/search`, `/writes`-inbox, file-ingest, node-rollen, overnight-queue + mode, `node_client/bootstrap.py` | DONE (BIG #31: composer + traces, living state topbar, handoff-downloads, archaeology depth, propose-link-YES, camera-detail, one-command + systemd, GOOD MORNING) |
 | Skills | `skills.py` | DONE (evidence-progressie, discovery) |
 | Advanced 3D/CAD | `meshops.py`, `cad.py` | DONE/PARTIAL (procedural bouwt; extern UNAVAILABLE) |
 | Fabricatie-orkestratie | `fabrication.py` | PARTIAL (plant/selecteert; start blijft gated) |
@@ -129,14 +130,19 @@ Momentopname van wat het systeem IS. Voor flows, zie
 
 ## Teststatus (gemeten, niet geschat)
 
-- Mycelium: **1124 passed** (`pytest -v` in `mycelium-ai-main/`,
-  in delen gedraaid vanwege runner-duur; 0 failures) — 1107
-  baseline (BIG #29: 961 gedocumenteerd, sindsdien gegroeid) + 17
-  nieuwe BIG #30-tests (`test_big30_living_ecosystem.py`;
-  camera-ctypes geeft dezelfde pre-existing
-  access-violation-meldingen als altijd; een volle single-run
-  overschrijdt de lokale 10-min-timeout, daarom batch-gewijs
-  geverifieerd, elke batch groen)
+- Mycelium: **1140 passed** (`pytest -v` in `mycelium-ai-main/`,
+  batch-gewijs i.v.m. runner-duur; 0 failures) — 1124 baseline
+  (BIG #30) + 16 nieuwe BIG #31-tests
+  (`test_big31_activation.py`; camera-ctypes geeft dezelfde
+  pre-existing access-violation-meldingen als altijd)
+- Screenshots: `docs/r31-shots/` (10 PNG's, headless Chrome tegen
+  een coordinator op tmp-DB's met echte seed-data: node, Insta360
+  + file-observation, conversation-import + analyse, chat, missie,
+  queue-run, OVERNIGHT-mode, write proposal, command trace;
+  INVENTory :8080 live → search toont echte secties)
+- Screenshots (BIG #30): `docs/r30-shots/` (11 PNG's, zelfde
+  aanpak; INVENTory :8080 toen niet actief → graph toonde eerlijk
+  de "quiet patch"-leegtestaat)
 - Screenshots: `docs/r30-shots/` (11 PNG's, headless Chrome tegen een
   coordinator op tmp-DB's met echte seed-data: node, Insta360-
   registratie, conversation-import + analyse, chat, missie,

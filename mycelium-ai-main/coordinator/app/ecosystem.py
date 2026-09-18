@@ -229,17 +229,102 @@ def activity_feed(limit: int = 30) -> list[dict]:
         notes = _main.list_notifications_for_report(limit=10)
         for note in notes:
             title = getattr(note, "title", str(note))[:160]
+            mission = getattr(note, "related_mission", "")
+            entity = getattr(note, "related_entity", "")
+            task = getattr(note, "related_task", "")
+            if mission:
+                link = f"/missions/{mission}"
+            elif entity:
+                link = f"/world?entity_id={entity}"
+            elif task:
+                link = "/activity"
+            else:
+                link = "/activity"
             items.append({
                 "voice": "Hier wacht ik op jou.",
                 "event_type": "notification",
                 "summary": title,
                 "created_at": getattr(note, "created_at", ""),
-                "mission_id": getattr(note, "related_mission", ""),
+                "mission_id": mission,
                 "node_id": "",
-                "link": (f"/missions/{note.related_mission}"
-                         if getattr(note, "related_mission", "")
-                         else "/activity"),
+                "link": link,
             })
     except Exception:
         pass
     return items[: max(1, min(int(limit or 30), 60))]
+
+
+#: Node roles derived from advertised capabilities (BIG #31). A
+#: machine does not need to do everything; roles describe what a
+#: node volunteers for. Never authority, always description.
+ROLE_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("RESEARCH", ("research.",)),
+    ("ANALYSIS", ("analysis.",)),
+    ("INVENTORY", ("inventory.",)),
+    ("CAMERA", ("camera.", "vision")),
+    ("3D", ("mesh", "slice", "print", "fab", "cad")),
+    ("INPUT", ("desktop_", "phone.", "screen", "microphone")),
+)
+
+
+def node_roles(record: dict) -> list[str]:
+    """Roles for one node-registry record. Empty caps → GENERAL."""
+    caps = [str(cap or "") for cap in (record.get("capabilities")
+                                       or [])]
+    roles: list[str] = []
+    for role, prefixes in ROLE_RULES:
+        if any(any(cap.startswith(prefix) for prefix in prefixes)
+               for cap in caps):
+            roles.append(role)
+    if record.get("tier") == "seed" and "GENERAL" not in roles:
+        roles.append("GENERAL")
+    return roles or ["GENERAL"]
+
+
+def discoveries(limit: int = 20) -> dict:
+    """'Te tonen aan Jelles': open questions + missed items across
+    imports, plus unlinked research questions. Evidence-backed
+    only; nothing stored, nothing promoted."""
+    from .conversation_bridge import (list_imports, load_analysis,
+                                      missed_items)
+    count = max(1, min(int(limit or 20), 40))
+    items: list[dict] = []
+    try:
+        imports = list_imports(limit=10)
+    except Exception:
+        imports = []
+    for meta in imports:
+        conversation_id = meta["conversation_id"]
+        try:
+            analysis = load_analysis(conversation_id) or {}
+            missed = missed_items(conversation_id, analysis)
+        except Exception:
+            continue
+        for item in missed[:4]:
+            items.append({
+                "conversation_id": conversation_id,
+                "title": meta.get("title", "")[:80],
+                "kind": item.get("kind", ""),
+                "text": str(item.get("text", ""))[:200],
+                "evidence": str(item.get("evidence", ""))[:160],
+                "link": f"/conversations/{conversation_id}",
+            })
+            if len(items) >= count:
+                break
+        if len(items) >= count:
+            break
+    research_open: list[dict] = []
+    try:
+        from .research_engine import list_dossiers
+        for dossier in list_dossiers(limit=5):
+            for question in dossier.open_questions[:2]:
+                research_open.append({
+                    "dossier_id": dossier.dossier_id,
+                    "question": question[:200],
+                    "link": f"/research/{dossier.dossier_id}",
+                })
+    except Exception:
+        pass
+    return {"items": items[:count],
+            "research_open_questions": research_open[:10],
+            "imports_considered": len(imports)}
