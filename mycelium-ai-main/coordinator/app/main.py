@@ -8531,8 +8531,9 @@ def cameras_page() -> str:
     capture runtime; without one the API refuses (409) instead of inventing pixels.</p>
     <p class="muted">Workflow: CAMERA → CONNECT → SOURCE → SNAPSHOT → OBSERVATION → INVENTORY → ANALYSIS. Elke stap toont eerlijk wat werkt. Observations feed <a href="/craft">Craft Tree</a> and <a href="/knowledge">Knowledge</a>.</p></div>
     <div class="panel"><h2>How to connect (honest)</h2>
-    <p class="muted"><b>WHAT EXISTS:</b> registration, local device scan (names only), snapshot ingest pipeline, observation store, availability probe. <b>WHAT IS MISSING:</b> live Insta360 transport — no reviewed SDK path, capture refused until a real adapter lands. <b>WHAT JELLES NEEDS TO DO:</b> register the camera below, then ingest a file snapshot (camera → file → ingest) or wait for the webcam-driver/file-ingest adapter.</p>
+    <p class="muted"><b>WHAT EXISTS:</b> registration, local device scan (names only), snapshot ingest pipeline, multi-file ingest sessions, observation store, VLM description (REAL when Ollama answers, honest fallback otherwise), candidate proposals, possible-match linking, availability probe. <b>WHAT IS MISSING:</b> live Insta360 transport — no reviewed SDK path, capture refused until a real adapter lands. <b>WHAT JELLES NEEDS TO DO:</b> register the camera below, copy files into the inbox, then run a multi-file ingest session from the camera detail page.</p>
     <p>Insta360 state: <b>REGISTERED</b> possible, <b>CONNECTED</b> only with a working adapter, otherwise <b>UNAVAILABLE</b> — never fake-connected.</p></div>
+    {_camera_guide_panel()}
     <h2>Registered</h2><ul>{devices or "<li>No cameras</li>"}</ul>
     <h2>Detected locally (names only, read-only)</h2><ul>{found or "<li>Nothing found / unsupported</li>"}</ul>
     <h2>Register</h2><form method="post" action="/web/cameras/register">
@@ -8542,6 +8543,28 @@ def cameras_page() -> str:
     <button type="submit">Register</button></form>"""
     return _ui.shell("Cameras", "/cameras", main, "",
                      _ui.command_bar())
+
+
+def _camera_guide_panel() -> str:
+    """Practical Insta360 guide: how a file becomes world knowledge."""
+    from . import ui as _ui
+    steps = "".join(
+        f"<li>{_ui.esc(text)}</li>" for text in
+        ("Shoot photo/video on the Insta360.",
+         "Export the file (still, frame or 360 still).",
+         "Copy it into the camera inbox (names at "
+         "/api/v1/camera-inbox).",
+         "Run a multi-file ingest session from the camera page.",
+         "Ask for a VLM description (REAL) or take the honest "
+         "fallback (UNAVAILABLE).",
+         "Review observations; propose candidates.",
+         "YES keeps a candidate; link it to a project/item.",
+         "The world graph, craft tree and guide pick it up."))
+    return (f"<div class=\"panel living\"><h2>Camera Guide — "
+            f"from Insta360 file to living world</h2><ol>{steps}</ol>"
+            f"<p class=\"muted\">Direct live transport: UNAVAILABLE — "
+            f"verified transport adapter required. File ingest is REAL."
+            f"</p></div>")
 
 
 @app.post("/web/cameras/register")
@@ -8852,6 +8875,7 @@ def mobile_page(node: str = "") -> str:
     <p><a href="/missions">View plans</a> · <a href="/morning">Morning report</a></p></div>
     <div class="panel"><h2>Observe & add</h2>
     <p><a href="/cameras">Camera ingest</a> · <a href="/writes">Propose object/link</a> · <a href="/conversations">Import conversation</a></p>
+    {_mobile_camera_html()}
     <p><a href="/api/v1/context/packet.md">Copy context (Markdown)</a> <span class="muted">— neem mee naar een ander model</span></p></div>
     <div class="panel"><h2>Remember this</h2>
     <form method="post" action="/web/candidates">
@@ -8887,6 +8911,38 @@ def _mobile_guide_panel() -> str:
     return (f"<div class=\"panel\"><h2>Needs you</h2>"
             f"<div class=\"grove\">{cards}</div>"
             f"<p><a href=\"/guide\">All guide items →</a></p></div>")
+
+
+def _mobile_camera_html() -> str:
+    """Phone camera flow: add → processing → review → YES/REVIEW."""
+    from . import ui as _ui
+    try:
+        from .vision_ingest import list_inbox_files
+        inbox = list_inbox_files(limit=5)
+    except Exception:
+        inbox = []
+    try:
+        from .knowledge import list_candidates
+        camera_candidates = sum(
+            1 for entry in list_candidates(limit=100)
+            if (entry.provenance.creator_id or "") in
+            ("camera-vlm", "camera-ecosystem"))
+    except Exception:
+        camera_candidates = 0
+    if inbox:
+        state = (f"PROCESSING: {len(inbox)} photo(s) wait in the "
+                 f"inbox. Open <a href=\"/cameras\">Camera Lab</a>, "
+                 f"run a session, and Mycelium describes what it sees.")
+    elif camera_candidates:
+        state = (f"RESULT: {camera_candidates} camera candidate(s) "
+                 f"wait. <a href=\"/knowledge\">Bekijk</a> — "
+                 f"YES keeps one, REVIEW inspects, ignore leaves it.")
+    else:
+        state = ("📷 CAMERA: voeg een foto toe via "
+                 "<a href=\"/cameras\">Camera Lab</a> — copy the file "
+                 "into the inbox first. No native upload; the inbox "
+                 "is the honest path.")
+    return f"<p>{state}</p>"
 
 
 @app.post("/web/desktop/{action_id}/decision")
@@ -9631,7 +9687,19 @@ def camera_detail_page(device_id: str):
         f"<form method=\"post\" action=\"/web/observations/"
         f"{_ui.esc(obs.observation_id)}/candidate\" "
         f"style=\"display:inline\">"
-        f"<button type=\"submit\">Review as candidate</button></form></li>"
+        f"<button type=\"submit\">Review as candidate</button></form> "
+        f"<form method=\"post\" action=\"/web/observations/"
+        f"{_ui.esc(obs.observation_id)}/describe\" "
+        f"style=\"display:inline\">"
+        f"<input type=\"hidden\" name=\"device_id\" value=\""
+        f"{_ui.esc(device.device_id)}\">"
+        f"<button type=\"submit\">Describe (VLM)</button></form> "
+        f"<form method=\"post\" action=\"/web/observations/"
+        f"{_ui.esc(obs.observation_id)}/propose-candidates\" "
+        f"style=\"display:inline\">"
+        f"<input type=\"hidden\" name=\"device_id\" value=\""
+        f"{_ui.esc(device.device_id)}\">"
+        f"<button type=\"submit\">Propose candidates</button></form></li>"
         for obs in latest) or "<li>No observations yet.</li>"
     inbox = "".join(
         f"<li><code>{_ui.esc(entry['filename'])}</code> "
@@ -9650,10 +9718,65 @@ def camera_detail_page(device_id: str):
     <form method="post" action="/web/cameras/{_ui.esc(device.device_id)}/ingest-file">
     <input type="text" name="filename" placeholder="IMG_0001.png" style="width:50%" aria-label="Inbox filename" autocomplete="off">
     <button type="submit">Ingest file</button></form></div>
+    <div class="panel"><h2>Multi-file ingest session</h2>
+    <p class="muted">Up to 8 inbox files per session (space/comma separated). Dedupe by content hash; replays refuse as duplicates.</p>
+    <form method="post" action="/web/camera-sessions">
+    <input type="hidden" name="device_id" value="{_ui.esc(device.device_id)}">
+    <input type="text" name="filenames" placeholder="IMG_0001.png IMG_0002.png" style="width:50%" aria-label="Inbox filenames" autocomplete="off">
+    <button type="submit">Ingest session</button></form>
+    {_camera_sessions_html(device.device_id)}</div>
     <div class="panel"><h2>Media inbox</h2><ul>{inbox}</ul></div>
     <div class="panel"><h2>Observations</h2><ul>{obs_rows}</ul>
-    <p><a href="/api/v1/cameras/{_ui.esc(device.device_id)}/observations">observations (JSON)</a> · <a href="/api/v1/cameras/{_ui.esc(device.device_id)}/availability">availability (JSON)</a></p></div>"""
+    <p><a href="/api/v1/cameras/{_ui.esc(device.device_id)}/observations">observations (JSON)</a> · <a href="/api/v1/cameras/{_ui.esc(device.device_id)}/availability">availability (JSON)</a></p></div>
+    <div class="panel"><h2>Suggest a link</h2>
+    <p class="muted">Propose observation → entity as PROPOSED symbiosis. YES/NO/REVIEW run through <a href="/knowledge">Knowledge</a>.</p>
+    <form method="post" action="/web/camera-suggest-link">
+    <input type="hidden" name="device_id" value="{_ui.esc(device.device_id)}">
+    <input type="text" name="observation_id" placeholder="obs-…" style="width:24%" aria-label="Observation id">
+    <select name="predicate" aria-label="Predicate"><option value="related_to">related_to</option><option value="used_in">used_in</option><option value="component_of">component_of</option><option value="stored_at">stored_at</option><option value="supports">supports</option><option value="evidence_for">evidence_for</option><option value="part_of">part_of</option></select>
+    <input type="text" name="entity_id" placeholder="proj_… / obj_…" style="width:24%" aria-label="Entity id">
+    <button type="submit">Propose link</button></form></div>
+    {_camera_timeline_html(device.device_id)}"""
     return _ui.shell(device.name, "/cameras", main, _ui.command_bar())
+
+
+def _camera_sessions_html(device_id: str) -> str:
+    """Recent ingest sessions for one camera (bounded)."""
+    from . import ui as _ui
+    try:
+        from .camera_ecosystem import list_sessions
+        sessions = list_sessions(device_id, limit=5)
+    except Exception:
+        return ""
+    rows = "".join(
+        f"<li><code>{_ui.esc(session.session_id)}</code> "
+        f"<span class=\"muted\">[{_ui.esc(session.state)}] "
+        f"{len(session.items)} file(s) · "
+        f"{_ui.esc(session.created_at[:16])}</span> "
+        f"<a href=\"/api/v1/camera-sessions/"
+        f"{_ui.esc(session.session_id)}\">session (JSON)</a></li>"
+        for session in sessions)
+    return f"<ul>{rows or '<li>No sessions yet.</li>'}</ul>"
+
+
+def _camera_timeline_html(device_id: str) -> str:
+    """Timeline from the shared bus (no second event system)."""
+    from . import ui as _ui
+    try:
+        from .camera_ecosystem import timeline
+        items = timeline(device_id=device_id, limit=12)
+    except Exception:
+        items = []
+    rows = "".join(
+        f"<li><span class=\"muted\">"
+        f"{_ui.esc(str(item.get('at', ''))[:16])}</span> "
+        f"<b>{_ui.esc(str(item.get('type', '')))}</b> — "
+        f"{_ui.esc(str(item.get('text', ''))[:140])}</li>"
+        for item in items)
+    return (f"<div class=\"panel\"><h2>Timeline</h2>"
+            f"<ul class=\"timeline\">"
+            f"{rows or '<li>Nothing happened yet for this camera.</li>'}"
+            f"</ul></div>")
 
 
 @app.get("/api/v1/camera-inbox")
@@ -10759,3 +10882,218 @@ async def craft_page(entity_id: str = "", depth: int = 1) -> str:
             f"{detail}")
     return _ui.shell("Craft Tree", "/craft",
                      _ui.living_bg() + main, _ui.command_bar())
+
+
+# =============================================================================
+# BIG #34 — CAMERA ECOSYSTEM. Files become living input:
+# FILE → SESSION → OBSERVATION → VLM (or honest fallback) →
+# CANDIDATE → POSSIBLE MATCH → LINK PROPOSAL (YES) → SYMBIOSIS
+# → CRAFT → GUIDE. Camera never authority; observation never fact.
+# =============================================================================
+
+
+@app.post("/api/v1/camera-sessions", status_code=201)
+def api_camera_session_create(body: dict) -> dict:
+    from .camera_ecosystem import (EcosystemRefusedError,
+                                   create_session)
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=422, detail="JSON body required")
+    try:
+        session = create_session(str(body.get("device_id", "")),
+                                 body.get("filenames", []))
+    except EcosystemRefusedError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    return session.model_dump(mode="json")
+
+
+@app.get("/api/v1/camera-sessions")
+def api_camera_sessions(device_id: str = "",
+                        limit: int = 20) -> dict:
+    from .camera_ecosystem import list_sessions
+    sessions = list_sessions(device_id[:80], limit=limit)
+    return {"sessions": [session.model_dump(mode="json")
+                         for session in sessions]}
+
+
+@app.get("/api/v1/camera-sessions/{session_id}")
+def api_camera_session_get(session_id: str) -> dict:
+    from .camera_ecosystem import (EcosystemRefusedError,
+                                   load_session,
+                                   session_observations)
+    try:
+        session = load_session(session_id)
+    except EcosystemRefusedError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    if session is None:
+        raise HTTPException(404, "Ingest session not found")
+    return {"session": session.model_dump(mode="json"),
+            "observations": session_observations(session.session_id)}
+
+
+@app.post("/api/v1/camera-sessions/{session_id}/run")
+def api_camera_session_run(session_id: str) -> dict:
+    from .camera_ecosystem import (EcosystemRefusedError,
+                                   run_session,
+                                   session_observations)
+    try:
+        session = run_session(session_id)
+    except EcosystemRefusedError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    return {"session": session.model_dump(mode="json"),
+            "observations": session_observations(session.session_id)}
+
+
+@app.post("/api/v1/observations/{observation_id}/describe")
+def api_observation_describe(observation_id: str,
+                             body: dict | None = None) -> dict:
+    from .camera_ecosystem import EcosystemRefusedError, \
+        describe_observation
+    payload = body if isinstance(body, dict) else {}
+    try:
+        return describe_observation(
+            observation_id, question=str(payload.get("question", "")),
+            provider=str(payload.get("provider", "auto")))
+    except EcosystemRefusedError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+
+@app.post("/api/v1/observations/{observation_id}/propose-candidates",
+          status_code=201)
+def api_observation_propose(observation_id: str) -> dict:
+    from .camera_ecosystem import (EcosystemRefusedError,
+                                   propose_candidates)
+    try:
+        created = propose_candidates(observation_id)
+    except EcosystemRefusedError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    return {"observation_id": observation_id,
+            "candidates": created,
+            "note": "VLM labels became OBSERVATION candidates. "
+                    "Nothing promotes itself."}
+
+
+@app.get("/api/v1/camera-match")
+def api_camera_match(q: str = "", limit: int = 5) -> dict:
+    from .camera_ecosystem import (EcosystemRefusedError,
+                                   possible_matches)
+    try:
+        matches = possible_matches(q[:120], limit=limit)
+    except EcosystemRefusedError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    return {"query": q[:120], "matches": matches,
+            "note": "POSSIBLE matches only. Linking needs a "
+                    "proposal + YES."}
+
+
+@app.post("/api/v1/camera-suggest-link", status_code=201)
+def api_camera_suggest_link(body: dict) -> dict:
+    from .camera_ecosystem import (EcosystemRefusedError,
+                                   suggest_link)
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=422, detail="JSON body required")
+    try:
+        return suggest_link(str(body.get("observation_id", "")),
+                            str(body.get("entity_id", "")),
+                            str(body.get("predicate", "")))
+    except EcosystemRefusedError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+
+@app.get("/api/v1/camera-timeline")
+def api_camera_timeline(device_id: str = "",
+                        observation_id: str = "",
+                        limit: int = 30) -> dict:
+    from .camera_ecosystem import EcosystemRefusedError, timeline
+    try:
+        items = timeline(device_id[:80], observation_id[:80],
+                         limit=limit)
+    except EcosystemRefusedError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    return {"timeline": items}
+
+
+@app.post("/web/camera-sessions")
+async def web_camera_session_create(request: Request) -> Response:
+    from .camera_ecosystem import EcosystemRefusedError, create_session
+    fields = await _form_fields(request)
+    device_id = fields.get("device_id", "")
+    raw = fields.get("filenames", "")
+    filenames = [part.strip() for part in raw.replace(",", " ").split()
+                 if part.strip()]
+    try:
+        session = create_session(device_id, filenames)
+    except EcosystemRefusedError:
+        return RedirectResponse("/cameras", status_code=303)
+    try:
+        from .camera_ecosystem import run_session
+        run_session(session.session_id)
+    except EcosystemRefusedError:
+        pass
+    return RedirectResponse(
+        f"/cameras/{device_id}", status_code=303)
+
+
+@app.post("/web/camera-sessions/{session_id}/run")
+async def web_camera_session_run(session_id: str) -> Response:
+    from .camera_ecosystem import (EcosystemRefusedError,
+                                   load_session, run_session)
+    try:
+        session = run_session(session_id)
+        target = f"/cameras/{session.device_id}"
+    except EcosystemRefusedError:
+        target = "/cameras"
+        try:
+            loaded = load_session(session_id)
+            if loaded is not None:
+                target = f"/cameras/{loaded.device_id}"
+        except EcosystemRefusedError:
+            pass
+    return RedirectResponse(target, status_code=303)
+
+
+@app.post("/web/observations/{observation_id}/describe")
+async def web_observation_describe(observation_id: str,
+                                   request: Request) -> Response:
+    from .camera_ecosystem import (EcosystemRefusedError,
+                                   describe_observation)
+    fields = await _form_fields(request)
+    device_id = fields.get("device_id", "")
+    try:
+        describe_observation(
+            observation_id,
+            question=fields.get("question", "")[:500])
+    except EcosystemRefusedError:
+        pass
+    target = f"/cameras/{device_id}" if device_id else "/cameras"
+    return RedirectResponse(target, status_code=303)
+
+
+@app.post("/web/observations/{observation_id}/propose-candidates")
+async def web_observation_propose(observation_id: str,
+                                  request: Request) -> Response:
+    from .camera_ecosystem import (EcosystemRefusedError,
+                                   propose_candidates)
+    fields = await _form_fields(request)
+    device_id = fields.get("device_id", "")
+    try:
+        propose_candidates(observation_id)
+    except EcosystemRefusedError:
+        pass
+    target = f"/cameras/{device_id}" if device_id else "/cameras"
+    return RedirectResponse(target, status_code=303)
+
+
+@app.post("/web/camera-suggest-link")
+async def web_camera_suggest_link(request: Request) -> Response:
+    from .camera_ecosystem import (EcosystemRefusedError,
+                                   suggest_link)
+    fields = await _form_fields(request)
+    device_id = fields.get("device_id", "")
+    try:
+        suggest_link(fields.get("observation_id", ""),
+                     fields.get("entity_id", ""),
+                     fields.get("predicate", "related_to"))
+    except EcosystemRefusedError:
+        pass
+    target = f"/cameras/{device_id}" if device_id else "/cameras"
+    return RedirectResponse(target, status_code=303)

@@ -100,6 +100,36 @@ def guide_items(limit: int = 12) -> list[dict]:
     except Exception:
         pass
     try:
+        from .cameras import list_devices, list_observations
+        from .vision_flow import list_analyses
+        fresh: list[tuple[str, str]] = []
+        for device in list_devices()[:10]:
+            for observation in list_observations(
+                    device.device_id, limit=10)[:10]:
+                try:
+                    analyses = list_analyses(
+                        observation.observation_id, limit=1)
+                except Exception:
+                    analyses = []
+                if not analyses:
+                    fresh.append((device.device_id,
+                                  observation.observation_id))
+                    break
+            if len(fresh) >= 3:
+                break
+        if fresh:
+            device_id, observation_id = fresh[0]
+            items.append(_item(
+                "camera", "👁",
+                f"{len(fresh)} observation(s) wait for a VLM "
+                "description.",
+                "Photos stay mute until described (REAL) or "
+                "honestly marked (UNAVAILABLE).",
+                "Describe now",
+                f"/cameras/{device_id}"))
+    except Exception:
+        pass
+    try:
         from . import main as _main
         waiting_fab = [record for record in
                        _main.list_fabrications(50)

@@ -1,15 +1,13 @@
-# Mycelium V2 Roadmap — BIG #33 → BIG #40 (directional)
+# Mycelium V2 Roadmap — BIG #34 → BIG #40 (directional)
 
-Status after BIG #33: living world layer on the BIG #32
-foundation — symbiosis (PROPOSED/SUPPORTED/VERIFIED),
-craft tree (12 real-data stages + gaps), guide
-(WHAT/WHY/NEXT from live state), missions as quests (same
-gates), living animated shell (reduced-motion safe), mobile
-as input terminal (quick actions + needs-you), node-mesh
-delegation contracts + topology, camera/3D/conversation/
-research/agenda/activity reframed, dev notify utility.
-1173 Mycelium tests green; INVENTory untouched (179 + 1
-pre-existing). See `docs/BIG33-final-report.md`.
+Status after BIG #34: camera ecosystem on the living world —
+multi-file ingest sessions (`cing_…`, sha256 dedupe),
+VLM wrapper (REAL Ollama / UNAVAILABLE fallback), per-label
+idempotent candidates, possible-match + link proposals as
+PROPOSED symbiosis, timeline from the shared bus, Camera Lab
++ Insta360 guide, mobile camera flow, guide items, IN_APP
+notifications. 1186 Mycelium tests green; INVENTory untouched
+(179 + 1 pre-existing). See `docs/BIG34-final-report.md`.
 
 Principles for every step: reuse stores, explicit promotion,
 provenance always, honest REAL/TEST/SIMULATED/UNAVAILABLE/FUTURE,
@@ -18,22 +16,20 @@ implement a future stage prematurely because it is listed here.
 
 ## BIG #33 — Living World (DONE 2026-09-18)
 
-Shipped: symbiosis, craft tree, guide, quest presentation,
-living shell, mobile input surface, mesh contracts, notify
-utility. The ROADMAP-V2 research-network items (reviewed
-`research.extract` executor, per-node capability matrix UI,
-queue fan-out) are partially covered — capability matrix and
-routing UI exist via eligible-nodes + mesh topology; the
-reviewed extract executor remains future work (see BIG33
-report §12).
+Shipped: symbiosis (PROPOSED/SUPPORTED/VERIFIED), craft
+tree (12 real-data stages + gaps), guide (WHAT/WHY/NEXT),
+quest presentation (same gates), living shell
+(reduced-motion safe), mobile input surface, node-mesh
+delegation contracts, dev notify utility. Research-network
+items (reviewed `research.extract` executor) remain future
+work (see BIG33 report §12).
 
-## BIG #34 — Camera Ecosystem
+## BIG #34 — Camera Ecosystem (DONE 2026-09-18)
 
-Richer file/media workflows on the proven ingest path:
-multi-file ingest sessions, observation → VLM advice → candidate
-in one guided flow, camera detail timelines. Insta360 direct
-transport only when a verified adapter exists (requirements are
-documented on the adapter); until then UNAVAILABLE stays.
+Shipped: sessions, VLM honesty, candidates, matches, link
+proposals, timeline, Camera Lab + guide, mobile flow,
+notifications. Insta360 live transport stays UNAVAILABLE
+until a verified adapter exists (file ingest is REAL).
 
 ## BIG #35 — 3D Workshop
 

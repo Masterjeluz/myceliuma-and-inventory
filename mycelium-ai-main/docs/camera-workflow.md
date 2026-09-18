@@ -1,9 +1,9 @@
-# Camera Workflow (BIG #31: file ingest is REAL)
+# Camera Workflow (BIG #34: sessions + VLM honesty + candidates)
 
 CAMERA → CONNECT → SOURCE → SNAPSHOT → OBSERVATION → INVENTORY → ANALYSIS.
 
 Cameras are observation sources, never actuators. Every step shows
-honestly what works.
+honestly what works. Full chain in `docs/camera-ecosystem.md`.
 
 ## What exists (REAL)
 
@@ -30,6 +30,27 @@ honestly what works.
   a knowledge candidate with sensor provenance, maturing through
   `/knowledge`. The Insta360 requirements stay documented on the
   adapter (`requirements()`) and the detail page.
+- **Multi-file sessions** (`POST /api/v1/camera-sessions`,
+  `.../run`): up to 8 inbox files per `cing_…` session, sha256
+  dedupe across sessions, per-file states, timeline from the
+  shared bus. Detail page shows sessions, per-observation
+  Describe (VLM) / Propose-candidates buttons, link proposals,
+  timeline.
+- **VLM honesty** (`POST /api/v1/observations/{id}/describe`):
+  REAL Ollama analysis when the loopback backend answers,
+  extractive fallback (`vlm_state: UNAVAILABLE`, no labels)
+  otherwise — stored distinguishably, never faked.
+- **Candidates from labels**
+  (`POST /api/v1/observations/{id}/propose-candidates`):
+  one idempotent candidate per REAL label; fallback yields none.
+- **Possible matches** (`GET /api/v1/camera-match`) and **link
+  proposals** (`POST /api/v1/camera-suggest-link`, closed
+  predicates) surfacing as PROPOSED symbiosis; YES/NO/REVIEW
+  through `/knowledge`.
+- Guide feeds on inbox + undescribed observations; mobile
+  shows the camera add → processing → review flow; IN_APP
+  notifications (`new_observation`, `camera_ready`,
+  `candidate_waiting`, `new_connection`) to registered nodes.
 
 ## What is missing (UNAVAILABLE)
 

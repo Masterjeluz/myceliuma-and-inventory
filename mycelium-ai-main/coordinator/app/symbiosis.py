@@ -21,7 +21,7 @@ import re as _re
 
 SYMBIOSIS_STATES = ("PROPOSED", "SUPPORTED", "VERIFIED")
 
-_ENTITY_RE = _re.compile(r"^[A-Za-z]+_[A-Za-z0-9._-]{1,80}$")
+_ENTITY_RE = _re.compile(r"^[A-Za-z]+[_-][A-Za-z0-9._-]{1,80}$")
 
 #: Entity prefixes this layer understands. Unknown prefixes are
 #: refused rather than rendered as mystery links.
@@ -29,6 +29,9 @@ KNOWN_PREFIXES = (
     "obj_", "proj_", "idea_", "rel_", "evt_", "hw_", "sns_",
     "cam_", "loc_", "mod_", "task_", "act_", "file_",
     "mem_", "mission_", "conv_", "cand_",
+    # BIG #34 camera ecosystem: observations, ingest sessions.
+    # Observation ids use the existing obs-/obs_ spellings.
+    "obs_", "obs-", "cing_",
 )
 
 
