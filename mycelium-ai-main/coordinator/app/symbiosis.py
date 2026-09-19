@@ -34,7 +34,46 @@ KNOWN_PREFIXES = (
     "obs_", "obs-", "cing_",
     # BIG #35 workshop: models, materials, fab jobs.
     "mdl_", "mat_", "fabjob_",
+    # BIG #41 V2 symbiosis: nodes (machine↔node, device↔node),
+    # research runs + dossiers (research↔project), automation
+    # runs (run↔project), foods + meals (health↔food,
+    # food↔project). Finance/energy entity stores do not exist
+    # yet — no prefixes invented for them.
+    "node_", "node-", "res_", "dos_", "auto_", "food_",
+    "meal_",
 )
+
+#: Closed symbiosis predicates (BIG #41): the union of the two
+#: existing closed sets (INVENTory relationships + camera
+#: links). Real INVENTory edges always use relationship verbs;
+#: proposals use link verbs. Unknown verbs never gain meaning:
+#: proposal-time input is refused, display maps to "related".
+SYMBIOSIS_PREDICATES = frozenset({
+    "used_in", "uses", "related_to", "part_of", "contains",
+    "became", "led_to", "depends_on", "produced_by",
+    "stored_in", "component_of", "stored_at", "supports",
+    "evidence_for",
+})
+
+
+def check_predicate(verb: str) -> str:
+    """Strict predicate check for new proposal input."""
+    cleaned = str(verb or "").strip()[:40]
+    if cleaned not in SYMBIOSIS_PREDICATES:
+        raise ValueError(
+            f"Unknown symbiosis predicate '{verb}'; expected "
+            f"one of {sorted(SYMBIOSIS_PREDICATES)}")
+    return cleaned
+
+
+def display_predicate(verb: str) -> str:
+    """Display mapping for stored edge verbs. Unknown verbs
+    render as "related" — edges are never hidden, meanings are
+    never invented."""
+    cleaned = str(verb or "").strip()[:40]
+    if cleaned in SYMBIOSIS_PREDICATES:
+        return cleaned
+    return "related"
 
 
 def clean_entity(entity_id: str) -> str:
@@ -106,7 +145,8 @@ async def for_entity(entity_id: str, depth: int = 1) -> dict:
         symbioses.append({
             "entity_a": cleaned,
             "entity_b": other,
-            "predicate": str(link.get("predicate", "related")),
+            "predicate": display_predicate(
+                link.get("predicate", "related")),
             "state": classify_edge(link.get("provenance")),
             "provenance": link.get("provenance", {}),
         })

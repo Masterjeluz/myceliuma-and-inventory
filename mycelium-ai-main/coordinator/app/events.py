@@ -40,6 +40,8 @@ VALID_EVENT_TYPES = frozenset({
     "mission.failed",
     "task.queued",
     "task.assigned",
+    # BIG #41 V2 remote mesh: delegation audit (who → whom).
+    "task.delegated",
     "task.running",
     "task.completed",
     "task.failed",

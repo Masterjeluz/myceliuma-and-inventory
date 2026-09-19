@@ -333,7 +333,7 @@ from .routing import (
     requirements_from_payload,
     route_task,
 )
-from .schemas import AdviseRequest, AdviseResponse, AdvancedOpBody, CadDocumentBody, CadOpBody, CadPartBody, CampaignBody, CameraRegisterBody, CaptureCloseBody, CaptureOpenBody, ChatMissionBody, ChatRequest, ChatResponse, ClaimedTask, DecideApprovalBody, DesktopActionBody, DesktopClaimBody, DesktopDecisionBody, DesktopDispatchBody, DesktopResultBody,     DistEnvelopeBody, DroneCreateBody, DroneMissionApproveBody, DroneMissionBody,     FabGenerateBody, FabSliceBody, FamiliarCreateBody, FoodCreateBody, GarminImportBody, GitCommitBody, HealthMeasureBody, Heartbeat, InstagramImportBody,     InterfaceChatBody, IntegrationEnvelopeBody, IntegrationKeyBody, IntegrationTriggerBody, InventoryWriteBody, JobRunBody, LiveContextBody, LiveProposeBody, LiveSessionBody, MealCreateBody, MealItemBody, MemoryConsolidateBody, MemoryCreateBody, MemoryRetrieveBody, MemoryVerifyBody,     MissionApproveBody, MissionCreateBody, MissionRunBody, MissionStepBody, NodeRegistration, NodeRotateBody,     NotifyBody, OperatorBody, OutboxAckBody, OutboxEnqueueBody, PhoneCameraBody,     PlanBody, PlanToProposalBody, PipelinePlanBody, PrintCancelBody, PrintProposeBody, PrinterRegisterBody, PrinterSelectBody, PromptEditBody, ResearchAdvanceBody, ResearchClaimBody, ResearchRecordBody, ResearchSourceBody, RobotActionBody, RobotApproveBody, RobotCreateBody, RobotSafetyBody, RobotTelemetryBody, SessionOpenBody,     StreamStartBody, SuggestStepsBody, SkillAcceptBody, SkillAdvanceBody, SkillCreateBody, SkillDiscoverBody, SkillEvidenceBody, SpoolCreateBody, SyncApplyBody, TaskAssignBody, TaskCreate, TaskFromProposalBody, TaskResult, TaskRouteBody,     TemplateMissionBody, TransformBody, TwinLinkBody, VisionAnalyzeBody, VisionProposeBody, VoiceApprovalRequestBody, VoiceApproveBody, VoiceChatBody,     VoiceSynthesizeBody, VoiceTranscribeBody, WriteDecisionBody, CommandBody, RecoverBody, AgendaImportBody, BootstrapBody, ResearchRunBody, ResearchExecuteBody, PresenceTriageBody, PresenceNotifyBody
+from .schemas import AdviseRequest, AdviseResponse, AdvancedOpBody, CadDocumentBody, CadOpBody, CadPartBody, CampaignBody, CameraRegisterBody, CaptureCloseBody, CaptureOpenBody, ChatMissionBody, ChatRequest, ChatResponse, ClaimedTask, DecideApprovalBody, DesktopActionBody, DesktopClaimBody, DesktopDecisionBody, DesktopDispatchBody, DesktopResultBody,     DistEnvelopeBody, DroneCreateBody, DroneMissionApproveBody, DroneMissionBody,     FabGenerateBody, FabSliceBody, FamiliarCreateBody, FoodCreateBody, GarminImportBody, GitCommitBody, HealthMeasureBody, Heartbeat, InstagramImportBody,     InterfaceChatBody, IntegrationEnvelopeBody, IntegrationKeyBody, IntegrationTriggerBody, InventoryWriteBody, JobRunBody, LiveContextBody, LiveProposeBody, LiveSessionBody, MealCreateBody, MealItemBody, MemoryConsolidateBody, MemoryCreateBody, MemoryRetrieveBody, MemoryVerifyBody,     MissionApproveBody, MissionCreateBody, MissionRunBody, MissionStepBody, NodeRegistration, NodeRotateBody,     NotifyBody, OperatorBody, OutboxAckBody, OutboxEnqueueBody, PhoneCameraBody,     PlanBody, PlanToProposalBody, PipelinePlanBody, PrintCancelBody, PrintProposeBody, PrinterRegisterBody, PrinterSelectBody, PromptEditBody, ResearchAdvanceBody, ResearchClaimBody, ResearchRecordBody, ResearchSourceBody, RobotActionBody, RobotApproveBody, RobotCreateBody, RobotSafetyBody, RobotTelemetryBody, SessionOpenBody,     StreamStartBody, SuggestStepsBody, SkillAcceptBody, SkillAdvanceBody, SkillCreateBody, SkillDiscoverBody, SkillEvidenceBody, SpoolCreateBody, SyncApplyBody, TaskAssignBody, TaskCreate, TaskFromProposalBody, TaskResult, TaskRouteBody,     TemplateMissionBody, TransformBody, TwinLinkBody, VisionAnalyzeBody, VisionProposeBody, VoiceApprovalRequestBody, VoiceApproveBody, VoiceChatBody,     VoiceSynthesizeBody, VoiceTranscribeBody, WriteDecisionBody, CommandBody, RecoverBody, AgendaImportBody, BootstrapBody, ResearchRunBody, ResearchExecuteBody, PresenceTriageBody, PresenceNotifyBody, MeshDelegateBody, MeshPreviewBody
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 logger = logging.getLogger("mycelium.coordinator")
@@ -643,7 +643,29 @@ NODE_PUBLIC_COLUMNS = (
 )
 
 
-def _node_to_json(row) -> dict:
+def _assigned_tasks_map() -> dict:
+    """Nodes → their currently assigned task (if any). One
+    indexed query; best-effort (empty on any failure). Drives
+    the `current_task` node field and Routing 2.0 workload
+    hints. Read-only."""
+    try:
+        with connection() as db:
+            rows = db.execute(
+                "SELECT id, kind, assigned_node_id FROM tasks "
+                "WHERE status='assigned' AND assigned_node_id "
+                "IS NOT NULL ORDER BY id ASC").fetchall()
+    except Exception:
+        return {}
+    tasks: dict[str, dict] = {}
+    for row in rows:
+        node_id = str(row["assigned_node_id"] or "")
+        if node_id and node_id not in tasks:
+            tasks[node_id] = {"task_id": row["id"],
+                              "kind": str(row["kind"] or "")}
+    return tasks
+
+
+def _node_to_json(row, tasks_by_node: dict | None = None) -> dict:
     record = dict(row)
     for key in ("capabilities", "models", "executors", "resources",
                 "telemetry", "hardware", "compute_capabilities", "energy_state"):
@@ -661,6 +683,12 @@ def _node_to_json(row) -> dict:
         record["coordinator_capable"] = False
     # Compute health status from telemetry freshness and node state
     record["health_status"] = _compute_health_status(record)
+    # BIG #41: currently executing task, if any (read-only join).
+    if tasks_by_node is None:
+        record["current_task"] = None
+    else:
+        record["current_task"] = tasks_by_node.get(
+            record.get("node_id", ""))
     return record
 
 
@@ -695,7 +723,8 @@ def list_nodes() -> list[dict]:
         rows = db.execute(
             f"SELECT {NODE_PUBLIC_COLUMNS} FROM nodes "
             "ORDER BY last_seen DESC").fetchall()
-    return [_node_to_json(row) for row in rows]
+    tasks_by_node = _assigned_tasks_map()
+    return [_node_to_json(row, tasks_by_node) for row in rows]
 
 
 @app.get("/api/v1/nodes/{node_id}")
@@ -706,7 +735,87 @@ def get_node(node_id: str) -> dict:
             (node_id,)).fetchone()
     if row is None:
         raise HTTPException(404, "Node is not registered")
-    return _node_to_json(row)
+    return _node_to_json(row, _assigned_tasks_map())
+
+
+@app.get("/api/v1/nodes/{node_id}/reality")
+def node_reality(node_id: str) -> dict:
+    """Live hardware reality for one node (BIG #41).
+
+    Derived now from the registry row + assigned task:
+    online state, heartbeat age, telemetry summary, hardware
+    with ADVERTISED/OBSERVED trust, compute, energy, role,
+    current task. VERIFIED is defined but never auto-derived:
+    only an explicit human link (like printer twins) may
+    verify a claim. Read-only; unknown nodes 404.
+    """
+    from .nodes import hardware_trust
+    with connection() as db:
+        row = db.execute(
+            f"SELECT {NODE_PUBLIC_COLUMNS} FROM nodes WHERE node_id=?",
+            (node_id,)).fetchone()
+    if row is None:
+        raise HTTPException(404, "Node is not registered")
+    record = _node_to_json(row, _assigned_tasks_map())
+    telemetry = record.get("telemetry", {})
+    if not isinstance(telemetry, dict):
+        telemetry = {}
+    try:
+        from datetime import datetime, timezone
+        seen = record.get("last_seen", "")
+        moment = datetime.fromisoformat(seen)
+        if moment.tzinfo is None:
+            moment = moment.replace(tzinfo=timezone.utc)
+        heartbeat_age_s = int(
+            (datetime.now(timezone.utc) - moment).total_seconds())
+    except (ValueError, TypeError):
+        heartbeat_age_s = -1
+    hardware = []
+    for item in record.get("hardware", []) or []:
+        if not isinstance(item, dict):
+            continue
+        trust, why = hardware_trust(
+            item, record.get("telemetry_timestamp", ""))
+        hardware.append({
+            "kind": str(item.get("kind", "")),
+            "identifier": str(item.get("identifier", "")),
+            "status": str(item.get("status", "")),
+            "details": item.get("details", {})
+            if isinstance(item.get("details"), dict) else {},
+            "trust": trust,
+            "trust_reason": why,
+        })
+    compute = [entry for entry in
+               (record.get("compute_capabilities", []) or [])
+               if isinstance(entry, dict)]
+    return {
+        "node_id": record["node_id"],
+        "derived_status": record.get("derived_status", "unknown"),
+        "health_status": record.get("health_status", "UNKNOWN"),
+        "heartbeat_age_seconds": heartbeat_age_s,
+        "telemetry": {key: telemetry.get(key) for key in
+                      ("cpu_percent", "cpu_count",
+                       "memory_percent", "memory_total_mb",
+                       "memory_available_mb", "disk_percent",
+                       "disk_total_gb", "disk_free_gb",
+                       "temperature_celsius", "uptime_seconds",
+                       "load_average")},
+        "telemetry_timestamp": record.get("telemetry_timestamp",
+                                          ""),
+        "hardware": hardware,
+        "compute_capabilities": [
+            {"capability": str(entry.get("capability", "")),
+             "status": str(entry.get("status", ""))}
+            for entry in compute],
+        "energy_state": record.get("energy_state", {})
+        if isinstance(record.get("energy_state"), dict) else {},
+        "roles": _node_role_list(record),
+        "current_task": record.get("current_task"),
+        "last_seen": record.get("last_seen", ""),
+        "provenance": {"source_type": "derived",
+                       "creator_id": "hardware-reality",
+                       "human_verified": False},
+    }
 
 
 @app.post("/api/v1/nodes/{node_id}/rotate-token")
@@ -830,9 +939,11 @@ def _routing_candidates(now_str: str | None = None) -> list[dict]:
         rows = db.execute(
             f"SELECT {NODE_PUBLIC_COLUMNS}, auth_token_hash "
             "FROM nodes").fetchall()
+    assigned = _assigned_tasks_map()
+    workload = {node_id: 1 for node_id in assigned}
     candidates = []
     for row in rows:
-        record = _node_to_json(row)
+        record = _node_to_json(row, assigned)
         stored = str(record.get("status", "unknown"))
         derived = derive_status(stored, record.get("last_seen", ""),
                                 now_str)
@@ -860,6 +971,9 @@ def _routing_candidates(now_str: str | None = None) -> list[dict]:
                 "telemetry_timestamp", ""),
             "health_status": record.get("health_status",
                                         "UNKNOWN"),
+            # BIG #41: Routing 2.0 workload hint (ordering
+            # only, never eligibility).
+            "running_tasks": workload.get(record["node_id"], 0),
         })
     return candidates
 
@@ -890,13 +1004,25 @@ def _decision_for(task_id: int, requirements, policy,
 @app.post("/api/v1/tasks/route")
 def route_preview(body: TaskRouteBody) -> dict:
     """Dry-run routing: requirements + policy in, decision out.
-    Nothing is assigned, queued or started here."""
+    Nothing is assigned, queued or started here. The response
+    carries a transparent WHY block (BIG #41 Routing 2.0):
+    eligible / waiting / blocked / unavailable with reasons."""
+    from .routing import explain_decision
     try:
         requirements = check_requirements(body.requirements or {})
     except ValueError as error:
         raise HTTPException(status_code=422, detail=str(error))
     decision = _decision_for(0, requirements, body.policy or {})
-    return decision.model_dump(mode="json")
+    stamped = decision.model_dump(mode="json")
+    try:
+        stamped["why"] = explain_decision(
+            decision, _routing_candidates())
+    except Exception:
+        stamped["why"] = {"summary": "explanation unavailable",
+                          "eligible": [], "waiting": [],
+                          "blocked": [], "unavailable": [],
+                          "lines": {}}
+    return stamped
 
 
 @app.post("/api/v1/tasks/{task_id}/assign")
@@ -7627,6 +7753,39 @@ async def _world_seeds() -> list:
     return seeds[:12]
 
 
+def _world_state_strip() -> str:
+    """Compact living world-state for the cockpit (BIG #41).
+
+    Living state + presence counts + top attention, derived
+    now from sync sources only (async-safe). Best-effort:
+    empty string on any failure, never breaks the page.
+    """
+    from . import ui as _ui
+    try:
+        from .living_state import current_state
+        from .presence import attention_snapshot
+        state = current_state()
+        snapshot = attention_snapshot(limit=60)
+        counts = snapshot.get("counts", {})
+        top = "".join(
+            f"<li><a href=\"{_ui.esc(item['open_href'])}\">"
+            f"{_ui.esc(item['title'][:80])}</a></li>"
+            for item in snapshot.get("bands", {}).get(
+                "needs", [])[:3])
+        return (
+            f"<p>{_ui.esc(state.get('glyph', ''))} "
+            f"<b>{_ui.esc(state.get('line', ''))}</b> · "
+            f"{counts.get('needs', 0)} waiting · "
+            f"{counts.get('discovered', 0)} discoveries · "
+            f"{counts.get('offline', 0)} offline — "
+            f"<a href=\"/presence\">attention →</a> · "
+            f"<a href=\"/api/v1/ecosystem/overview\">"
+            f"overview (JSON)</a></p>"
+            f"{f'<ul>{top}</ul>' if top else ''}")
+    except Exception:
+        return ""
+
+
 @app.get("/world", response_class=HTMLResponse)
 async def world_page(entity_id: str = "", depth: int = 1,
                      show: str = "missions,nodes",
@@ -7669,7 +7828,8 @@ async def world_page(entity_id: str = "", depth: int = 1,
     <button type="submit">Ask Mycelium</button></form></div>
     <div class="panel"><h2>Ecosystem — alive at a glance</h2>
     <p><a href="/nodes">Nodes</a> · <a href="/conversations">Conversations</a> · <a href="/research">Research</a> · <a href="/missions">Missions</a> · <a href="/memory">Memory</a> · <a href="/cameras">Cameras</a> · <a href="/workshop/3d">3D</a> · <a href="/mobile">Mobile input</a> · <a href="/activity">Activity</a> · <a href="/search">Search</a></p>
-    <p class="muted">Jelles ↔ chat ↔ mobile ↔ brain ↔ missions ↔ research ↔ memory ↔ INVENTory ↔ cameras ↔ 3D ↔ projects ↔ files ↔ nodes ↔ fabrication ↔ verification — one workshop, no loose pages. Statuses stay honest: REAL / TEST / SIMULATED / UNAVAILABLE.</p></div>
+    <p class="muted">Jelles ↔ chat ↔ mobile ↔ brain ↔ missions ↔ research ↔ memory ↔ INVENTory ↔ cameras ↔ 3D ↔ projects ↔ files ↔ nodes ↔ fabrication ↔ verification — one workshop, no loose pages. Statuses stay honest: REAL / TEST / SIMULATED / UNAVAILABLE.</p>
+    {_world_state_strip()}</div>
     {_last_flow_panel()}
     <div class="panel"><h2>Layers & truth</h2>
     <form method="get" action="/world" aria-label="Graph layers and filters">
@@ -9388,6 +9548,10 @@ def _mobile_nodes_html(dash: dict) -> str:
             bits.append(f"power {_ui.esc(str(energy.get('source')))}"
                         + (f" {level}%" if level is not None
                            else ""))
+        current = node.get("current_task")
+        if isinstance(current, dict) and current.get("task_id"):
+            bits.append(f"busy: task #{_ui.esc(str(current.get('task_id')))} "
+                        f"({_ui.esc(str(current.get('kind', '')))})")
         return "<br>".join(
             f"<small class=\"muted\">{bit}</small>" for bit in bits)
 
@@ -9647,6 +9811,16 @@ async def api_ecosystem_entity(entity_id: str, depth: int = 1) -> dict:
         return await entity_context(entity_id, depth)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
+
+
+@app.get("/api/v1/ecosystem/overview")
+def api_ecosystem_overview() -> dict:
+    """One coherent ecosystem model (BIG #41 V2 foundation):
+    exists / connected / happening / needs / next /
+    nodes-can-do / blocked / growing. Composed from existing
+    stores, read-only."""
+    from .ecosystem import ecosystem_overview
+    return ecosystem_overview()
 
 
 @app.get("/api/v1/notifications/capability")
@@ -11727,16 +11901,21 @@ async def api_symbiosis(entity_id: str = "",
 @app.get("/api/v1/craft")
 async def api_craft(entity_id: str = "", depth: int = 1) -> dict:
     from .symbiosis import clean_entity
-    from .craft import craft_tree
+    from .craft import craft_tree, stage_states
     try:
         cleaned = clean_entity(entity_id)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
     try:
-        return await craft_tree(cleaned, depth)
+        tree = await craft_tree(cleaned, depth)
     except (InventoryRefusedError, InventoryUnavailable,
             ValueError) as exc:
         raise HTTPException(status_code=503, detail=str(exc))
+    try:
+        tree["states"] = stage_states(tree)
+    except Exception:
+        tree["states"] = []
+    return tree
 
 
 @app.get("/api/v1/mesh/topology")
@@ -11760,6 +11939,183 @@ def api_mesh_validate(body: dict) -> dict:
                 body.get("payload"), dict) else {})
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
+
+
+# =============================================================================
+# BIG #41 — V2 remote mesh: targeted delegation through the task queue.
+# Validate → authenticate → eligibility precheck → create queued
+# task → assign to the pinned target (rollback on failure).
+# The target must still pull/claim (liveness + credential
+# re-checked at claim). Nothing is pushed, nothing executes here.
+# =============================================================================
+
+
+def _mesh_authenticate(requesting_node: str,
+                       node_token: str | None) -> str:
+    """Authenticate a delegation requester. Unknown nodes 404;
+    bad credentials 403; legacy (never bound) allowed like the
+    claim path — delegation only queues work that still must
+    be claimed by an eligible node."""
+    with connection() as db:
+        row = db.execute(
+            "SELECT auth_token_hash FROM nodes WHERE node_id=?",
+            (requesting_node,)).fetchone()
+    if row is None:
+        raise HTTPException(404, "Node is not registered")
+    try:
+        return authenticate(requesting_node,
+                            row["auth_token_hash"], node_token)
+    except NodeAuthError:
+        raise HTTPException(status_code=403,
+                            detail="node credential rejected")
+
+
+def _mesh_receipt(task_id: int, checked: dict) -> dict:
+    """WHAT/WHY/WHERE/CAPABILITY/RISK/RESULT receipt. The RISK
+    line is static honest mechanics, never a per-task promise."""
+    target = checked.get("target_node", "")
+    return {
+        "task_id": task_id,
+        "status": "queued+assigned — target must still claim",
+        "what": f"{checked['task_kind']} via capability "
+                f"{checked['capability']}",
+        "why": checked.get("reason", "") or
+               "node→coordinator→node delegation",
+        "where": f"coordinator queue → {target}",
+        "capability": checked["capability"],
+        "risk": "Read-only kind on the target node; result "
+                "returns via task completion; no shell, no "
+                "standing permission; lease 300s, max 3 attempts; "
+                "requester gains no capabilities.",
+        "result_href": f"/api/v1/tasks/by-id/{task_id}",
+        "activity_href": "/activity",
+        "timeout_seconds": checked.get("timeout_seconds", 60),
+        "target_node": target,
+        "requesting_node": checked["requesting_node"],
+    }
+
+
+@app.post("/api/v1/mesh/preview")
+def api_mesh_preview(body: MeshPreviewBody) -> dict:
+    """Dry-run delegation: validate + routing explanation.
+    Creates nothing."""
+    from .nodemesh import validate_delegation
+    from .routing import check_requirements, explain_decision
+    try:
+        checked = validate_delegation(
+            body.requesting_node, body.task_kind,
+            body.capability, body.payload,
+            target_node=body.target_node,
+            timeout_seconds=body.timeout_seconds,
+            reason=body.reason)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    explanation = {"summary": "no pinned target; any eligible "
+                              "node may claim",
+                   "eligible": [], "waiting": [], "blocked": [],
+                   "unavailable": [], "lines": {}}
+    if checked.get("target_node"):
+        try:
+            requirements = check_requirements(
+                {"required_capabilities": [checked["capability"]]})
+            decision = _decision_for(
+                0, requirements, {},
+                only_node=checked["target_node"])
+            explanation = explain_decision(
+                decision, _routing_candidates())
+        except HTTPException as exc:
+            raise exc
+        except ValueError as exc:
+            raise HTTPException(status_code=422,
+                                detail=str(exc))
+    return {"valid": True, "checked": checked,
+            "why": explanation,
+            "risk": _mesh_receipt(0, checked)["risk"],
+            "created": False}
+
+
+@app.post("/api/v1/mesh/delegate", status_code=201)
+def api_mesh_delegate(body: MeshDelegateBody) -> dict:
+    """Delegate one bounded task to a pinned target node.
+
+    Authenticate → validate → eligibility precheck → create →
+    assign. Assign failure rolls the queued row back so a task
+    meant for one node can never drift to another. The target
+    must still pull/claim it.
+    """
+    from .nodemesh import validate_delegation
+    from .routing import check_requirements
+    _mesh_authenticate(body.requesting_node, body.node_token)
+    if not (body.target_node or "").strip():
+        raise HTTPException(status_code=422,
+                            detail="delegate pins an explicit "
+                                   "target_node; untargeted dispatch "
+                                   "is POST /api/v1/tasks")
+    try:
+        checked = validate_delegation(
+            body.requesting_node, body.task_kind,
+            body.capability, body.payload,
+            target_node=body.target_node,
+            timeout_seconds=body.timeout_seconds,
+            reason=body.reason)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    try:
+        requirements = check_requirements(
+            {"required_capabilities": [checked["capability"]]})
+        decision = _decision_for(0, requirements, {},
+                                 only_node=checked["target_node"])
+    except (HTTPException, ValueError) as exc:
+        raise HTTPException(status_code=409, detail=
+                            f"target not currently eligible; "
+                            f"nothing queued ({exc})")
+    if decision.selected_node_id != checked["target_node"]:
+        raise HTTPException(
+            status_code=409,
+            detail="target not currently eligible; nothing "
+                   "queued ("
+                   + "; ".join(reason for entry in
+                               decision.rejected
+                               for reason in entry.reasons)[:240]
+                   + ")")
+    created = create_task(TaskCreate(
+        kind=checked["task_kind"], payload=dict(checked["payload"]),
+        required_capabilities=[checked["capability"]],
+        priority=body.priority,
+        requirements={"required_capabilities":
+                      [checked["capability"]]}))
+    task_id = int(created["id"])
+    try:
+        assign_task(task_id, TaskAssignBody(
+            node_id=checked["target_node"], policy={}))
+    except HTTPException as exc:
+        with connection() as db:
+            db.execute("DELETE FROM tasks WHERE id=? AND "
+                       "status='queued'", (task_id,))
+        logger.info("mesh_delegate_rolled_back task_id=%s "
+                    "target=%s cause=%s", task_id,
+                    checked["target_node"], exc.detail)
+        raise HTTPException(
+            status_code=409,
+            detail=f"target refused at assign; nothing queued "
+                   f"({exc.detail})")
+    logger.info("mesh_delegated task_id=%s from=%s target=%s "
+                "kind=%s", task_id, checked["requesting_node"],
+                checked["target_node"], checked["task_kind"])
+    try:
+        from .events import new_event as _bus_new, \
+            save_event as _bus_save
+        _bus_save(_bus_new(
+            "task.delegated",
+            f"Task {task_id} ({checked['task_kind']}) "
+            f"{checked['requesting_node']} → "
+            f"{checked['target_node']}: "
+            f"{checked.get('reason', '')[:120]}",
+            task_id=str(task_id),
+            node_id=checked["target_node"]))
+    except Exception:
+        pass
+    return _mesh_receipt(task_id, checked)
 
 
 # =============================================================================
@@ -12197,7 +12553,13 @@ async def craft_page(entity_id: str = "", depth: int = 1) -> str:
     detail = ""
     if entity_id:
         try:
+            from .craft import stage_states as _stage_states
             tree = await craft_tree(entity_id, depth)
+            try:
+                states = {entry["key"]: entry
+                          for entry in _stage_states(tree)}
+            except Exception:
+                states = {}
             blocks = []
             for stage in tree["stages"]:
                 nodes = "".join(
@@ -12206,13 +12568,17 @@ async def craft_page(entity_id: str = "", depth: int = 1) -> str:
                     f"<span class=\"muted\">[{_ui.esc(node['kind'])}"
                     f"]</span></li>"
                     for node in stage["nodes"][:8])
+                state = states.get(stage["key"], {})
+                mark = state.get("glyph", "")
+                word = state.get("state", "")
                 cls = "full" if stage["nodes"] else "empty"
                 stage_list_html = nodes or (
                     '<li class="muted">Not grown yet.</li>')
                 blocks.append(
                     f"<div class=\"craft-stage {cls}\">"
                     f"<h3>{_ui.esc(stage['glyph'])} "
-                    f"{_ui.esc(stage['title'])}</h3>"
+                    f"{_ui.esc(stage['title'])} "
+                    f"{_ui.chip(f'{mark} {word}') if word else ''}</h3>"
                     f"<ul>{stage_list_html}</ul></div>")
             gaps = "".join(
                 f"<li>{_ui.esc(gap['hint'])} "

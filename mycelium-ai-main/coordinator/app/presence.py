@@ -1311,8 +1311,13 @@ def morning_presence_sections() -> dict[str, list[str]]:
     needs = [_line(item) for item in bands["needs"][:8]] or [
         "Nothing needs you right now."]
     discoveries = [
-        _line(item) for item in bands["discovered"][:8]] or [
-        "No new discoveries."]
+        _line(item) for item in bands["discovered"][:6]]
+    # Craft gaps are growth-relevant discoveries of missing
+    # links (BIG #41): honestly worded, capped at two.
+    discoveries += [
+        _line(item) for item in bands["waiting"]
+        if item["type"] == "craft_gap"][:2]
+    discoveries = discoveries[:8] or ["No new discoveries."]
     resources = [
         _line(item) for item in bands["available"][:8]] or [
         "No special resources online right now."]

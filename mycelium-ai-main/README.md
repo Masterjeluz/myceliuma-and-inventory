@@ -285,7 +285,7 @@ coordinator/app/context_engine.py, living_state.py,
 desktop_agent/   standalone lokale agent (poll, claim, voer uit, rapporteer)
 node_client/     lichte client voor seed/worker/core nodes (pull-only, token-optie)
 docs/            architectuurstatus, roadmap, principes, oorsprong
-tests/           1356 tests (pytest -v)
+tests/           1380 tests (pytest -v)
 ```
 
 Zie `docs/ARCHITECTURE_STATUS.md` (wat het systeem is),
@@ -307,10 +307,10 @@ Zie `docs/ARCHITECTURE_STATUS.md` (wat het systeem is),
 `docs/knowledge-lifecycle.md`, `docs/research-routing.md`,
 `docs/ROADMAP-V2.md`, `docs/living-automation.md`,
 `docs/automation-security.md`, `docs/hardware-reality-layer.md`,
-`docs/presence-ecosystem.md`,
+`docs/presence-ecosystem.md`, `docs/v2-ecosystem.md`,
 `docs/mobile-node-flow.md`, `docs/linux-node-setup.md`,
 `docs/camera-workflow.md`, `docs/3d-workflow.md` en
-`docs/ROADMAP.md` (wat volgt). Teststatus: **1356 passed**.
+`docs/ROADMAP.md` (wat volgt). Teststatus: **1380 passed**.
 
 ## Bijdragen
 

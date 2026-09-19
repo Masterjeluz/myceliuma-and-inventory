@@ -285,22 +285,65 @@ def guide_items(limit: int = 12) -> list[dict]:
                 f"Hardware '{hw.get('identifier', '?')}' ({hw.get('kind', '?')}) on '{name}' is registered but disconnected.",
                 "Device was previously seen but not currently connected.",
                 "Open nodes", "/nodes"))
-        # Research waiting for eligible node
-        from .routing import route_task, check_requirements
-        from . import main as _main2
+        # Research waiting / unlock: one honest readiness check
+        # shared with presence (BIG #41 Guide 2.0). The old inline
+        # check passed raw registry rows without fresh/auth
+        # flags, so it cried wolf on healthy meshes.
         try:
-            research_req = check_requirements({
-                "required_capabilities": ["research.fetch", "analysis.ollama"],
-            })
-            decision = route_task(research_req, nodes_data)
-            if decision.selected_node_id is None:
-                items.append(_item(
-                    "node", "🔬",
-                    "Research is waiting: no eligible node with Ollama + fetch.",
-                    "Tasks queue until a capable, fresh, authenticated node appears.",
-                    "Open nodes", "/nodes"))
+            from .presence import research_readiness
+            readiness = research_readiness()
         except Exception:
-            pass
+            readiness = {"eligible": [], "unavailable": [],
+                         "text": "Routing unavailable.",
+                         "checked": False}
+        if readiness.get("checked") and not readiness.get(
+                "eligible"):
+            items.append(_item(
+                "node", "🔬",
+                "Research is waiting: no eligible node with Ollama + fetch.",
+                readiness.get("text", "Tasks queue until a "
+                                       "capable, fresh, authenticated "
+                                       "node appears."),
+                "Open nodes", "/nodes"))
+        elif readiness.get("eligible"):
+            first = readiness["eligible"][0]
+            items.append(_item(
+                "node", "🔓",
+                f"Research unlocked: '{first}' can run it now.",
+                "A capable, fresh, authenticated node is "
+                "available. Queue research and it routes there.",
+                "Queue research", "/research"))
+        # WHAT IS BLOCKING ME: failed/blocked automation + missions
+        try:
+            from .automation import list_runs as _auto_runs
+            stuck = [run for run in _auto_runs(limit=20)
+                     if run.state in ("failed", "blocked")][:2]
+        except Exception:
+            stuck = []
+        for run in stuck:
+            items.append(_item(
+                "mission", "⚠",
+                f"Automation {run.state}: {run.goal[:90]}",
+                "A bound or refusal stopped the run. Unlock it "
+                "by inspecting the exact failure, then resume "
+                "or cancel — the gate re-checks live state.",
+                "Inspect run", f"/automation/{run.run_id}"))
+        try:
+            from .missions import list_missions as _list_missions
+            dead = [m for m in _list_missions(limit=50)
+                    if m.status in ("failed", "blocked")][:2]
+        except Exception:
+            dead = []
+        for mission in dead:
+            items.append(_item(
+                "mission", "⚠",
+                f"Mission {mission.status}: "
+                f"{mission.goal[:90]}",
+                "A step failed safely; nothing executed beyond "
+                "the plan. Unlock it by reviewing the failed "
+                "step, then resume or cancel.",
+                "Open mission",
+                f"/missions/{mission.mission_id}"))
     except Exception:
         pass
     try:

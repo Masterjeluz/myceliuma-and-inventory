@@ -418,6 +418,8 @@ def nodes_panel() -> dict:
                 "capabilities": [c.get("capability") for c in compute if isinstance(c, dict)] if isinstance(compute, list) else [],
             },
             "energy": entry.get("energy_state", {}) if isinstance(entry.get("energy_state"), dict) else {},
+            "current_task": entry.get("current_task")
+            if isinstance(entry.get("current_task"), dict) else None,
             "last_seen": entry.get("last_seen", ""),
         })
     return {

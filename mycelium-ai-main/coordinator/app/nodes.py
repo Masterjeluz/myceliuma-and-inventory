@@ -599,6 +599,48 @@ def check_energy_state(values) -> dict:
     return cleaned
 
 
+#: Hardware claim trust levels (BIG #41 live hardware reality).
+#: ADVERTISED: the node said so (default, never a fact).
+#: OBSERVED: connected right now AND the report is fresh
+#: (< 5 min) — live-observed, still not verified.
+#: VERIFIED: reserved for an explicit human link (like printer
+#: twins). No automated path may ever derive VERIFIED.
+HARDWARE_TRUST = ("ADVERTISED", "OBSERVED", "VERIFIED")
+
+TELEMETRY_FRESH_SECONDS = 300
+
+
+def hardware_trust(item: dict, telemetry_timestamp: str = ""
+                   ) -> tuple[str, str]:
+    """Trust level + reason for one hardware report. Pure.
+
+    Never returns VERIFIED: claims are advertisements until a
+    human links them, and that link lives outside this
+    function by design.
+    """
+    if not isinstance(item, dict):
+        return "ADVERTISED", "not a hardware report"
+    if str(item.get("status", "")).lower() != "connected":
+        return "ADVERTISED", "not currently connected"
+    stamp = str(telemetry_timestamp or "")
+    if not stamp:
+        return "ADVERTISED", "no telemetry timestamp"
+    try:
+        from datetime import datetime, timezone
+        moment = datetime.fromisoformat(stamp)
+        if moment.tzinfo is None:
+            moment = moment.replace(tzinfo=timezone.utc)
+        age = (datetime.now(timezone.utc) - moment
+               ).total_seconds()
+    except (ValueError, TypeError):
+        return "ADVERTISED", "telemetry timestamp unparsable"
+    if age < 0 or age > TELEMETRY_FRESH_SECONDS:
+        return "ADVERTISED", \
+            f"report older than {TELEMETRY_FRESH_SECONDS}s"
+    return "OBSERVED", \
+        f"connected with {int(age)}s-old telemetry"
+
+
 def compute_node_health(record: dict) -> dict:
     """Compute node health status from record. Returns dict with status and details."""
     derived = record.get("derived_status", "unknown")

@@ -18,6 +18,18 @@ Eligibility (all hard, any failure rejects the node):
 8. required hardware present (when specified) - BIG #39
 9. required compute capabilities present (when specified) - BIG #39
 
+Every rejection carries a verdict (BIG #41, Routing 2.0):
+
+- "waiting": transient — the node could become eligible
+  (not fresh, stale/offline status, not authenticated,
+  missing/stale/invalid telemetry, health below minimum).
+- "blocked": administrative — a disabled node never routes
+  until an operator re-enables it.
+- "unavailable": structural for this task — missing
+  capabilities, models, executor, locality, hardware or
+  compute. Nothing about the node is wrong; the task simply
+  does not fit.
+
 Ordering among eligible nodes (preferences, never requirements):
 
 - preferred model id present (+2 each, capped)
@@ -26,16 +38,18 @@ Ordering among eligible nodes (preferences, never requirements):
 - resource minimums met (+1): min_memory_mb, needs_gpu
 - telemetry freshness bonus (+1): recent telemetry (< 60s)
 - hardware availability bonus (+1): required hardware connected
+- idle node bonus (+1): no running tasks when the policy
+  prefers idle nodes (BIG #41)
 - deterministic tie-break: lowest node_id wins
 
-Energy and resources never disqualify; they only order. A node
-that fails a required capability is never selected regardless
-of preferences. Every decision carries inspectable reasons;
-credentials never appear in any output.
+Energy, resources and workload never disqualify; they only
+order. A node that fails a required capability is never
+selected regardless of preferences. Every decision carries
+inspectable reasons; credentials never appear in any output.
 """
 
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -91,6 +105,15 @@ class RoutingPolicy(BaseModel):
     prefer_fresh_telemetry: bool = False
     prefer_connected_hardware: bool = False
     prefer_compute_capabilities: bool = False
+    # BIG #41: Routing 2.0 — prefer nodes with no running
+    # tasks. Ordering only, never eligibility.
+    prefer_idle: bool = False
+
+
+#: Rejection verdicts (BIG #41). "waiting" is transient,
+#: "blocked" is administrative, "unavailable" means the task
+#: does not fit this node.
+NodeVerdict = Literal["waiting", "blocked", "unavailable"]
 
 
 class RejectedNode(BaseModel):
@@ -98,6 +121,7 @@ class RejectedNode(BaseModel):
 
     node_id: str = ""
     reasons: list[str] = Field(default_factory=list)
+    verdict: NodeVerdict = "unavailable"
 
 
 class RouteDecision(BaseModel):
@@ -190,25 +214,36 @@ def _node_models(node: dict) -> list[dict]:
 
 
 def _eligible(node: dict, requirements: TaskRequirements,
-              policy: RoutingPolicy) -> tuple[bool, list[str], int]:
-    """Returns (eligible, reasons, preference_score)."""
+              policy: RoutingPolicy
+              ) -> tuple[bool, list[str], int, str]:
+    """Returns (eligible, reasons, preference_score, verdict).
+
+    Verdict is "" when eligible, else one of "waiting" /
+    "blocked" / "unavailable" (BIG #41 Routing 2.0)."""
     node_id = str(node.get("node_id", "?"))
     reasons: list[str] = []
     if not node.get("fresh", False):
-        return False, [f"{node_id}: node not fresh"], 0
-    if str(node.get("status", "")) not in ("online", "busy"):
+        return False, [f"{node_id}: node not fresh"], 0, "waiting"
+    status = str(node.get("status", ""))
+    if status == "disabled":
+        return False, [f"{node_id}: status 'disabled' not live "
+                       f"(operator re-enable required)"], 0, "blocked"
+    if status not in ("online", "busy"):
         return False, [f"{node_id}: status "
-                       f"'{node.get('status', '?')}' not live"], 0
+                       f"'{node.get('status', '?')}' not live"], 0, \
+            "waiting"
     if policy.require_authenticated and not node.get(
             "authenticated", False):
-        return False, [f"{node_id}: not authenticated"], 0
+        return False, [f"{node_id}: not authenticated"], 0, \
+            "waiting"
     advertised = {str(cap).strip().lower()
                   for cap in node.get("capabilities", [])}
     missing = [cap for cap in requirements.required_capabilities
                if cap.strip().lower() not in advertised]
     if missing:
         return False, [f"{node_id}: missing "
-                       f"{', '.join(sorted(missing))}"], 0
+                       f"{', '.join(sorted(missing))}"], 0, \
+            "unavailable"
     node_types = {str(entry.get("model_type", ""))
                   for entry in _node_models(node)}
     missing_types = [kind for kind in
@@ -216,19 +251,21 @@ def _eligible(node: dict, requirements: TaskRequirements,
                      if kind not in node_types]
     if missing_types:
         return False, [f"{node_id}: missing model type "
-                       f"{', '.join(sorted(missing_types))}"], 0
+                       f"{', '.join(sorted(missing_types))}"], 0, \
+            "unavailable"
     if requirements.required_executor:
         executors = {str(item).strip().lower()
                      for item in node.get("executors", [])}
         if requirements.required_executor not in executors:
             return False, [f"{node_id}: missing executor "
-                           f"{requirements.required_executor}"], 0
+                           f"{requirements.required_executor}"], 0, \
+                "unavailable"
     want_locality = requirements.locality
     if want_locality != "any" and str(
             node.get("locality_zone", "local_network")) != want_locality:
         return False, [f"{node_id}: locality "
                        f"'{node.get('locality_zone', '?')}' does not "
-                       f"satisfy '{want_locality}'"], 0
+                       f"satisfy '{want_locality}'"], 0, "unavailable"
     # BIG #39: Hardware Reality Layer - hard gates for hardware and compute
     if requirements.required_hardware:
         node_hardware = node.get("hardware", [])
@@ -242,7 +279,8 @@ def _eligible(node: dict, requirements: TaskRequirements,
                       if hw.strip().lower() not in connected_hardware]
         if missing_hw:
             return False, [f"{node_id}: missing connected hardware "
-                           f"{', '.join(sorted(missing_hw))}"], 0
+                           f"{', '.join(sorted(missing_hw))}"], 0, \
+                "unavailable"
     if requirements.required_compute:
         node_compute = node.get("compute_capabilities", [])
         if not isinstance(node_compute, list):
@@ -255,12 +293,14 @@ def _eligible(node: dict, requirements: TaskRequirements,
                         if comp.strip().lower() not in available_compute]
         if missing_comp:
             return False, [f"{node_id}: missing available compute "
-                           f"{', '.join(sorted(missing_comp))}"], 0
+                           f"{', '.join(sorted(missing_comp))}"], 0, \
+                "unavailable"
     # BIG #39: Telemetry freshness hard gate
     if requirements.max_telemetry_age_seconds > 0:
         telemetry_ts = node.get("telemetry_timestamp", "")
         if not telemetry_ts:
-            return False, [f"{node_id}: no telemetry timestamp"], 0
+            return False, [f"{node_id}: no telemetry timestamp"], 0, \
+                "waiting"
         try:
             from datetime import datetime, timezone
             ts = datetime.fromisoformat(telemetry_ts)
@@ -269,16 +309,18 @@ def _eligible(node: dict, requirements: TaskRequirements,
             age = int((datetime.now(timezone.utc) - ts).total_seconds())
             if age > requirements.max_telemetry_age_seconds:
                 return False, [f"{node_id}: telemetry too old ({age}s > "
-                               f"{requirements.max_telemetry_age_seconds}s)"], 0
+                                f"{requirements.max_telemetry_age_seconds}s)"], 0, \
+                    "waiting"
         except (ValueError, TypeError):
-            return False, [f"{node_id}: invalid telemetry timestamp"], 0
+            return False, [f"{node_id}: invalid telemetry timestamp"], 0, \
+                "waiting"
     # BIG #39: Minimum health requirement
     if requirements.min_health:
         node_health = node.get("health_status", "UNKNOWN")
         health_order = {"ONLINE": 4, "DEGRADED": 3, "STALE": 2, "OFFLINE": 1, "UNKNOWN": 0}
         if health_order.get(node_health, 0) < health_order.get(requirements.min_health, 0):
             return False, [f"{node_id}: health {node_health} below minimum "
-                           f"{requirements.min_health}"], 0
+                           f"{requirements.min_health}"], 0, "waiting"
     # Eligible: collect positive reasons + preference score.
     score = 0
     node_model_ids = {str(entry.get("model_id", ""))
@@ -377,7 +419,23 @@ def _eligible(node: dict, requirements: TaskRequirements,
         reasons.append(f"{node_id}: required hardware {hw} connected")
     for comp in requirements.required_compute:
         reasons.append(f"{node_id}: required compute {comp} available")
-    return True, reasons, score
+    # BIG #41: Routing 2.0 — current workload as ordering hint.
+    # running_tasks comes from the coordinator projection (tasks
+    # assigned right now); unknown stays unclaimed (no bonus).
+    if policy.prefer_idle:
+        running = node.get("running_tasks")
+        if isinstance(running, bool) or not isinstance(
+                running, int) or running < 0:
+            reasons.append(f"{node_id}: workload unknown "
+                           f"(hint only, still eligible)")
+        elif running == 0:
+            score += 1
+            reasons.append(f"{node_id}: idle, no running tasks "
+                           f"(+1)")
+        else:
+            reasons.append(f"{node_id}: {running} running "
+                           f"task(s) (hint only, still eligible)")
+    return True, reasons, score, ""
 
 
 def route_task(requirements: TaskRequirements, nodes: list[dict],
@@ -391,12 +449,14 @@ def route_task(requirements: TaskRequirements, nodes: list[dict],
     for node in nodes or []:
         if not isinstance(node, dict) or not node.get("node_id"):
             continue
-        ok, reasons, score = _eligible(node, requirements, active)
+        ok, reasons, score, verdict = _eligible(
+            node, requirements, active)
         if ok:
             eligible.append((score, str(node["node_id"]), reasons))
         else:
-            rejected.append(RejectedNode(node_id=str(
-                node["node_id"]), reasons=reasons))
+            rejected.append(RejectedNode(
+                node_id=str(node["node_id"]), reasons=reasons,
+                verdict=verdict or "unavailable"))
     eligible.sort(key=lambda entry: (-entry[0], entry[1]))
     rejected.sort(key=lambda entry: entry.node_id)
     stamp = now_str or datetime.now(timezone.utc).isoformat()
@@ -420,6 +480,70 @@ def route_task(requirements: TaskRequirements, nodes: list[dict],
         reasons=[f"selected {winner} (preference score {score}; "
                  "tie-break by node_id)"] + why,
         decided_at=stamp)
+
+
+def explain_decision(decision: RouteDecision,
+                     nodes: list[dict] | None = None) -> dict:
+    """Transparent routing explanation (BIG #41 Routing 2.0).
+
+    Groups every candidate into WHY ELIGIBLE / WHY WAITING /
+    WHY BLOCKED / WHY NOT AVAILABLE with the router's own
+    reasons. Pure function over a decision (+ optional node
+    rows for workload context); deterministic, no ranking
+    beyond what route_task already decided.
+    """
+    groups: dict[str, list[dict]] = {
+        "eligible": [], "waiting": [], "blocked": [],
+        "unavailable": []}
+    for entry in decision.rejected or []:
+        verdict = str(getattr(entry, "verdict", "unavailable"))
+        if verdict not in groups:
+            verdict = "unavailable"
+        groups[verdict].append({
+            "node_id": entry.node_id,
+            "why": list(entry.reasons)[:6]})
+    workload: dict[str, int] = {}
+    for node in nodes or []:
+        if not isinstance(node, dict) or not node.get("node_id"):
+            continue
+        running = node.get("running_tasks")
+        if isinstance(running, int) and not isinstance(
+                running, bool) and running >= 0:
+            workload[str(node["node_id"])] = running
+    for node_id in decision.eligible_nodes or []:
+        why = [f"{node_id} meets every hard requirement"]
+        if node_id == decision.selected_node_id:
+            why = list(decision.reasons)[:8]
+        if node_id in workload:
+            why = why + [f"{workload[node_id]} running task(s)"]
+        groups["eligible"].append({"node_id": node_id, "why": why})
+    lines = {
+        "eligible": [f"{entry['node_id']}: "
+                     f"{entry['why'][0] if entry['why'] else '?'}"
+                     for entry in groups["eligible"]][:10],
+        "waiting": [f"{entry['node_id']}: "
+                    f"{entry['why'][0] if entry['why'] else '?'}"
+                    for entry in groups["waiting"]][:10],
+        "blocked": [f"{entry['node_id']}: "
+                    f"{entry['why'][0] if entry['why'] else '?'}"
+                    for entry in groups["blocked"]][:10],
+        "unavailable": [f"{entry['node_id']}: "
+                        f"{entry['why'][0] if entry['why'] else '?'}"
+                        for entry in groups["unavailable"]][:10],
+    }
+    summary = ("no eligible node; task waits for a capable, "
+               "fresh, authenticated node"
+               if not groups["eligible"] else
+               f"{decision.selected_node_id} selected from "
+               f"{len(groups['eligible'])} eligible; "
+               f"{len(groups['waiting'])} waiting, "
+               f"{len(groups['blocked'])} blocked, "
+               f"{len(groups['unavailable'])} unavailable")
+    return {"eligible": groups["eligible"],
+            "waiting": groups["waiting"],
+            "blocked": groups["blocked"],
+            "unavailable": groups["unavailable"],
+            "lines": lines, "summary": summary}
 
 
 def requirements_from_payload(payload) -> TaskRequirements:

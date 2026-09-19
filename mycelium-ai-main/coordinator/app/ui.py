@@ -405,15 +405,18 @@ window.addEventListener('resize', size);
 var density = parseInt(c.getAttribute('data-spores') || '26', 10);
 if (!(density >= 8 && density <= 48)) density = 26;
 var waiting = c.getAttribute('data-waiting') === '1';
+var onlineNodes = parseInt(c.getAttribute('data-nodes') || '0', 10);
+if (!(onlineNodes >= 0 && onlineNodes <= 30)) onlineNodes = 0;
+var tempo = 1 + Math.min(onlineNodes, 6) * 0.08;
 var spores = [];
 for (var i = 0; i < density; i++) spores.push({x: Math.random(), y: Math.random(), r: 1 + Math.random() * 2, s: .0002 + Math.random() * .0006, o: .15 + Math.random() * .3});
 var pulse = 0;
 function frame(){
-pulse += .008;
+pulse += .008 * tempo;
 x.clearRect(0, 0, c.width, c.height);
 for (var i = 0; i < spores.length; i++){
 var p = spores[i];
-p.y -= p.s;
+p.y -= p.s * tempo;
 if (p.y < -0.02) { p.y = 1.02; p.x = Math.random(); }
 var px = p.x * c.width + Math.sin(pulse + i) * 8;
 var py = p.y * c.height;
@@ -436,10 +439,12 @@ def living_bg() -> str:
 
     BIG #35: density follows recent ecosystem activity (more
     events = more spores, 8..48) and every fifth spore glows
-    amber while approvals wait. Ambient only — density never
-    claims specific events happened."""
+    amber while approvals wait. BIG #41: drift tempo rises
+    slightly with online nodes (capped +48%). Ambient only —
+    motion never claims specific events happened."""
     spores = 26
     waiting = False
+    online_nodes = 0
     try:
         from .living_state import current_state
         state = current_state()
@@ -452,12 +457,15 @@ def living_bg() -> str:
             int(state.get("automation_waiting", 0))
         spores = max(8, min(48, 16 + activity * 2))
         waiting = int(state.get("waiting_approvals", 0)) > 0
+        online_nodes = max(0, min(30, int(
+            state.get("online_nodes", 0))))
     except Exception:
         pass
     return ('<div class="living-bg" aria-hidden="true"></div>'
             '<canvas id="living-canvas" class="living-canvas" '
             f'data-spores="{spores}" '
             f'data-waiting="{1 if waiting else 0}" '
+            f'data-nodes="{online_nodes}" '
             'aria-hidden="true"></canvas>'
             f'<script>{LIVING_BG_JS}</script>')
 

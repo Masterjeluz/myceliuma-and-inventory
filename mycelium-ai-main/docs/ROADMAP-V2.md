@@ -1,16 +1,15 @@
-# Mycelium V2 Roadmap — BIG #37 → BIG #41 (directional)
+# Mycelium V2 Roadmap — BIG #37 → BIG #42 (directional)
 
-Status after BIG #40: presence ecosystem — attention derives
-live from existing stores (no duplicate state): approvals,
-blocked/failed work, node/hardware state, research,
-candidates, contradictions, cameras, craft, symbiosis,
-automation. Deterministic priority with reasons (never an
-LLM), five bands on mobile and `/presence`, operator
-SEEN/DEFERRED triage only, YES/NO through existing gates,
-deduplicated IN_APP fan-out, seven morning sections. No new
-authority, no gate removal. 1356 Mycelium tests green;
+Status after BIG #41: Mycelium V2 foundation — the BIG #1–40
+systems working as one ecosystem: targeted mesh delegation
+through the task queue (pull-only claims, rollback on
+failure), routing verdicts + workload explanations, live
+hardware reality with trust levels, ecosystem overview (8
+answers), craft chain states, wider symbiosis, guide
+unlocks, node-tempo background. No rebuilds, no new
+authority, no gate removal. 1380 Mycelium tests green;
 INVENTory untouched (179 + 1 pre-existing). See
-`docs/BIG40-final-report.md`.
+`docs/BIG41-final-report.md`.
 
 Principles for every step: reuse stores, explicit promotion,
 provenance always, honest REAL/TEST/SIMULATED/UNAVAILABLE/FUTURE,
@@ -89,13 +88,21 @@ API, mobile bands + greeting, topbar counts, offline card
 dimming, guide AFTERWARDS, 7 morning sections. 31 tests +
 49 smoke checks green.
 
-## BIG #41 — Mycelium V2 (NEXT, directional)
+## BIG #41 — Mycelium V2 Foundation (DONE 2026-09-19)
 
-The coherent autonomous local-first ecosystem: everything above
-working together — conversation → idea → research → node →
-observation → candidate → memory → relation → project →
-fabrication → verification → morning — with provenance at every
-link and Jelles approving everything consequential. Deepen
-remote mesh execution (safe task routing already permits the
-reads), grow the quest/progression foundation into the living
-game layer, keep every new power behind the same gates.
+Shipped: mesh preview/delegate (closed contracts, pinned
+targets, pull-only claims, rollback, audit event), Routing
+2.0 (verdicts, idle preference, explainer), live hardware
+reality (`current_task`, `/reality`, trust levels),
+ecosystem overview + world strip, craft states, symbiosis
+prefixes + closed predicates, guide unlocks, node-tempo
+background, notifier blocked/checklist/waiting guidance.
+24 tests + 54 smoke checks green.
+
+## BIG #42 — Ecosystem Hardening + First V2 Workflows (NEXT)
+
+Human link store for hardware verification (unlock VERIFIED
+honestly), finance/energy entity stores (complete the
+symbiosis map), mission templates chaining mesh delegation
+into craft chains, unified quest trails with done/total.
+Keep every new power behind the existing gates.

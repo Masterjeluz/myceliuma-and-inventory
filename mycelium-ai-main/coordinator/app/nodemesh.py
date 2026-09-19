@@ -23,6 +23,15 @@ This module validates and describes; it never executes, never
 opens sockets, never stores. Actual dispatch reuses the
 existing task queue (`POST /api/v1/tasks`), so leases,
 attempt caps, and node authentication keep applying.
+
+BIG #41 (V2 foundation): targeted delegation. A request may
+name an explicit target node. The target must be registered,
+not disabled, and advertise the exact capability itself —
+prefix-fuzzy matching across the mesh is NOT enough for a
+pinned target, and a node never gains capabilities because
+another node can reach it. Dispatch still creates a regular
+queued task assigned to the target; the target must still
+pull/claim it (liveness + credential re-checked at claim).
 """
 
 from __future__ import annotations
@@ -49,15 +58,33 @@ ALLOWED_CAPABILITY_PREFIXES = (
 )
 
 _SECRET_HINTS = ("token", "secret", "password", "passwd",
-                 "api_key", "apikey", "bearer", "credential",
-                 "private_key", "client_secret")
+                  "api_key", "apikey", "bearer", "credential",
+                  "private_key", "client_secret")
+
+#: Request timeout bounds (seconds). Enforcement is the task
+#: lease (300s); the requested timeout is validated, recorded
+#: in the receipt/audit, and clamped to the lease.
+MIN_TIMEOUT_SECONDS = 5
+MAX_TIMEOUT_SECONDS = 300
+
+MAX_REASON_CHARS = 200
 
 
 def validate_delegation(requesting_node: str,
                         task_kind: str,
                         capability: str,
-                        payload: dict | None = None) -> dict:
-    """Validate a node→coordinator→node request. Raises ValueError."""
+                        payload: dict | None = None,
+                        *, target_node: str | None = None,
+                        timeout_seconds: int = 60,
+                        reason: str = "") -> dict:
+    """Validate a node→coordinator→node request. Raises ValueError.
+
+    Keyword-only extensions (BIG #41, all fail-closed):
+    target_node pins one registered, enabled node that must
+    advertise the exact capability itself; timeout_seconds is
+    validated 5..300 and recorded (enforced by the 300s task
+    lease); reason is clipped audit text (escaped at render).
+    """
     requester = str(requesting_node or "").strip()[:80]
     kind = str(task_kind or "").strip()[:80]
     raw_cap = str(capability or "").strip()
@@ -83,26 +110,55 @@ def validate_delegation(requesting_node: str,
     for hint in _SECRET_HINTS:
         if hint in lowered:
             raise ValueError("payload must not carry secrets")
+    try:
+        timeout = int(timeout_seconds)
+    except (TypeError, ValueError):
+        raise ValueError("timeout must be an integer")
+    if not MIN_TIMEOUT_SECONDS <= timeout <= MAX_TIMEOUT_SECONDS:
+        raise ValueError(
+            f"timeout must be {MIN_TIMEOUT_SECONDS}.."
+            f"{MAX_TIMEOUT_SECONDS}s (task lease bound)")
+    why = " ".join(str(reason or "").split())[:MAX_REASON_CHARS]
     from . import main as _main
     try:
         nodes = _main.list_nodes()
     except Exception:
         raise ValueError("node registry unavailable")
-    known = {str(row.get("node_id")) for row in nodes}
-    if requester not in known:
+    by_id = {str(row.get("node_id")): row for row in nodes}
+    if requester not in by_id:
         raise ValueError("requesting node is not registered")
-    advertised = [str(capability) for row in nodes
-                  for capability in
-                  (row.get("capabilities") or [])]
-    if not any(str(entry) == cap or
-               str(entry).startswith(cap) or
-               cap.startswith(str(entry))
-               for entry in advertised):
-        raise ValueError("no registered node advertises "
-                         "that capability")
+    target = str(target_node or "").strip()[:80] or ""
+    if target:
+        row = by_id.get(target)
+        if row is None:
+            raise ValueError("target node is not registered")
+        if str(row.get("status", "")) == "disabled" or \
+                str(row.get("derived_status", "")) == "disabled":
+            raise ValueError("target node is disabled")
+        advertised = {str(entry).strip().lower()
+                      for entry in (row.get("capabilities") or [])}
+        if cap.strip().lower() not in advertised:
+            raise ValueError(
+                "target node does not advertise that capability "
+                "itself; reachability grants nothing")
+        route = ("node → coordinator → pinned target "
+                 "(must still claim)")
+    else:
+        advertised = [str(capability) for row in nodes
+                      for capability in
+                      (row.get("capabilities") or [])]
+        if not any(str(entry) == cap or
+                   str(entry).startswith(cap) or
+                   cap.startswith(str(entry))
+                   for entry in advertised):
+            raise ValueError("no registered node advertises "
+                             "that capability")
+        route = "node → coordinator → eligible node(s)"
     return {"requesting_node": requester, "task_kind": kind,
             "capability": cap, "payload": data,
-            "route": "node → coordinator → eligible node(s)",
+            "target_node": target,
+            "timeout_seconds": timeout, "reason": why,
+            "route": route,
             "authority": "coordinator (lease + provenance)",
             "honesty": "Validation only. Dispatch still uses "
                        "POST /api/v1/tasks; any node claims by "

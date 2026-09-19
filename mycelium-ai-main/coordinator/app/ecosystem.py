@@ -281,6 +281,161 @@ def node_roles(record: dict) -> list[str]:
     return roles or ["GENERAL"]
 
 
+def ecosystem_overview() -> dict:
+    """One coherent ecosystem model (BIG #41 V2 foundation).
+
+    Answers WHAT EXISTS / CONNECTED / HAPPENING / NEEDS
+    ATTENTION / NEXT / NODES CAN DO / BLOCKED / GROWING by
+    composing existing stores (inventory counts, symbiosis,
+    mesh, living state, presence, progression). No new store,
+    no invented data: every section names its source, and any
+    failing source degrades to an explicit -1/empty with the
+    reason attached. Read-only.
+    """
+    out: dict = {"sources": {}, "warnings": []}
+
+    def _put(key, value, source):
+        out[key] = value
+        out["sources"][key] = source
+
+    # WHAT EXISTS — authoritative inventory counts + layers.
+    try:
+        summary = ecosystem_summary()
+        _put("exists", summary.get("counts", {}),
+             "inventory bridge + local stores "
+             "(ecosystem_summary)")
+        for warning in summary.get("warnings", []):
+            out["warnings"].append(str(warning))
+    except Exception as error:
+        _put("exists", {}, f"unavailable ({error})")
+        out["warnings"].append("inventory counts unavailable")
+    # WHAT IS CONNECTED — symbiosis proposals + mesh edges.
+    connected: dict = {"symbiosis_proposed": -1,
+                       "mesh_edges": -1, "mesh_nodes": -1}
+    try:
+        from .symbiosis import proposed
+        connected["symbiosis_proposed"] = len(proposed(limit=60))
+    except Exception:
+        out["warnings"].append("symbiosis proposals unavailable")
+    try:
+        from .nodemesh import mesh_topology
+        topo = mesh_topology()
+        connected["mesh_edges"] = len(topo.get("edges", []))
+        connected["mesh_nodes"] = len(topo.get("nodes", []))
+    except Exception:
+        out["warnings"].append("mesh topology unavailable")
+    _put("connected", connected,
+         "knowledge candidates (PROPOSED) + node mesh")
+    # WHAT IS HAPPENING — living state line + recent events.
+    try:
+        from .living_state import current_state
+        state = current_state()
+        happening = {"state": state.get("state", "?"),
+                     "line": state.get("line", ""),
+                     "reasons": state.get("reasons", [])[:5]}
+    except Exception:
+        happening = {"state": "?", "line": "", "reasons": []}
+        out["warnings"].append("living state unavailable")
+    try:
+        from . import main as _main
+        happening["recent"] = [
+            {"type": event.event_type,
+             "summary": str(event.summary or "")[:120],
+             "at": str(event.created_at or "")[:16]}
+            for event in _main.bus_events(limit=5)]
+    except Exception:
+        happening["recent"] = []
+    _put("happening", happening,
+         "living_state + event bus (last 5)")
+    # WHAT NEEDS ATTENTION + WHAT CAN I DO NEXT — presence.
+    try:
+        from .presence import attention_snapshot
+        from .presence import morning_presence_sections
+        snapshot = attention_snapshot(limit=60)
+        counts = snapshot.get("counts", {})
+        top_needs = [
+            {"id": item["id"], "title": item["title"],
+             "href": item["open_href"]}
+            for item in snapshot.get("bands", {}).get("needs",
+                                                      [])[:3]]
+        _put("needs_attention",
+             {"counts": counts, "top": top_needs},
+             "presence engine (12 live collectors)")
+        sections = morning_presence_sections()
+        _put("next", sections.get("presence_next", [])[:5],
+             "presence suggested-next-actions")
+    except Exception as error:
+        _put("needs_attention", {"counts": {}, "top": []},
+             f"unavailable ({error})")
+        _put("next", [], "presence unavailable")
+    # WHAT CAN MY NODES DO — online capabilities per node.
+    nodes_can_do: list[dict] = []
+    try:
+        from . import main as _main2
+        for record in _main2.list_nodes():
+            if record.get("derived_status") not in ("online",
+                                                    "busy"):
+                continue
+            nodes_can_do.append({
+                "node_id": str(record.get("node_id", "")),
+                "health": str(record.get("health_status",
+                                         "UNKNOWN")),
+                "capabilities": list(
+                    record.get("capabilities", []) or [])[:12],
+                "hardware": sorted({
+                    str(item.get("kind", ""))
+                    for item in (record.get("hardware", []) or [])
+                    if isinstance(item, dict)
+                    and str(item.get("status", "")) == "connected"
+                })[:8],
+                "current_task": record.get("current_task")})
+            if len(nodes_can_do) >= 15:
+                break
+    except Exception:
+        out["warnings"].append("node registry unavailable")
+    _put("nodes_can_do", nodes_can_do,
+         "node registry (advertised, online only)")
+    # WHAT IS BLOCKED — needs-band items of blocking types.
+    blocked: list[dict] = []
+    try:
+        from .presence import attention_snapshot as _snap
+        for item in _snap(limit=120)["items"]:
+            if item.get("type", "") in (
+                    "mission_blocked", "mission_failed",
+                    "task_failed", "automation_failed",
+                    "fabrication_blocked"):
+                blocked.append({"id": item["id"],
+                                "title": item["title"],
+                                "href": item["open_href"]})
+            if len(blocked) >= 10:
+                break
+    except Exception:
+        out["warnings"].append("blocked-work scan unavailable")
+    _put("blocked", blocked, "presence blocking types")
+    # WHAT IS GROWING — progression, store-backed only.
+    try:
+        from .presence import progression
+        prog = progression()
+        _put("growing",
+             {"quests_open": len(prog.get("quests", [])),
+              "discoveries_24h": prog.get("discoveries_24h", 0),
+              "observations_24h": prog.get("observations_24h",
+                                            0),
+              "growth_24h": prog.get("growth_24h", 0),
+              "activity_24h": prog.get("activity_24h", 0),
+              "capabilities_unlocked": prog.get(
+                  "capabilities_unlocked", [])[:20]},
+             "presence progression (no XP, real counts)")
+    except Exception:
+        _put("growing", {}, "progression unavailable")
+    from datetime import datetime, timezone
+    out["generated_at"] = datetime.now(timezone.utc).isoformat()
+    out["provenance"] = {"source_type": "derived",
+                         "creator_id": "ecosystem-overview",
+                         "human_verified": False}
+    return out
+
+
 def discoveries(limit: int = 20) -> dict:
     """'Te tonen aan Jelles': open questions + missed items across
     imports, plus unlinked research questions. Evidence-backed

@@ -604,7 +604,33 @@ def _overlay_registry_nodes(nodes: dict, edges: list,
 
     BIG #39: Includes health status, telemetry summary, and
     hardware/compute capability counts.
+
+    BIG #41: Includes presence attention counts per node
+    (needs/offline items naming it), best-effort via a lazy
+    presence import — no new store, no cycle.
     """
+    attention: dict[str, dict] = {}
+    try:
+        from .presence import attention_snapshot
+        names = {str(row.get("node_id", ""))
+                 for row in list(registry or [])
+                 if row.get("node_id")}
+        for entry in attention_snapshot(limit=200)["items"]:
+            ident = str(entry.get("id", ""))
+            if entry.get("band") not in ("needs", "offline"):
+                continue
+            # Boundary match only: att_<kind>_<node>[_suffix].
+            # A bare substring test would credit "cam" for
+            # "cam-2" items.
+            for name in names:
+                if ident.endswith("_" + name) or \
+                        ("_" + name + "_") in ident:
+                    slot = attention.setdefault(
+                        name, {"needs": 0, "offline": 0})
+                    slot[entry["band"]] += 1
+                    break
+    except Exception:
+        attention = {}
     for item in list(registry or [])[:MAX_REGISTRY_NODES]:
         if not isinstance(item, dict):
             continue
@@ -645,6 +671,8 @@ def _overlay_registry_nodes(nodes: dict, edges: list,
                 "cpu_percent": telemetry.get("cpu_percent") if isinstance(telemetry, dict) else None,
                 "memory_percent": telemetry.get("memory_percent") if isinstance(telemetry, dict) else None,
                 "energy_source": item.get("energy_state", {}).get("source") if isinstance(item.get("energy_state"), dict) else "unknown",
+                "attention_needs": attention.get(node_id, {}).get("needs", 0),
+                "attention_offline": attention.get(node_id, {}).get("offline", 0),
             },
         }
         if len(nodes) >= MAX_NODES:

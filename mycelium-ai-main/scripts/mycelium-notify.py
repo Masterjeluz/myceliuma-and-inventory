@@ -1,4 +1,4 @@
-"""Mycelium developer notifier (BIG #33, extended BIG #36).
+"""Mycelium developer notifier (BIG #33, extended BIG #36, BIG #41).
 
 Small stdlib-only helper so a long OpenCode/BIG run can signal
 Jelles without any external service or credential:
@@ -6,9 +6,14 @@ Jelles without any external service or credential:
 - `start`: run opened (quiet bell + line).
 - `status`: one progress line on stdout, e.g.
   `BIG #33 [██████░░░░] Phase 4/10 — Implementing ecosystem`.
+- `checklist`: multi-row progress (✓ done / ● doing / ○ todo),
+  e.g. `checklist --items "arch,done;impl,doing;tests,todo"`.
 - `need` / `waiting`: LOUD approval-required signal: terminal
   bell (BEL), OSC 9 (Windows Terminal toast) + OSC 99
-  (WezTerm/iTerm notification), then the message.
+  (WezTerm/iTerm notification), the message, then exactly
+  where to decide (Mycelium /mobile + mission when given).
+- `blocked`: stuck signal (double bell + both OSC) with the
+  reason; never approves anything.
 - `done`: completion signal (bell + both OSC sequences).
 - `failed`: failure signal (double bell + both OSC).
 
@@ -28,13 +33,19 @@ If the terminal ignores them, the plain-text line still shows
 in the OpenCode log — honest degradation, never a fake claim
 of delivery. There is intentionally no sound file, no HTTP,
 no push service here; web push stays UNAVAILABLE in-app.
+Nothing here can approve anything; it only points at where
+Jelles decides.
 
 Usage
 -----
     python scripts/mycelium-notify.py status --big 33 --phase 4 \\
         --phases 10 --detail "Implementing ecosystem"
+    python scripts/mycelium-notify.py checklist \\
+        --items "architecture,done;implementation,doing;tests,todo"
     python scripts/mycelium-notify.py need --message \\
-        "Approval required: desktop action act_123"
+        "Approval required: desktop action act_123" \\
+        --mission mission_abc --where /mobile
+    python scripts/mycelium-notify.py blocked --message "Lease lost"
     python scripts/mycelium-notify.py done --big 33
 
 Exit code is always 0 unless arguments are invalid.
@@ -100,7 +111,52 @@ def _alert(message: str, loud: bool) -> int:
 
 
 def cmd_need(args: argparse.Namespace) -> int:
-    return _alert(f"🔔 APPROVAL REQUIRED — {args.message}", True)
+    code = _alert(f"🔔 APPROVAL REQUIRED — {args.message}", True)
+    _out("WAITING FOR YOU")
+    _out(f"→ Open Mycelium {args.where or '/mobile'}")
+    if args.mission:
+        _out(f"→ Mission: {args.mission}")
+    _out("(decide there — this terminal approves nothing)")
+    return code
+
+
+def cmd_blocked(args: argparse.Namespace) -> int:
+    _out(f"⛔ BLOCKED — {args.message}")
+    try:
+        sys.stdout.write(BEL + BEL)
+        sys.stdout.write(_osc(9, f"BLOCKED — {args.message}"))
+        sys.stdout.write(_osc(99, f"BLOCKED — {args.message}"))
+    except UnicodeEncodeError:
+        pass
+    if args.hint:
+        _out(f"→ Next: {args.hint}")
+    _out("(inspect first — this terminal fixes nothing by itself)")
+    sys.stdout.flush()
+    return 0
+
+
+_CHECK_MARKS = {"done": "✓", "doing": "●", "todo": "○",
+                "blocked": "!"}
+
+
+def cmd_checklist(args: argparse.Namespace) -> int:
+    """Rows of `label,state` pairs: done/doing/todo/blocked.
+
+    Unknown states render as `?` (never silently upgraded).
+    """
+    rows = 0
+    for chunk in str(args.items or "").split(";"):
+        chunk = chunk.strip()
+        if not chunk or "," not in chunk:
+            continue
+        label, _, state = chunk.partition(",")
+        label = " ".join(label.split())[:60]
+        mark = _CHECK_MARKS.get(state.strip().lower(), "?")
+        _out(f"{mark} {label or '?'}")
+        rows += 1
+    if not rows:
+        _out("? nothing listed")
+    return 0
 
 
 def cmd_start(args: argparse.Namespace) -> int:
@@ -144,11 +200,25 @@ def build_parser() -> argparse.ArgumentParser:
     need = sub.add_parser("need",
                           help="loud approval-required signal")
     need.add_argument("--message", required=True)
+    need.add_argument("--mission", default="")
+    need.add_argument("--where", default="/mobile")
     need.set_defaults(func=cmd_need)
     waiting = sub.add_parser("waiting",
                              help="alias: waiting for approval")
     waiting.add_argument("--message", required=True)
+    waiting.add_argument("--mission", default="")
+    waiting.add_argument("--where", default="/mobile")
     waiting.set_defaults(func=cmd_need)
+    blocked = sub.add_parser("blocked", help="stuck signal")
+    blocked.add_argument("--message", required=True)
+    blocked.add_argument("--hint", default="")
+    blocked.set_defaults(func=cmd_blocked)
+    checklist = sub.add_parser(
+        "checklist", help="multi-row progress list")
+    checklist.add_argument("--items", default="",
+                           help="'label,state;...' "
+                                "states: done/doing/todo/blocked")
+    checklist.set_defaults(func=cmd_checklist)
     start = sub.add_parser("start", help="run started signal")
     start.add_argument("--big", type=int, required=True)
     start.add_argument("--message", default="")

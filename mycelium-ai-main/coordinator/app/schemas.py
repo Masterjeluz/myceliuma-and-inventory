@@ -95,6 +95,42 @@ class PresenceNotifyBody(BaseModel):
     limit: int = Field(default=5, ge=1, le=10)
 
 
+class MeshDelegateBody(BaseModel):
+    """One node→coordinator→node delegation (BIG #41).
+
+    Closed task kind + explicit capability + optional pinned
+    target. Dispatch creates a regular queued task the target
+    must still pull/claim; nothing is pushed, nothing is
+    executed here.
+    """
+
+    requesting_node: str = Field(min_length=1, max_length=80)
+    node_token: str | None = Field(default=None, min_length=8,
+                                   max_length=256)
+    target_node: str | None = Field(default=None, min_length=1,
+                                    max_length=80)
+    task_kind: str = Field(min_length=1, max_length=80)
+    capability: str = Field(min_length=1, max_length=120)
+    payload: dict[str, Any] = Field(default_factory=dict)
+    timeout_seconds: int = Field(default=60, ge=5, le=300)
+    reason: str = Field(default="", max_length=2000)
+    priority: int = Field(default=0, ge=-10, le=10)
+
+
+class MeshPreviewBody(BaseModel):
+    """Dry-run delegation check (BIG #41). Validates and
+    explains; creates nothing."""
+
+    requesting_node: str = Field(min_length=1, max_length=80)
+    target_node: str | None = Field(default=None, min_length=1,
+                                    max_length=80)
+    task_kind: str = Field(min_length=1, max_length=80)
+    capability: str = Field(min_length=1, max_length=120)
+    payload: dict[str, Any] = Field(default_factory=dict)
+    timeout_seconds: int = Field(default=60, ge=5, le=300)
+    reason: str = Field(default="", max_length=2000)
+
+
 class TaskCreate(BaseModel):
     kind: str = Field(min_length=2, max_length=80, pattern=r"^[a-zA-Z0-9._-]+$")
     payload: dict[str, Any] = Field(default_factory=dict)

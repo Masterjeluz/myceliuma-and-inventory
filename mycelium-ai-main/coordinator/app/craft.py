@@ -181,3 +181,113 @@ async def craft_tree(entity_id: str, depth: int = 1) -> dict:
                    "this entity. Gaps are missing links, not "
                    "predictions.",
     }
+
+
+#: Chain states (BIG #41 craft foundation). COMPLETE means
+#: linked evidence is present (never "work finished");
+#: ACTIVE means linked work is in flight; BLOCKED means a
+#: linked record failed or blocked; MISSING means the stage
+#: is empty. Evidence ids are always listed.
+STAGE_STATE_GLYPHS = {
+    "complete": "✓",
+    "active": "●",
+    "missing": "○",
+    "blocked": "!",
+}
+
+_MISSION_ACTIVE = ("approved", "running", "paused",
+                   "pending_approval")
+_MISSION_BLOCKED = ("failed", "blocked")
+_FABJOB_ACTIVE = ("observed", "verifying")
+_FABJOB_BLOCKED = ("blocked", "failed")
+_FAB_ACTIVE = ("proposed", "approved", "ready", "waiting")
+_FAB_BLOCKED = ("failed", "blocked")
+
+
+def _live_work_status() -> tuple[dict, dict, dict]:
+    """Live work statuses keyed by record id. Best-effort:
+    empty maps on any failure (stages then show evidence-only
+    states, never blocked/active without proof)."""
+    missions: dict[str, str] = {}
+    try:
+        from .missions import list_missions
+        for mission in list_missions(limit=100):
+            missions[str(mission.mission_id)] = str(
+                mission.status or "")
+    except Exception:
+        pass
+    jobs: dict[str, str] = {}
+    try:
+        from .workshop3d import list_fabjobs
+        for job in list_fabjobs(limit=100):
+            if isinstance(job, dict) and job.get("job_id"):
+                jobs[str(job["job_id"])] = str(
+                    job.get("stage", ""))
+    except Exception:
+        pass
+    fabs: dict[str, str] = {}
+    try:
+        from . import main as _main
+        for record in _main.list_fabrications(50):
+            fab_id = str(getattr(
+                record, "fabrication_id",
+                getattr(record, "job_id", "")))
+            if fab_id:
+                fabs[fab_id] = str(getattr(record, "status",
+                                           ""))
+    except Exception:
+        pass
+    return missions, jobs, fabs
+
+
+def stage_states(tree: dict) -> list[dict]:
+    """Annotate craft-tree stages with chain states. Pure
+    derivation over a craft_tree() result + live work maps."""
+    missions, jobs, fabs = _live_work_status()
+    gaps = {str(gap.get("missing", "")): gap
+            for gap in (tree.get("gaps", []) or [])
+            if isinstance(gap, dict)}
+    annotated: list[dict] = []
+    for stage in tree.get("stages", []) or []:
+        key = str(stage.get("key", ""))
+        nodes = [node for node in (stage.get("nodes", []) or [])
+                 if isinstance(node, dict)]
+        if not nodes:
+            annotated.append({
+                "key": key, "state": "missing",
+                "glyph": STAGE_STATE_GLYPHS["missing"],
+                "evidence": [],
+                "missing": gaps.get(key, {})})
+            continue
+        evidence: list[str] = []
+        blocked: list[str] = []
+        active: list[str] = []
+        for node in nodes:
+            ident = str(node.get("id", ""))
+            if not ident:
+                continue
+            status = missions.get(ident, jobs.get(
+                ident, fabs.get(ident, "")))
+            if not status:
+                evidence.append(ident)
+                continue
+            if status in _MISSION_BLOCKED + _FABJOB_BLOCKED + \
+                    _FAB_BLOCKED:
+                blocked.append(f"{ident} [{status}]")
+            elif status in _MISSION_ACTIVE + _FABJOB_ACTIVE + \
+                    _FAB_ACTIVE:
+                active.append(f"{ident} [{status}]")
+            else:
+                evidence.append(f"{ident} [{status}]")
+        if blocked:
+            state = "blocked"
+        elif active:
+            state = "active"
+        else:
+            state = "complete"
+        annotated.append({
+            "key": key, "state": state,
+            "glyph": STAGE_STATE_GLYPHS[state],
+            "evidence": (blocked + active + evidence)[:12],
+            "missing": gaps.get(key, {})})
+    return annotated
