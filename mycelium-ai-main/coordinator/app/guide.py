@@ -25,11 +25,47 @@ GUIDE_KINDS = (
 )
 
 
+#: AFTERWARDS per kind (BIG #40 explanation layer): what
+#: truthfully happens after the NEXT step. Mechanics only —
+#: no invented outcomes, no promises.
+AFTER_TEXT = {
+    "approval": "After your YES the existing decision "
+                "endpoint runs exactly that payload; the item "
+                "then leaves the waiting list. NO closes it "
+                "without effect.",
+    "candidate": "Support keeps it a reviewed candidate; "
+                 "promote turns it into memory. Either way it "
+                 "leaves this list.",
+    "conversation": "Queued research returns findings you "
+                    "review line by line; nothing promotes "
+                    "itself.",
+    "research": "Completed dossiers wait for your review; "
+                "claims become candidates only when you say "
+                "so.",
+    "camera": "Ingest turns files into observations; a VLM "
+              "description turns them into reviewable text.",
+    "fabrication": "Your approval moves exactly the proposed "
+                   "payload; execution and independent "
+                   "verification follow as their own steps.",
+    "node": "Nodes are pull-only helpers; restored "
+            "connectivity lets them claim work again. "
+            "Nothing is ever pushed to a node.",
+    "project": "Opening a mission for the project gives it a "
+               "carrier; each step still asks its own gates.",
+    "mission": "Resuming wakes one quest; consequential "
+              "steps stop for YES again.",
+    "workshop": "Linking material and project starts a real "
+               "craft chain you can verify step by step.",
+}
+
+
 def _item(kind: str, glyph: str, what: str, why: str,
-          label: str, href: str) -> dict:
+          label: str, href: str, after: str = "") -> dict:
+    afterwards = (after or AFTER_TEXT.get(kind, "")[:240])
     return {"kind": kind, "glyph": glyph, "what": what[:160],
             "why": why[:240], "next": {"label": label[:60],
-                                       "href": href[:200]}}
+                                       "href": href[:200]},
+            "after": afterwards}
 
 
 def guide_items(limit: int = 12) -> list[dict]:

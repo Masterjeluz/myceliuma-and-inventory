@@ -167,6 +167,20 @@ radial-gradient(500px 500px at 50% 110%, rgba(76,107,79,.12), transparent 70%)}
 .craft-stage.gap{border-top:2px dashed var(--amber-dim)}
 .discovery{border-left:3px solid var(--spore)}
 .discovery .burst{color:var(--spore)}
+/* BIG #40 presence ecosystem: the world reacts to attention.
+   Subtle motion on real state only; the global reduced-motion
+   rule above kills all of this on request. */
+.dot.online{animation:breathe 5s ease-in-out infinite}
+.dim-offline{opacity:.55}
+.band-needs{border-left:3px solid var(--danger)}
+.band-waiting{border-left:3px solid var(--amber)}
+.band-available{border-left:3px solid var(--moss)}
+.band-discovered{border-left:3px solid var(--spore)}
+.band-offline{border-left:3px solid var(--ink-faint);opacity:.85}
+.quest-marker{border-left:3px solid var(--amber)}
+.growth-event{border-left:3px solid var(--moss-bright)}
+.presence-chip{font-size:.8rem;color:var(--ink-dim)}
+.presence-chip a{color:var(--ink-dim)}
 .quickgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:.5rem;margin:.6rem 0}
 .quickgrid a{display:block;text-align:center;background:var(--surface-2);border:1px solid var(--line);border-radius:var(--r-sm);padding:.7rem .4rem;text-decoration:none;font-size:1.4rem}
 .quickgrid a small{display:block;font-size:.72rem;color:var(--ink-dim);margin-top:.2rem}
@@ -275,16 +289,33 @@ def _living_chip_default() -> str:
     state without per-page wiring. Best-effort — an empty string on
     any failure, so a page never breaks on the indicator. Callers
     may still pass `living=` explicitly to override (tests, embeds).
+
+    BIG #40 appends compact presence counts (waiting ·
+    discoveries · offline) linking to /presence — same
+    best-effort rule, counts vanish (never break) on failure.
     """
     try:
         from .living_state import current_state
         state = current_state()
-        return (f"<span aria-label=\"Mycelium state: "
+        base = (f"<span aria-label=\"Mycelium state: "
                 f"{esc(state.get('line', ''))}\" role=\"status\">"
                 f"{esc(state.get('glyph', ''))} "
                 f"{esc(state.get('line', ''))}</span>")
     except Exception:
         return ""
+    try:
+        from .presence import attention_snapshot
+        counts = attention_snapshot(limit=120)["counts"]
+        waiting = int(counts.get("needs", 0))
+        found = int(counts.get("discovered", 0))
+        offline = int(counts.get("offline", 0))
+        extra = (f" <span class=\"presence-chip\">· "
+                 f"{waiting} waiting · {found} discoveries · "
+                 f"{offline} offline "
+                 f"<a href=\"/presence\">attention →</a></span>")
+    except Exception:
+        extra = ""
+    return base + extra
 
 
 def shell(title: str, active: str, main: str, context: str = "",
@@ -538,12 +569,87 @@ def stage_progress(title: str, stages: list) -> str:
 def guide_card(item: dict) -> str:
     kind = str(item.get("kind", ""))
     nxt = item.get("next", {}) if isinstance(item.get("next"), dict) else {}
+    after = str(item.get("after", ""))
+    afterwards = (f"<br><small class=\"muted\">Afterwards: "
+                  f"{esc(after)}</small>" if after else "")
     return (f"<div class=\"sprout guide-card kind-{esc(kind)}\">"
             f"<b>{esc(item.get('glyph', '🌱'))} "
             f"{esc(item.get('what', ''))}</b><br>"
             f"<small>{esc(item.get('why', ''))}</small><br>"
             f"<a href=\"{esc(nxt.get('href', '/'))}\">"
-            f"{esc(nxt.get('label', 'Open'))} →</a></div>")
+            f"{esc(nxt.get('label', 'Open'))} →</a>"
+            f"{afterwards}</div>")
+
+
+def presence_card(item: dict) -> str:
+    """One attention card: WHAT / WHY / SOURCE / NEXT + actions.
+
+    All text escaped here at the render boundary. YES/NO reuse
+    the exact form mechanics of the approval gates (response
+    field for desktop/write decisions, path-bound mission
+    endpoints); everything else offers OPEN + DEFER only.
+    DEFER posts the item id to the presence triage endpoint and
+    performs nothing.
+    """
+    band = str(item.get("band", "discovered"))
+    kind = str(item.get("type", ""))
+    action = item.get("action", {}) if isinstance(
+        item.get("action"), dict) else {}
+    yes_href = esc(str((action.get("YES", {}) or {}).get(
+        "href", "")))
+    no_href = esc(str((action.get("NO", {}) or {}).get(
+        "href", "")))
+    buttons: list[str] = []
+    if kind in ("approval_desktop", "approval_write") and \
+            yes_href and no_href:
+        buttons.append(
+            f"<form method=\"post\" action=\"{yes_href}\" "
+            f"style=\"display:inline\">"
+            f"<input type=\"hidden\" name=\"response\" "
+            f"value=\"YES\"><button type=\"submit\">YES"
+            f"</button></form>")
+        buttons.append(
+            f"<form method=\"post\" action=\"{no_href}\" "
+            f"style=\"display:inline\">"
+            f"<input type=\"hidden\" name=\"response\" "
+            f"value=\"NO\"><button type=\"submit\">NO"
+            f"</button></form>")
+    elif kind == "approval_mission" and yes_href and no_href:
+        buttons.append(
+            f"<form method=\"post\" action=\"{yes_href}\" "
+            f"style=\"display:inline\">"
+            f"<button type=\"submit\">YES, doorgaan</button>"
+            f"</form>")
+        buttons.append(
+            f"<form method=\"post\" action=\"{no_href}\" "
+            f"style=\"display:inline\">"
+            f"<button type=\"submit\">Cancel plan</button>"
+            f"</form>")
+    open_href = esc(str(item.get("open_href", "/activity")))
+    buttons.append(f"<a class=\"chip\" href=\"{open_href}\">"
+                   f"OPEN</a>")
+    buttons.append(
+        f"<form method=\"post\" "
+        f"action=\"/web/presence/defer\" "
+        f"style=\"display:inline\">"
+        f"<input type=\"hidden\" name=\"item_id\" "
+        f"value=\"{esc(item.get('id', ''))}\">"
+        f"<button type=\"submit\" title=\"Nothing changes; "
+        f"decide later\">DEFER</button></form>")
+    why_points = "".join(
+        f"<li><small>{esc(reason)}</small></li>"
+        for reason in (item.get("priority_reasons", []) or [])[:4])
+    return (f"<div class=\"sprout band-{esc(band)}\">"
+            f"<b>{esc(item.get('title', ''))}</b> "
+            f"{chip(esc(item.get('status', 'NEW')))}<br>"
+            f"<small><b>WHY:</b> {esc(item.get('reason', ''))}"
+            f"</small><br>"
+            f"<small class=\"muted\">SOURCE: "
+            f"{esc(item.get('source', ''))}</small><br>"
+            f"<small class=\"muted\">NEXT: "
+            f"<a href=\"{open_href}\">Open →</a></small>"
+            f"<ul class=\"quest\">{why_points}</ul>"
+            f"<p>{' '.join(buttons)}</p></div>")
 
 
 def empty_grove(text: str, actions: list | None = None) -> str:

@@ -1,15 +1,16 @@
 # Mycelium V2 Roadmap — BIG #37 → BIG #41 (directional)
 
-Status after BIG #39: hardware reality layer — nodes report
-read-only telemetry/hardware/compute/energy on heartbeat; the
-coordinator validates fail-closed, derives
-ONLINE/DEGRADED/STALE/OFFLINE/UNKNOWN health, routes by
-connected hardware / available compute / telemetry freshness,
-guides by what is really online, and shows per-node hardware
-detail on mobile and in the world graph. No new execution
-power, no gate removal. 1325 Mycelium tests green; INVENTory
-untouched (179 + 1 pre-existing). See
-`docs/BIG39-final-report.md`.
+Status after BIG #40: presence ecosystem — attention derives
+live from existing stores (no duplicate state): approvals,
+blocked/failed work, node/hardware state, research,
+candidates, contradictions, cameras, craft, symbiosis,
+automation. Deterministic priority with reasons (never an
+LLM), five bands on mobile and `/presence`, operator
+SEEN/DEFERRED triage only, YES/NO through existing gates,
+deduplicated IN_APP fan-out, seven morning sections. No new
+authority, no gate removal. 1356 Mycelium tests green;
+INVENTory untouched (179 + 1 pre-existing). See
+`docs/BIG40-final-report.md`.
 
 Principles for every step: reuse stores, explicit promotion,
 provenance always, honest REAL/TEST/SIMULATED/UNAVAILABLE/FUTURE,
@@ -77,18 +78,24 @@ hardware/compute overlays (`node-reported`,
 guide, additive node bus/notification types, read-only
 node-client collectors. 74 tests + 25 smoke checks green.
 
-## BIG #40 — Presence (NEXT)
+## BIG #40 — Presence Ecosystem (DONE 2026-09-19)
 
-Per-recipient in-app notification delivery, morning "why open
-Mycelium today" answer, overnight digest of queue +
-discoveries + connections — now feasible on real node state
-(BIG #39 health/hardware/compute). Web push only with a real
-transport; until then explicit UNAVAILABLE.
+Shipped: attention engine (`presence.py`) with 12 live
+collectors, deterministic priority + reasons, 5 bands,
+SEEN/DEFERRED triage store, RESOLVED/EXPIRED memory,
+progression foundation, read-only overnight digest,
+deduplicated IN_APP fan-out. Surfaces: `/presence` page +
+API, mobile bands + greeting, topbar counts, offline card
+dimming, guide AFTERWARDS, 7 morning sections. 31 tests +
+49 smoke checks green.
 
-## BIG #41 — Mycelium V2 (directional)
+## BIG #41 — Mycelium V2 (NEXT, directional)
 
 The coherent autonomous local-first ecosystem: everything above
 working together — conversation → idea → research → node →
 observation → candidate → memory → relation → project →
 fabrication → verification → morning — with provenance at every
-link and Jelles approving everything consequential.
+link and Jelles approving everything consequential. Deepen
+remote mesh execution (safe task routing already permits the
+reads), grow the quest/progression foundation into the living
+game layer, keep every new power behind the same gates.

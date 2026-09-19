@@ -333,7 +333,7 @@ from .routing import (
     requirements_from_payload,
     route_task,
 )
-from .schemas import AdviseRequest, AdviseResponse, AdvancedOpBody, CadDocumentBody, CadOpBody, CadPartBody, CampaignBody, CameraRegisterBody, CaptureCloseBody, CaptureOpenBody, ChatMissionBody, ChatRequest, ChatResponse, ClaimedTask, DecideApprovalBody, DesktopActionBody, DesktopClaimBody, DesktopDecisionBody, DesktopDispatchBody, DesktopResultBody,     DistEnvelopeBody, DroneCreateBody, DroneMissionApproveBody, DroneMissionBody,     FabGenerateBody, FabSliceBody, FamiliarCreateBody, FoodCreateBody, GarminImportBody, GitCommitBody, HealthMeasureBody, Heartbeat, InstagramImportBody,     InterfaceChatBody, IntegrationEnvelopeBody, IntegrationKeyBody, IntegrationTriggerBody, InventoryWriteBody, JobRunBody, LiveContextBody, LiveProposeBody, LiveSessionBody, MealCreateBody, MealItemBody, MemoryConsolidateBody, MemoryCreateBody, MemoryRetrieveBody, MemoryVerifyBody,     MissionApproveBody, MissionCreateBody, MissionRunBody, MissionStepBody, NodeRegistration, NodeRotateBody,     NotifyBody, OperatorBody, OutboxAckBody, OutboxEnqueueBody, PhoneCameraBody,     PlanBody, PlanToProposalBody, PipelinePlanBody, PrintCancelBody, PrintProposeBody, PrinterRegisterBody, PrinterSelectBody, PromptEditBody, ResearchAdvanceBody, ResearchClaimBody, ResearchRecordBody, ResearchSourceBody, RobotActionBody, RobotApproveBody, RobotCreateBody, RobotSafetyBody, RobotTelemetryBody, SessionOpenBody,     StreamStartBody, SuggestStepsBody, SkillAcceptBody, SkillAdvanceBody, SkillCreateBody, SkillDiscoverBody, SkillEvidenceBody, SpoolCreateBody, SyncApplyBody, TaskAssignBody, TaskCreate, TaskFromProposalBody, TaskResult, TaskRouteBody,     TemplateMissionBody, TransformBody, TwinLinkBody, VisionAnalyzeBody, VisionProposeBody, VoiceApprovalRequestBody, VoiceApproveBody, VoiceChatBody,     VoiceSynthesizeBody, VoiceTranscribeBody, WriteDecisionBody, CommandBody, RecoverBody, AgendaImportBody, BootstrapBody, ResearchRunBody, ResearchExecuteBody
+from .schemas import AdviseRequest, AdviseResponse, AdvancedOpBody, CadDocumentBody, CadOpBody, CadPartBody, CampaignBody, CameraRegisterBody, CaptureCloseBody, CaptureOpenBody, ChatMissionBody, ChatRequest, ChatResponse, ClaimedTask, DecideApprovalBody, DesktopActionBody, DesktopClaimBody, DesktopDecisionBody, DesktopDispatchBody, DesktopResultBody,     DistEnvelopeBody, DroneCreateBody, DroneMissionApproveBody, DroneMissionBody,     FabGenerateBody, FabSliceBody, FamiliarCreateBody, FoodCreateBody, GarminImportBody, GitCommitBody, HealthMeasureBody, Heartbeat, InstagramImportBody,     InterfaceChatBody, IntegrationEnvelopeBody, IntegrationKeyBody, IntegrationTriggerBody, InventoryWriteBody, JobRunBody, LiveContextBody, LiveProposeBody, LiveSessionBody, MealCreateBody, MealItemBody, MemoryConsolidateBody, MemoryCreateBody, MemoryRetrieveBody, MemoryVerifyBody,     MissionApproveBody, MissionCreateBody, MissionRunBody, MissionStepBody, NodeRegistration, NodeRotateBody,     NotifyBody, OperatorBody, OutboxAckBody, OutboxEnqueueBody, PhoneCameraBody,     PlanBody, PlanToProposalBody, PipelinePlanBody, PrintCancelBody, PrintProposeBody, PrinterRegisterBody, PrinterSelectBody, PromptEditBody, ResearchAdvanceBody, ResearchClaimBody, ResearchRecordBody, ResearchSourceBody, RobotActionBody, RobotApproveBody, RobotCreateBody, RobotSafetyBody, RobotTelemetryBody, SessionOpenBody,     StreamStartBody, SuggestStepsBody, SkillAcceptBody, SkillAdvanceBody, SkillCreateBody, SkillDiscoverBody, SkillEvidenceBody, SpoolCreateBody, SyncApplyBody, TaskAssignBody, TaskCreate, TaskFromProposalBody, TaskResult, TaskRouteBody,     TemplateMissionBody, TransformBody, TwinLinkBody, VisionAnalyzeBody, VisionProposeBody, VoiceApprovalRequestBody, VoiceApproveBody, VoiceChatBody,     VoiceSynthesizeBody, VoiceTranscribeBody, WriteDecisionBody, CommandBody, RecoverBody, AgendaImportBody, BootstrapBody, ResearchRunBody, ResearchExecuteBody, PresenceTriageBody, PresenceNotifyBody
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 logger = logging.getLogger("mycelium.coordinator")
@@ -5259,6 +5259,12 @@ def report_morning() -> dict:
             f"{row['name']} [{row['stage']}]"
             for row in owned_skills]
     try:
+        from .presence import morning_presence_sections
+        for key, lines in morning_presence_sections().items():
+            sections[key] = lines[:8]
+    except Exception:
+        pass
+    try:
         report = morning_report(sections)
     except ReportRefusedError as error:
         raise HTTPException(status_code=422, detail=str(error))
@@ -8954,6 +8960,7 @@ def mobile_page(node: str = "") -> str:
     living = dash.get("living", {})
     main = f"""<h1>Mycelium</h1>
     {_mobile_now_html(dash)}
+    {_mobile_presence_html(dash)}
     {_mobile_waiting_html_v2(dash)}
     {_mobile_active_html(dash)}
     <div class="panel" id="input"><h2>Wat wil je doen?</h2>
@@ -9139,6 +9146,42 @@ def _triage_card_html(card: dict) -> str:
         f"<a href=\"{_ui.esc(open_href)}\">OPEN</a> · "
         f"<a href=\"{_ui.esc(open_href)}\" title=\"Nothing changes; "
         f"decide later\">DEFER</a></div>")
+
+
+def _mobile_presence_html(dash: dict) -> str:
+    """Presence bands: GOOD MORNING/NOW + NEEDS/WAITING/
+    AVAILABLE/DISCOVERED/OFFLINE cards with WHAT/WHY/SOURCE/
+    NEXT + YES/NO/OPEN/DEFER over existing gates."""
+    from . import ui as _ui
+    from .presence import BAND_META
+    presence = dash.get("presence", {}) if isinstance(
+        dash.get("presence"), dict) else {}
+    bands = presence.get("bands", {}) if isinstance(
+        presence.get("bands"), dict) else {}
+    greeting = str(dash.get("greeting", "NOW"))
+    order = ("needs", "waiting", "available", "discovered",
+             "offline")
+    sections = []
+    for band in order:
+        items = bands.get(band, []) or []
+        meta = BAND_META.get(band, {"glyph": "•",
+                                    "title": band})
+        body = "".join(_ui.presence_card(item)
+                       for item in items[:4])
+        sections.append(
+            f"<div class=\"panel\" id=\"presence-{band}\">"
+            f"<h2>{meta['glyph']} {meta['title']} "
+            f"({len(items)})</h2>"
+            f"<div class=\"grove\">"
+            f"{body or _ui.empty('Nothing here.')}</div></div>")
+    return (
+        f"<div class=\"panel living\" id=\"presence\">"
+        f"<h2>{_ui.esc(greeting)}, Jelles 🌱</h2>"
+        f"<p class=\"muted\">What deserves attention, why, "
+        f"and what you can do — derived live. YES/NO run the "
+        f"existing gates; DEFER changes nothing. "
+        f"<a href=\"/presence\">Full attention view →</a></p>"
+        f"</div>" + "".join(sections))
 
 
 def _mobile_waiting_html_v2(dash: dict) -> str:
@@ -9993,7 +10036,7 @@ def nodes_page(check_cap: str = "") -> str:
     from . import ui as _ui
     rows = list_nodes()
     cards = "".join(
-        f"<div class=\"sprout\"><b>{_ui.status_dot(record['derived_status'])}"
+        f"<div class=\"sprout{' dim-offline' if record['derived_status'] in ('offline', 'stale', 'disabled') else ''}\"><b>{_ui.status_dot(record['derived_status'])}"
         f"{_ui.esc(record['node_id'])}</b><br>"
         f"{_ui.chip(record['derived_status'])}"
         f"{_ui.chip(record.get('tier', 'unknown'))}"
@@ -11587,6 +11630,85 @@ def api_guide(limit: int = 12) -> dict:
                        "fabrications, nodes, projects. Read-only."}
 
 
+# =============================================================================
+# BIG #40 — Presence ecosystem: attention API
+# =============================================================================
+
+
+@app.get("/api/v1/presence")
+def api_presence(limit: int = 120) -> dict:
+    """Unified attention: bands + items + cleared + progression
+    + overnight digest. Derived live, read-only."""
+    from .presence import (attention_snapshot, overnight_digest,
+                           progression)
+    try:
+        count = max(1, min(int(limit), 200))
+    except (TypeError, ValueError):
+        count = 120
+    snapshot = attention_snapshot(limit=count)
+    snapshot["progression"] = progression()
+    snapshot["overnight"] = overnight_digest()
+    return snapshot
+
+
+@app.post("/api/v1/presence/seen")
+def api_presence_seen(body: PresenceTriageBody) -> dict:
+    """Mark one live attention item SEEN. Bookkeeping only."""
+    from .presence import PresenceRefusedError, set_triage
+    try:
+        return set_triage(body.item_id, "SEEN",
+                          decided_by=body.decided_by)
+    except PresenceRefusedError as error:
+        raise HTTPException(status_code=404, detail=str(error))
+
+
+@app.post("/api/v1/presence/defer")
+def api_presence_defer(body: PresenceTriageBody) -> dict:
+    """Defer one live attention item. DEFER performs nothing —
+    it only hides the item from the urgent bands."""
+    from .presence import PresenceRefusedError, set_triage
+    try:
+        return set_triage(body.item_id, "DEFERRED",
+                          decided_by=body.decided_by)
+    except PresenceRefusedError as error:
+        raise HTTPException(status_code=404, detail=str(error))
+
+
+@app.post("/api/v1/presence/notify")
+def api_presence_notify(body: PresenceNotifyBody) -> dict:
+    """Explicit presence fan-out: deduplicated IN_APP delivery.
+    Never background, never push."""
+    from .presence import sync_presence_notifications
+    return sync_presence_notifications(limit=body.limit)
+
+
+@app.post("/web/presence/defer")
+async def web_presence_defer(request: Request) -> Response:
+    """Form DEFER from presence cards. Stores triage only;
+    performs nothing, then returns to the attention view."""
+    from .presence import PresenceRefusedError, set_triage
+    fields = await _form_fields(request)
+    try:
+        set_triage(str(fields.get("item_id", "")),
+                   "DEFERRED", decided_by="web")
+    except PresenceRefusedError:
+        pass
+    return RedirectResponse("/presence", status_code=303)
+
+
+@app.post("/web/presence/seen")
+async def web_presence_seen(request: Request) -> Response:
+    """Form SEEN from presence cards. Bookkeeping only."""
+    from .presence import PresenceRefusedError, set_triage
+    fields = await _form_fields(request)
+    try:
+        set_triage(str(fields.get("item_id", "")),
+                   "SEEN", decided_by="web")
+    except PresenceRefusedError:
+        pass
+    return RedirectResponse("/presence", status_code=303)
+
+
 @app.get("/api/v1/symbiosis")
 async def api_symbiosis(entity_id: str = "",
                         depth: int = 1) -> dict:
@@ -11927,6 +12049,82 @@ def guide_page() -> str:
             f"</p><div class=\"grove\">{cards}</div>")
     return _ui.shell("Guide", "/guide", _ui.living_bg() + main,
                      _ui.command_bar())
+
+
+def _presence_band_html(band: str, items: list) -> str:
+    """One presence band: glyph + title + attention cards."""
+    from . import ui as _ui
+    from .presence import BAND_META
+    meta = BAND_META.get(band, {"glyph": "•", "title": band})
+    body = "".join(_ui.presence_card(item) for item in items[:12])
+    return (
+        f"<div class=\"panel\" id=\"band-{band}\">"
+        f"<h2>{meta['glyph']} {meta['title']} ({len(items)})</h2>"
+        f"<div class=\"grove\">"
+        f"{body or _ui.empty('Nothing here.')}</div></div>")
+
+
+@app.get("/presence", response_class=HTMLResponse)
+def presence_page() -> str:
+    """Attention view: bands of live attention items, recently
+    cleared, and real progression. Derived now, read-only."""
+    from . import ui as _ui
+    from .presence import attention_snapshot, progression
+    try:
+        snapshot = attention_snapshot(limit=120)
+    except Exception:
+        snapshot = {"bands": {band: [] for band in
+                              ("needs", "waiting", "available",
+                               "discovered", "offline")},
+                    "cleared": [], "counts": {}}
+    bands = snapshot.get("bands", {})
+    try:
+        prog = progression()
+    except Exception:
+        prog = {"quests": [], "discoveries_24h": 0,
+                "observations_24h": 0, "growth_24h": 0,
+                "activity_24h": 0, "online_nodes": 0,
+                "capabilities_unlocked": []}
+    order = ("needs", "waiting", "available", "discovered",
+             "offline")
+    sections = "".join(
+        _presence_band_html(band, bands.get(band, []))
+        for band in order)
+    cleared = snapshot.get("cleared", [])
+    cleared_rows = "".join(
+        f"<li><small>{_ui.esc(item.get('title', ''))}</small> "
+        f"{_ui.chip('RESOLVED')}</li>" for item in cleared[:10])
+    quests = prog.get("quests", [])
+    quest_rows = "".join(
+        f"<li><small>{_ui.esc(quest.get('title', ''))}</small> "
+        f"{_ui.esc(str(quest.get('done', 0)))}/"
+        f"{_ui.esc(str(quest.get('total', 0)))} "
+        f"{_ui.chip(_ui.esc(quest.get('status', '')))} "
+        f"<a href=\"{_ui.esc(quest.get('href', '/'))}\">Open →"
+        f"</a></li>" for quest in quests[:8])
+    caps = ", ".join(_ui.esc(cap) for cap in
+                     prog.get("capabilities_unlocked", [])[:12])
+    main = (f"<h1>Presence — what deserves attention</h1>"
+            f"<p class=\"muted\">Derived live from approvals, "
+            f"missions, nodes, research, candidates, cameras, "
+            f"craft, symbiosis and automation. YES/NO run the "
+            f"existing gates; DEFER changes nothing.</p>"
+            f"{sections}"
+            f"<div class=\"panel\"><h2>Recently cleared "
+            f"({len(cleared)})</h2><ul>"
+            f"{cleared_rows or '<li>Nothing cleared lately.</li>'}"
+            f"</ul></div>"
+            f"<div class=\"panel\"><h2>Ecosystem activity</h2>"
+            f"<p class=\"muted\">{prog.get('activity_24h', 0)} "
+            f"events · {prog.get('discoveries_24h', 0)} "
+            f"discoveries · {prog.get('observations_24h', 0)} "
+            f"observations · {prog.get('growth_24h', 0)} growth "
+            f"· {prog.get('online_nodes', 0)} nodes online</p>"
+            f"<p class=\"muted\">Capabilities unlocked: "
+            f"{caps or '—'}</p>"
+            f"<ul class=\"quest\">{quest_rows or '<li>No open quests.</li>'}</ul></div>")
+    return _ui.shell("Presence", "/presence",
+                     _ui.living_bg() + main, _ui.command_bar())
 
 
 @app.get("/symbiosis", response_class=HTMLResponse)

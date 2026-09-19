@@ -75,6 +75,26 @@ class Heartbeat(BaseModel):
     energy_state: dict[str, Any] | None = Field(default=None)
 
 
+class PresenceTriageBody(BaseModel):
+    """Operator triage on one attention item (BIG #40).
+
+    SEEN/DEFERRED only; the item must be live right now or the
+    call refuses. DEFER performs nothing — it only hides the
+    item from the urgent bands.
+    """
+
+    item_id: str = Field(min_length=5, max_length=160)
+    decided_by: str = Field(default="jelles", min_length=1,
+                            max_length=80)
+
+
+class PresenceNotifyBody(BaseModel):
+    """Explicit presence fan-out (BIG #40). Deduplicated
+    IN_APP delivery; WEB_PUSH never involved."""
+
+    limit: int = Field(default=5, ge=1, le=10)
+
+
 class TaskCreate(BaseModel):
     kind: str = Field(min_length=2, max_length=80, pattern=r"^[a-zA-Z0-9._-]+$")
     payload: dict[str, Any] = Field(default_factory=dict)

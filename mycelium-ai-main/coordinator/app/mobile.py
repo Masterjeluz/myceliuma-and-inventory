@@ -196,6 +196,11 @@ def _deeplink(note: dict) -> str:
         "conversation_analyzed": "/conversations",
         "morning_report": "/morning",
         "system_attention": "/activity",
+        # BIG #40 Presence ecosystem
+        "mission_blocked": "/missions",
+        "contradiction_detected": "/conversations",
+        "automation_waiting": "/automation",
+        "fabrication_waiting": "/fabrication",
     }
     return mapping.get(kind, "/activity")
 
@@ -554,9 +559,32 @@ def dashboard(node: str = "") -> dict:
         cards = approval_cards(limit=10)
     except Exception:
         cards = []
+    try:
+        from .presence import attention_snapshot, progression
+        from datetime import datetime as _dt
+        snapshot = attention_snapshot(limit=60)
+        greeting = ("GOOD MORNING" if _dt.now().hour < 12
+                    else "NOW")
+    except Exception:
+        snapshot = {"bands": {band: [] for band in
+                              ("needs", "waiting", "available",
+                               "discovered", "offline")},
+                    "counts": {}, "cleared": []}
+        greeting = "NOW"
+    try:
+        prog = progression()
+    except Exception:
+        prog = {"quests": []}
     return {
         "waiting_count": len(cards),
         "cards": cards[:6],
+        "greeting": greeting,
+        "presence": {"bands": snapshot.get("bands", {}),
+                     "counts": snapshot.get("counts", {}),
+                     "cleared": snapshot.get("cleared", [])[:5]},
+        "progression": {"quests": prog.get("quests", [])[:5],
+                        "activity_24h": prog.get("activity_24h",
+                                                 0)},
         "guide": guide,
         "camera": camera_panel(),
         "craft": craft_panel(),

@@ -12,6 +12,9 @@ must be backed by stored state, never a claim):
   node_online, node_degraded, node_stale, hardware_connected,
   hardware_disconnected, capability_available, capability_unavailable,
   telemetry_stale, mission_blocked_hardware
+  # BIG #40 Presence ecosystem:
+  mission_blocked, contradiction_detected, automation_waiting,
+  fabrication_waiting
 
 Transports:
   IN_APP — REAL (polling via existing notifications store; the /mobile
@@ -52,6 +55,11 @@ NOTIFICATION_TYPES = frozenset({
     "capability_unavailable",
     "telemetry_stale",
     "mission_blocked_hardware",
+    # BIG #40 Presence ecosystem
+    "mission_blocked",
+    "contradiction_detected",
+    "automation_waiting",
+    "fabrication_waiting",
 })
 
 IN_APP_TRANSPORT = "IN_APP"
@@ -84,6 +92,11 @@ _SEVERITY_MAP = {
     "capability_unavailable": "warning",
     "telemetry_stale": "warning",
     "mission_blocked_hardware": "warning",
+    # BIG #40
+    "mission_blocked": "warning",
+    "contradiction_detected": "warning",
+    "automation_waiting": "approval_required",
+    "fabrication_waiting": "warning",
 }
 
 _UI_SEVERITY_MAP = {
@@ -128,6 +141,17 @@ def check_type(kind: str) -> str:
             f"Unknown notification type '{kind}'; expected one of "
             f"{sorted(NOTIFICATION_TYPES)}")
     return cleaned
+
+
+def severity_for(kind: str) -> str:
+    """Store severity bucket for a notification kind.
+
+    The notifications store carries the severity bucket in
+    `type` (a closed BIG #30 set); the specific kind travels
+    in title/body. Consumers that deduplicate (presence
+    fan-out) match on (severity, title).
+    """
+    return _SEVERITY_MAP[check_type(kind)]
 
 
 def send(recipient_node_id: str, kind: str, title: str, body: str = "",

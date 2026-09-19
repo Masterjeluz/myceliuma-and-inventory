@@ -17,7 +17,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
-MAX_BLOCKS = 16
+MAX_BLOCKS = 24
 MAX_ITEMS_PER_BLOCK = 15
 MAX_ITEM_CHARS = 300
 MAX_TITLE_CHARS = 120
@@ -99,7 +99,10 @@ def morning_report(sections: dict) -> Report:
                "tasks", "missions", "waiting", "agenda", "skills",
                "inventory", "workshop", "research", "fabrication",
                "devices", "findings", "suggestions", "fun",
-               "automation")
+               "automation", "presence_needs",
+               "presence_overnight", "presence_discoveries",
+               "presence_resources", "presence_blocked",
+               "presence_offline", "presence_next")
     if not isinstance(sections, dict):
         raise ReportRefusedError("Morning report needs an object")
     unknown = set(sections) - set(allowed)
@@ -114,8 +117,15 @@ def morning_report(sections: dict) -> Report:
               "workshop": "Workshop", "research": "Research",
               "fabrication": "Fabrication", "devices": "Devices",
                "findings": "Watcher findings",
-               "suggestions": "Suggestions", "fun": "Fun",
-               "automation": "Automation"}
+                "suggestions": "Suggestions", "fun": "Fun",
+                "automation": "Automation",
+                "presence_needs": "Needs you",
+                "presence_overnight": "Overnight changes",
+                "presence_discoveries": "Discoveries",
+                "presence_resources": "Available resources",
+                "presence_blocked": "Blocked work",
+                "presence_offline": "Offline and stale hardware",
+                "presence_next": "Suggested next actions"}
     return assemble_report([(titles[key], sections[key])
                             for key in allowed
                             if key in sections])
