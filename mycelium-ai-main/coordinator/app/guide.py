@@ -272,4 +272,69 @@ def guide_items(limit: int = 12) -> list[dict]:
                 "Open symbiosis", "/symbiosis"))
     except Exception:
         pass
+    try:
+        from .conversation_bridge import list_imports
+        from .conversation_intel import (
+            cross_conversation, list_intel)
+        imports = list_imports(limit=10)
+        fresh = None
+        for meta in imports:
+            conversation_id = meta.get("conversation_id", "")
+            try:
+                intel = list_intel(conversation_id, limit=100)
+            except Exception:
+                continue
+            kinds: dict[str, int] = {}
+            for entry in intel:
+                kind = str(entry.get("kind", ""))
+                kinds[kind] = kinds.get(kind, 0) + 1
+            missed = kinds.get("missed", 0)
+            research = kinds.get("research_proposal", 0)
+            contradictions = kinds.get("contradiction", 0)
+            if missed or research or contradictions:
+                fresh = (meta, missed, research, contradictions)
+                break
+        if fresh is not None:
+            meta, missed, research, contradictions = fresh
+            conversation_id = meta.get("conversation_id", "")
+            items.append(_item(
+                "conversation", "🔍",
+                f"{meta.get('title', '')[:60]}: {missed} missed, "
+                f"{research} research, {contradictions} "
+                f"contradictions.",
+                "Analysis found reviewable structure — nothing "
+                "promotes itself.",
+                "Review intelligence",
+                f"/conversations/{conversation_id}"))
+        try:
+            aggregate = cross_conversation(limit=10)
+        except Exception:
+            aggregate = {"revisits": [],
+                         "contradictions": []}
+        revisits = aggregate.get("revisits", [])
+        if revisits:
+            first = revisits[0]
+            items.append(_item(
+                "conversation", "🔁",
+                f"'{first.get('term', '')[:50]}' returns in "
+                f"{len(first.get('conversations', []))} "
+                f"conversations without progress.",
+                "Repeated without visible progress — revisit or "
+                "park it explicitly.",
+                "Revisit?", "/conversations"))
+        open_contradictions = [
+            item for item in aggregate.get("contradictions", [])
+            if item.get("status") == "UNRESOLVED"][:5]
+        if open_contradictions and not revisits:
+            first = open_contradictions[0]
+            conversations = first.get("conversations", [])
+            items.append(_item(
+                "conversation", "⚖",
+                "A contradiction needs your attention.",
+                str(first.get("text", ""))[:200],
+                "Resolve it",
+                f"/conversations/{conversations[0]}"
+                if conversations else "/conversations"))
+    except Exception:
+        pass
     return items[: max(1, min(int(limit or 12), 20))]

@@ -446,6 +446,53 @@ def progress_panel() -> dict:
     return {"quests": quests}
 
 
+def intel_panel(limit: int = 6) -> dict:
+    """Conversation intelligence for the phone: open threads,
+    decisions awaiting CONFIRM, contradictions, research
+    proposals. Read-only; actions link to /conversations."""
+    try:
+        from .conversation_intel import cross_conversation
+        aggregate = cross_conversation(limit=10)
+    except Exception:
+        return {"threads": [], "decisions": [], "research": []}
+    threads = [{
+        "text": str(item.get("text", ""))[:160],
+        "conversations": item.get("conversations", [])[:4],
+        "href": f"/conversations/{item.get('conversations', [''])[0]}"
+        if item.get("conversations") else "/conversations",
+    } for item in aggregate.get("contradictions", [])[:4]]
+    decisions: list[dict] = []
+    research: list[dict] = []
+    try:
+        from .conversation_bridge import list_imports
+        from .conversation_intel import list_intel
+        for meta in list_imports(limit=6):
+            conversation_id = meta.get("conversation_id", "")
+            try:
+                items = list_intel(conversation_id, limit=60)
+            except Exception:
+                continue
+            for entry in items:
+                kind = str(entry.get("kind", ""))
+                if kind == "decision" and len(decisions) < 3:
+                    decisions.append({
+                        "text": str(entry.get("text", ""))[:160],
+                        "href": f"/conversations/{conversation_id}",
+                    })
+                elif kind == "research_proposal" and \
+                        len(research) < 3:
+                    research.append({
+                        "text": str(entry.get("text", ""))[:160],
+                        "href": f"/conversations/{conversation_id}",
+                    })
+            if len(decisions) >= 3 and len(research) >= 3:
+                break
+    except Exception:
+        pass
+    return {"threads": threads, "decisions": decisions,
+            "research": research}
+
+
 def dashboard(node: str = "") -> dict:
     """One bounded snapshot for /mobile + the JSON endpoint."""
     from . import main as _main
@@ -471,6 +518,7 @@ def dashboard(node: str = "") -> dict:
         "symbiosis": symbiosis_panel(),
         "nodes": nodes_panel(),
         "progress": progress_panel(),
+        "intel": intel_panel(),
         "notifications": notification_cards(node, limit=8),
         "packet": packet_preview(),
         "living": {

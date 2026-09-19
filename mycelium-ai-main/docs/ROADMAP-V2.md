@@ -1,12 +1,14 @@
-# Mycelium V2 Roadmap — BIG #36 → BIG #40 (directional)
+# Mycelium V2 Roadmap — BIG #37 → BIG #40 (directional)
 
-Status after BIG #36: mobile command surface on the living
-world — NOW/WAITING/ACTIVE/RECENT/GUIDE home, unified
-approval triage (same gates), deeplink notifications,
-camera flow, packet handoff, craft/symbiosis/nodes panels,
-quest progress, notifier lifecycle. 1215 Mycelium tests
-green; INVENTory untouched (179 + 1 pre-existing). See
-`docs/BIG36-final-report.md`.
+Status after BIG #37: conversation intelligence on the
+living world — deterministic extractive themes, decisions,
+promises, contradictions, categorized missed items,
+research proposals, entity links, symbiosis discoveries;
+cross-conversation dedupe + REVISIT; timeline; packet
+intelligence; opt-in graph overlay; archive UI with
+DISCOVERY; guide/mobile/notifications wiring. 1231
+Mycelium tests green; INVENTory untouched (179 + 1
+pre-existing). See `docs/BIG37-final-report.md`.
 
 Principles for every step: reuse stores, explicit promotion,
 provenance always, honest REAL/TEST/SIMULATED/UNAVAILABLE/FUTURE,
@@ -44,12 +46,13 @@ camera/packet/guide/craft/symbiosis/nodes/progress panels,
 notifier lifecycle. WEB_PUSH stays UNAVAILABLE; DEFER is an
 honest non-action.
 
-## BIG #37 — Conversation Intelligence
+## BIG #37 — Conversation Intelligence (DONE 2026-09-19)
 
-External-AI refinery: repeated-theme detection across imports
-(compare exists), decision/promise tracking with reminders,
-contradiction surfacing into candidates, import → research
-question proposals. Analysis stays OBSERVATION/CANDIDATE.
+Shipped: deterministic themes/decisions/promises/
+contradictions/missed/research/links/symbiosis, fingerprint
+dedupe, REVISIT, timeline, packet section, graph overlay,
+archive UI, guide/mobile/notifications. No LLM involved;
+analysis stays OBSERVATION/CANDIDATE.
 
 ## BIG #38 — Living Automation
 

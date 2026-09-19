@@ -7472,6 +7472,15 @@ async def _graph_data(entity_id: str, depth: int,
         except Exception:
             return None
 
+    def _overlay_intel() -> list[dict] | None:
+        if "intel" not in flags:
+            return None
+        try:
+            from .conversation_intel import list_intel
+            return list_intel(limit=40)
+        except Exception:
+            return None
+
     try:
         clean_depth = depth if depth in GRAPH_DEPTHS else 1
         graph = await build_world_graph(
@@ -7495,6 +7504,7 @@ async def _graph_data(entity_id: str, depth: int,
             memories=_overlay_memories(),
             candidates=_overlay_candidates(),
             conversations=_overlay_conversations(),
+            intel=_overlay_intel(),
             truth=str(selected.get("truth", "all")),
             source=str(selected.get("source", "all")),
             kind=str(selected.get("kind", "all")),
@@ -8861,6 +8871,10 @@ def mobile_page(node: str = "") -> str:
     <a href="/fabrication">🛠<small>Maak</small></a>
     <a href="/guide">🌱<small>Ga verder</small></a>
     <a href="/missions">📋<small>Wat staat open?</small></a>
+    <a href="/conversations">📥<small>Import chat</small></a>
+    <a href="/conversations">🔍<small>What did we miss?</small></a>
+    <a href="#intel">🧵<small>Open threads</small></a>
+    <a href="#intel">⚖<small>Decisions</small></a>
     </div>
     <p class="muted">PROCESSING: Mycelium verwerkt dit (INPUT → PROCESSING → NODE → RESULT). RESULT verschijnt hieronder bij events en in <a href="/activity">Activity</a>. NEEDS YOU: alles met een YES-button wacht op jou — <a href="/guide">Guide</a> wijst de weg.</p></div>
     {_mobile_guide_panel_v2(dash)}
@@ -8868,6 +8882,7 @@ def mobile_page(node: str = "") -> str:
     <p class="muted">1. Typ wat je wilt. 2. Mycelium bepaalt wat nodig is. 3. Een node kan het uitvoeren. 4. Je ziet wat er gebeurt. 5. Toestemming blijft expliciet. 6. Resultaat komt terug op je telefoon. Jij blijft degene die acties goedkeurt.</p></div>
     {_mobile_camera_v2_html(dash)}
     {_mobile_packet_html(dash)}
+    {_mobile_intel_html(dash)}
     {_mobile_craft_html(dash)}
     {_mobile_symbiosis_html(dash)}
     {_mobile_nodes_html(dash)}
@@ -9120,6 +9135,39 @@ def _mobile_packet_html(dash: dict) -> str:
         f"state. No secrets inside.</p></div>")
 
 
+def _mobile_intel_html(dash: dict) -> str:
+    """Conversation intelligence: open threads, decisions
+    awaiting CONFIRM, research proposals. Links only."""
+    from . import ui as _ui
+    panel = dash.get("intel", {}) if isinstance(
+        dash.get("intel"), dict) else {}
+    threads = "".join(
+        f"<li><a href=\"{_ui.esc(item.get('href', '/conversations'))}\">"
+        f"{_ui.esc(item.get('text', ''))}</a></li>"
+        for item in panel.get("threads", [])[:4])
+    decisions = "".join(
+        f"<li><a href=\"{_ui.esc(item.get('href', '/conversations'))}\">"
+        f"{_ui.esc(item.get('text', ''))}</a> "
+        f"<span class=\"muted\">[awaiting CONFIRM]</span></li>"
+        for item in panel.get("decisions", [])[:3])
+    research = "".join(
+        f"<li><a href=\"{_ui.esc(item.get('href', '/conversations'))}\">"
+        f"{_ui.esc(item.get('text', ''))}</a></li>"
+        for item in panel.get("research", [])[:3])
+    return (
+        f"<div class=\"panel\" id=\"intel\"><h2>Threads</h2>"
+        f"<h3>Open threads</h3>"
+        f"<ul>{threads or '<li>No open contradictions.</li>'}</ul>"
+        f"<h3>Decisions</h3>"
+        f"<ul>{decisions or '<li>No decisions awaiting CONFIRM.</li>'}</ul>"
+        f"<h3>Research this</h3>"
+        f"<ul>{research or '<li>No research proposals.</li>'}</ul>"
+        f"<p><a href=\"/conversations\">Import chat</a> · "
+        f"<a href=\"/conversations\">What did we miss?</a> · "
+        f"<a href=\"/api/v1/context/packet\">Continue elsewhere</a></p>"
+        f"</div>")
+
+
 def _mobile_craft_html(dash: dict) -> str:
     """CRAFT: checklists with ✓/●/○ from real presence."""
     from . import ui as _ui
@@ -9280,6 +9328,94 @@ def api_conversation_missed(conversation_id: str) -> dict:
         raise HTTPException(status_code=422, detail=str(exc))
 
 
+@app.get("/api/v1/conversation-intel/{conversation_id}")
+def api_conversation_intel(conversation_id: str) -> dict:
+    from .conversation_intel import (IntelRefusedError,
+                                     analyze_conversation)
+    try:
+        return analyze_conversation(conversation_id)
+    except IntelRefusedError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+
+@app.get("/api/v1/conversation-intel/{conversation_id}/timeline")
+def api_conversation_timeline(conversation_id: str,
+                              limit: int = 40) -> dict:
+    from .conversation_intel import IntelRefusedError, timeline
+    try:
+        return {"timeline": timeline(conversation_id, limit=limit)}
+    except IntelRefusedError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+
+@app.get("/api/v1/conversation-intel/{conversation_id}/graph")
+def api_conversation_graph(conversation_id: str,
+                           limit: int = 40) -> dict:
+    from .conversation_intel import IntelRefusedError, intel_graph
+    try:
+        return intel_graph(conversation_id, limit=limit)
+    except IntelRefusedError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+
+@app.get("/api/v1/conversation-intel-cross")
+def api_conversation_intel_cross(limit: int = 10) -> dict:
+    from .conversation_intel import cross_conversation
+    return cross_conversation(limit=limit)
+
+
+@app.post("/api/v1/conversation-intel/{conversation_id}/materialize",
+          status_code=201)
+def api_conversation_materialize(conversation_id: str,
+                                 body: dict) -> dict:
+    from .conversation_intel import (IntelRefusedError,
+                                     materialize)
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=422, detail="JSON body required")
+    try:
+        return materialize(
+            conversation_id, str(body.get("fingerprint", "")),
+            str(body.get("action", "")))
+    except IntelRefusedError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+
+@app.post("/web/conversations/{conversation_id}/analyze-intel")
+async def web_conversation_analyze_intel(
+        conversation_id: str) -> Response:
+    from .conversation_bridge import BridgeRefusedError
+    from .conversation_intel import (IntelRefusedError,
+                                     analyze_conversation)
+    try:
+        from .conversation_bridge import analyze_import
+        analyze_import(conversation_id)
+    except BridgeRefusedError:
+        pass
+    try:
+        analyze_conversation(conversation_id)
+    except IntelRefusedError:
+        pass
+    return RedirectResponse(f"/conversations/{conversation_id}",
+                            status_code=303)
+
+
+@app.post("/web/conversation-intel/{conversation_id}/materialize")
+async def web_conversation_materialize(conversation_id: str,
+                                       request: Request
+                                       ) -> Response:
+    from .conversation_intel import (IntelRefusedError,
+                                     materialize)
+    fields = await _form_fields(request)
+    try:
+        materialize(conversation_id,
+                    fields.get("fingerprint", ""),
+                    fields.get("action", "candidate"))
+    except IntelRefusedError:
+        pass
+    return RedirectResponse(f"/conversations/{conversation_id}",
+                            status_code=303)
+
+
 @app.get("/api/v1/context/packet")
 def api_context_packet(goal: str = "", project_id: str = "",
                        conversation_id: str = "",
@@ -9420,6 +9556,7 @@ def conversations_page() -> str:
     <ul>{show_items or "<li>Nog niets — importeer een gesprek.</li>"}</ul>
     <h3>Open researchvragen</h3><ul>{show_research or "<li>—</li>"}</ul>
     <p><a href="/api/v1/discoveries">discoveries (JSON)</a> · <a href="/api/v1/imports-compare">compare imports (JSON)</a></p></div>
+    {_conversations_intel_html()}
     <div class="panel"><h2>Import a conversation</h2>
     <form method="post" action="/web/conversations/import">
     <input type="text" name="title" placeholder="Title" style="width:40%" aria-label="Title"><br><br>
@@ -9430,6 +9567,168 @@ def conversations_page() -> str:
     <div class="panel"><h2>Imported</h2><table><tr><th>Title</th><th>Platform</th><th>Msgs</th><th>When</th></tr>{rows}</table></div>"""
     return _ui.shell("Conversations", "/conversations", main,
                      _ui.command_bar())
+
+
+def _conversations_intel_html() -> str:
+    """Archive overview: RECENT, THEMES, OPEN THREADS,
+    DECISIONS, PROMISES, CONTRADICTIONS, MISSED, RESEARCH,
+    PROJECT LINKS — all from real intel records."""
+    from . import ui as _ui
+    try:
+        from .conversation_intel import cross_conversation
+        aggregate = cross_conversation(limit=10)
+    except Exception:
+        return ""
+    if not aggregate.get("unique_items"):
+        return ""
+    themes = "".join(
+        f"<li>{_ui.esc(entry.get('term', ''))} "
+        f"<span class=\"muted\">({len(entry.get('conversations', []))}x)</span></li>"
+        for entry in aggregate.get("themes", [])[:10])
+    threads = "".join(
+        f"<li>{_ui.esc(item.get('text', ''))[:140]} "
+        f"<span class=\"muted\">[UNRESOLVED]</span></li>"
+        for item in aggregate.get("contradictions", [])[:5])
+    revisits = "".join(
+        f"<li>{_ui.esc(item.get('text', ''))[:160]}</li>"
+        for item in aggregate.get("revisits", [])[:5])
+    promises = "".join(
+        f"<li>{_ui.esc(item.get('text', ''))[:140]} "
+        f"<span class=\"muted\">[{_ui.esc(str(item.get('status', 'UNKNOWN')))}]</span></li>"
+        for item in aggregate.get("open_promises", [])[:5])
+    return (
+        f"<div class=\"panel\"><h2>What the archive holds</h2>"
+        f"<h3>Themes</h3><ul>{themes or '<li>—</li>'}</ul>"
+        f"<h3>Open threads</h3><ul>{threads or '<li>—</li>'}</ul>"
+        f"<h3>Decisions &amp; promises</h3><ul>{promises or '<li>—</li>'}</ul>"
+        f"<h3>Revisit?</h3><ul>{revisits or '<li>—</li>'}</ul>"
+        f"<p class=\"muted\">Per-conversation detail lives behind "
+        f"each import below. Analysis is OBSERVATION/CANDIDATE — "
+        f"never fact.</p></div>")
+
+
+def _conversation_discovery_html(conversation_id: str) -> str:
+    """DISCOVERY banner: genuinely new, unmaterialized items.
+    UI feedback only — every number is a real count."""
+    from . import ui as _ui
+    try:
+        from .conversation_intel import list_intel
+        items = list_intel(conversation_id, limit=200)
+    except Exception:
+        return ""
+    fresh = sum(1 for item in items
+                if not item.get("materialized"))
+    if not items:
+        return ""
+    kinds: dict[str, int] = {}
+    for item in items:
+        kind = str(item.get("kind", ""))
+        kinds[kind] = kinds.get(kind, 0) + 1
+    summary = " · ".join(f"{count} {kind}"
+                         for kind, count in sorted(kinds.items()))
+    return (
+        f"<div class=\"panel living\"><h2>✨ Discovery</h2>"
+        f"<p>{_ui.esc(summary)}. "
+        f"{fresh} item(s) not yet materialized — review below, "
+        f"then CONFIRM, queue research, or link.</p></div>")
+
+
+def _conversation_intel_html(conversation_id: str) -> str:
+    """Detail sections: themes, decisions, promises, questions,
+    contradictions, missed, research, entity links, symbiosis,
+    timeline — each with materialize actions."""
+    from . import ui as _ui
+    try:
+        from .conversation_intel import list_intel, timeline
+        items = list_intel(conversation_id, limit=200)
+        line = timeline(conversation_id, limit=30)
+    except Exception:
+        return ""
+    if not items:
+        return ""
+    by_kind: dict[str, list[dict]] = {}
+    for item in items:
+        by_kind.setdefault(str(item.get("kind", "")), []).append(
+            item)
+
+    def _materialize_form(item: dict, actions: list[str]) -> str:
+        if item.get("materialized"):
+            materialized = item["materialized"]
+            return (
+                f"<span class=\"muted\">→ "
+                f"{_ui.esc(str(materialized.get('action', '')))}: "
+                f"{_ui.esc(str(materialized.get('candidate_id', materialized.get('run_id', ''))))}</span>")
+        buttons = "".join(
+            f"<form method=\"post\" action=\"/web/conversation-intel/"
+            f"{_ui.esc(conversation_id)}/materialize\" "
+            f"style=\"display:inline\">"
+            f"<input type=\"hidden\" name=\"fingerprint\" value=\""
+            f"{_ui.esc(str(item.get('fingerprint', '')))}\">"
+            f"<input type=\"hidden\" name=\"action\" value=\"{action}\">"
+            f"<button type=\"submit\">{_ui.esc(action)}</button></form> "
+            for action in actions)
+        return buttons
+
+    def _section(title: str, kind: str, actions: list[str],
+                 extra=None) -> str:
+        rows = ""
+        for item in by_kind.get(kind, [])[:12]:
+            detail = ""
+            if extra is not None:
+                try:
+                    detail = extra(item)
+                except Exception:
+                    detail = ""
+            rows += (
+                f"<li>{_ui.esc(str(item.get('text', ''))[:220])}<br>"
+                f"<span class=\"muted\">evidence: "
+                f"{_ui.esc(str(item.get('evidence', ''))[:160])} · "
+                f"{_ui.esc(str(item.get('confidence', item.get('status', ''))))}"
+                f"</span><br>{detail}"
+                f"{_materialize_form(item, actions)}</li>")
+        if not rows:
+            return ""
+        return f"<div class=\"panel\"><h2>{_ui.esc(title)}</h2><ul>{rows}</ul></div>"
+
+    def _decision_extra(item: dict) -> str:
+        return (f"<span class=\"muted\">resolution: "
+                f"{_ui.esc(str(item.get('resolution', 'UNRESOLVED')))} · "
+                f"CONFIRM/REJECT via the candidate buttons</span><br>")
+
+    def _promise_extra(item: dict) -> str:
+        return (f"<span class=\"muted\">owner: "
+                f"{_ui.esc(str(item.get('owner', '')))} · status: "
+                f"{_ui.esc(str(item.get('status', 'UNKNOWN')))} · "
+                f"{_ui.esc(str(item.get('completion_evidence', ''))[:160])}"
+                f"</span><br>")
+
+    def _contradiction_extra(item: dict) -> str:
+        return (f"<span class=\"muted\">A: "
+                f"{_ui.esc(str(item.get('side_a', ''))[:140])}<br>B: "
+                f"{_ui.esc(str(item.get('side_b', ''))[:140])}<br>"
+                f"status: UNRESOLVED — human resolves</span><br>")
+
+    timeline_rows = "".join(
+        f"<li><span class=\"muted\">"
+        f"{_ui.esc(str(entry.get('at', 'unknown')))}</span> "
+        f"<b>{_ui.esc(str(entry.get('kind', '')))}</b> — "
+        f"{_ui.esc(str(entry.get('text', ''))[:140])}</li>"
+        for entry in line)
+    return (
+        _section("Themes", "theme", []) +
+        _section("Decisions", "decision", ["candidate"],
+                 _decision_extra) +
+        _section("Promises", "promise", ["candidate"],
+                 _promise_extra) +
+        _section("Open questions & research", "research_proposal",
+                 ["candidate", "research-queue"]) +
+        _section("Contradictions", "contradiction", ["candidate"],
+                 _contradiction_extra) +
+        _section("Missed items", "missed", ["candidate"]) +
+        _section("Entity links", "entity_link", ["link"]) +
+        _section("Possible symbioses", "symbiosis", ["link"]) +
+        f"<div class=\"panel\"><h2>Timeline</h2><ul class=\"timeline\">"
+        f"{timeline_rows}</ul></div>")
 
 
 @app.get("/conversations/{conversation_id}", response_class=HTMLResponse)
@@ -9468,9 +9767,11 @@ def conversation_detail_page(conversation_id: str):
         for item in missed)
     main = f"""<h1>{_ui.esc(meta['title'][:100])}</h1>
     <p class="muted">{_ui.esc(meta['source_platform'])} · {meta['message_count']} messages · imported {_ui.esc(str(meta['imported_at'])[:16])} · {_ui.esc(meta['execution_state'])} · provenance imported/human_verified=false</p>
+    {_conversation_discovery_html(conversation_id)}
     <div class="panel"><h2>What did we miss?</h2><ul>{missed_html or "<li>Nothing flagged — import more context.</li>"}</ul></div>
     <div class="panel"><h2>Analysis (OBSERVATION / CANDIDATE — never fact)</h2><ul>{findings or "<li>Not analyzed yet.</li>"}</ul>
-    <p><form method="post" action="/web/conversations/{_ui.esc(conversation_id)}/analyze"><button type="submit">Analyze</button></form></p></div>
+    <p><form method="post" action="/web/conversations/{_ui.esc(conversation_id)}/analyze"><button type="submit">Analyze</button></form> <form method="post" action="/web/conversations/{_ui.esc(conversation_id)}/analyze-intel" style="display:inline"><button type="submit">Analyze intelligence</button></form></p></div>
+    {_conversation_intel_html(conversation_id)}
     <div class="panel"><h2>Context bridge — continue elsewhere</h2>
     <p><a href="/api/v1/context/packet?conversation_id={_ui.esc(conversation_id)}">Context packet (JSON)</a> · <a href="/api/v1/context/continue?conversation_id={_ui.esc(conversation_id)}">Continuation (JSON)</a> · <a href="/api/v1/context/packet.md?conversation_id={_ui.esc(conversation_id)}">Packet v2 (Markdown)</a> · <a href="/api/v1/conversation-imports/{_ui.esc(conversation_id)}/markdown">This import (Markdown)</a> · <a href="/api/v1/conversation-imports/{_ui.esc(conversation_id)}/relevance">INVENTory relevance (JSON)</a></p>
     <p><button type="button" id="copypacket">Copy context (Markdown)</button> <span id="copied" class="muted" role="status"></span></p>

@@ -119,6 +119,30 @@ def build_context_packet(*, goal: str = "", project_id: str = "",
                         "findings": len((analysis or {}).get(
                             "findings", [])),
                     }
+                    try:
+                        from .conversation_intel import list_intel
+                        intel_items = list_intel(conversation_id,
+                                                 limit=40)
+                        kinds: dict[str, int] = {}
+                        top: list[dict] = []
+                        for entry in intel_items:
+                            kind = str(entry.get("kind", ""))
+                            kinds[kind] = kinds.get(kind, 0) + 1
+                            if len(top) < 10:
+                                top.append({
+                                    "kind": kind,
+                                    "text": str(entry.get(
+                                        "text", ""))[:160],
+                                    "state": str(entry.get(
+                                        "state", ""))})
+                        packet["conversation"]["intelligence"] = {
+                            "method": "extractive-local",
+                            "items": len(intel_items),
+                            "kinds": kinds,
+                            "top": top,
+                        }
+                    except Exception:
+                        pass
             else:
                 from .database import chat_connection, init_chat_database
                 init_chat_database()

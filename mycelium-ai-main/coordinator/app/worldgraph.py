@@ -34,6 +34,7 @@ OVERLAY_NODE_TYPES = frozenset({
     "mission", "agent", "node", "observation", "artifact",
     "print_job", "printer", "live_session", "research",
     "memory", "candidate", "conversation",
+    "theme", "decision", "promise", "question",
 })
 
 #: Truth classes for filtering (BIG #32). Inventory nodes map by
@@ -84,6 +85,7 @@ async def build_world_graph(reader, entity_id: str, depth: int = 1, *,
                             memories: list[dict] | None = None,
                             candidates: list[dict] | None = None,
                             conversations: list[dict] | None = None,
+                            intel: list[dict] | None = None,
                             truth: str = "all",
                             source: str = "all",
                             kind: str = "all",
@@ -123,6 +125,8 @@ async def build_world_graph(reader, entity_id: str, depth: int = 1, *,
         _overlay_candidates(nodes, edges, candidates)
     if conversations:
         _overlay_conversations(nodes, edges, conversations)
+    if intel:
+        _overlay_intel(nodes, edges, intel)
     for agent in (agent_nodes or [])[:50]:
         node_id = str(agent.get("node_id", ""))
         if not node_id or node_id in nodes:
@@ -327,6 +331,51 @@ def _overlay_conversations(nodes: dict, edges: list,
                 "human_verified": False,
             },
         }
+        if len(nodes) >= MAX_NODES:
+            return
+
+
+def _overlay_intel(nodes: dict, edges: list,
+                   items: list[dict]) -> None:
+    """Conversation intelligence as overlay (context, never
+    truth). Theme/decision/promise/question nodes hang off
+    their conversation with dashed provenance."""
+    type_map = {"theme": "theme", "decision": "decision",
+                "promise": "promise",
+                "research_proposal": "research",
+                "missed": "question",
+                "contradiction": "question",
+                "entity_link": "candidate",
+                "symbiosis": "candidate"}
+    for item in list(items or [])[:MAX_NODE_OVERLAY]:
+        if not isinstance(item, dict):
+            continue
+        finger = str(item.get("fingerprint", ""))
+        if not finger:
+            continue
+        node_id = f"cintel_{finger[:16]}"
+        if node_id in nodes:
+            continue
+        conversation_id = str(item.get("conversation_id", ""))
+        nodes[node_id] = {
+            "id": node_id,
+            "type": type_map.get(str(item.get("kind", "")),
+                                 "candidate"),
+            "label": str(item.get("text", ""))[:60],
+            "source": "mycelium",
+            "metadata": {"human_verified": False,
+                         "intel_kind": str(item.get("kind", "")),
+                         "state": str(item.get("state", ""))},
+        }
+        if conversation_id:
+            edges.append({
+                "from": conversation_id, "predicate": "surfaces",
+                "to": node_id,
+                "provenance": {
+                    "source_type": "ai-generated",
+                    "creator_id": "conversation-intel",
+                    "human_verified": False},
+            })
         if len(nodes) >= MAX_NODES:
             return
 
