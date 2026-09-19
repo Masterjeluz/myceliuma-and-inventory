@@ -371,21 +371,49 @@ def symbiosis_panel(limit: int = 5) -> list[dict]:
 
 
 def nodes_panel() -> dict:
-    """ONLINE/IDLE/BUSY/WAITING/UNAVAILABLE + WHAT IT CAN DO,
-    plus the PHONE→COORDINATOR→NODES path (BIG37 prep)."""
+    """ONLINE/DEGRADED/STALE/OFFLINE/UNKNOWN + telemetry +
+    hardware + compute. The PHONE→COORDINATOR→NODES path."""
     try:
-        from .nodemesh import mesh_topology
-        topo = mesh_topology()
+        from . import main as _main
+        nodes_data = _main.list_nodes()
     except Exception:
         return {"nodes": [], "path": []}
     nodes = []
-    for entry in topo.get("nodes", [])[:15]:
+    for entry in nodes_data[:15]:
+        telemetry = entry.get("telemetry", {})
+        hardware = entry.get("hardware", [])
+        compute = entry.get("compute_capabilities", [])
+        health = entry.get("health_status", "UNKNOWN")
+        hw_connected = sum(1 for h in hardware if isinstance(h, dict) and h.get("status") == "connected") if isinstance(hardware, list) else 0
+        comp_available = sum(1 for c in compute if isinstance(c, dict) and c.get("status") == "available") if isinstance(compute, list) else 0
         nodes.append({
             "node_id": entry.get("node_id", ""),
-            "status": entry.get("status", ""),
+            "display_name": entry.get("display_name", "") or entry.get("hostname", ""),
+            "status": entry.get("derived_status", ""),
+            "health": health,
             "tier": entry.get("tier", ""),
             "roles": entry.get("roles", []),
             "capabilities": entry.get("capabilities", [])[:8],
+            "telemetry": {
+                "cpu_percent": telemetry.get("cpu_percent") if isinstance(telemetry, dict) else None,
+                "memory_percent": telemetry.get("memory_percent") if isinstance(telemetry, dict) else None,
+                "disk_percent": telemetry.get("disk_percent") if isinstance(telemetry, dict) else None,
+                "temperature_celsius": telemetry.get("temperature_celsius") if isinstance(telemetry, dict) else None,
+                "uptime_seconds": telemetry.get("uptime_seconds") if isinstance(telemetry, dict) else None,
+                "timestamp": entry.get("telemetry_timestamp", ""),
+            },
+            "hardware": {
+                "count": len(hardware) if isinstance(hardware, list) else 0,
+                "connected": hw_connected,
+                "kinds": [h.get("kind") for h in hardware if isinstance(h, dict)] if isinstance(hardware, list) else [],
+            },
+            "compute": {
+                "count": len(compute) if isinstance(compute, list) else 0,
+                "available": comp_available,
+                "capabilities": [c.get("capability") for c in compute if isinstance(c, dict)] if isinstance(compute, list) else [],
+            },
+            "energy": entry.get("energy_state", {}) if isinstance(entry.get("energy_state"), dict) else {},
+            "last_seen": entry.get("last_seen", ""),
         })
     return {
         "nodes": nodes,

@@ -198,3 +198,204 @@ def test_requirements_validation_tripwires():
     with pytest.raises(ValueError):
         check_policy("nope")
     assert isinstance(route_task(req(), []), RouteDecision)
+
+
+# -- BIG #39: Hardware Reality Layer routing tests --
+
+from datetime import datetime, timezone, timedelta
+
+
+def node_with_telemetry(node_id, **overrides):
+    """Create a node with telemetry and hardware reality layer fields."""
+    now = datetime.now(timezone.utc).isoformat()
+    record = {
+        "node_id": node_id,
+        "capabilities": ["x.y"],  # Default capability for tests
+        "models": [],
+        "executors": [],
+        "resources": {},
+        "locality_zone": "local_network",
+        "status": "online",
+        "fresh": True,
+        "authenticated": True,
+        "telemetry": {"cpu_percent": 10},
+        "telemetry_timestamp": now,
+        "hardware": [{"kind": "camera", "identifier": "cam1", "status": "connected"}],
+        "compute_capabilities": [{"capability": "ollama", "status": "available"}],
+        "energy_state": {"source": "grid", "level_percent": 100},
+        "health_status": "ONLINE",
+    }
+    record.update(overrides)
+    return record
+
+
+def test_required_hardware_gate():
+    """Required hardware is a hard gate - missing connected hardware rejects."""
+    cam_node = node_with_telemetry("node_cam",
+        hardware=[{"kind": "camera", "identifier": "cam1", "status": "connected"}])
+    no_cam_node = node_with_telemetry("node_no_cam",
+        hardware=[{"kind": "usb", "identifier": "usb1", "status": "connected"}])
+    req = check_requirements({
+        "required_capabilities": ["x.y"],
+        "required_hardware": ["camera"],
+    })
+    # Node with camera passes
+    decision = route_task(req, [cam_node, no_cam_node])
+    assert decision.selected_node_id == "node_cam"
+    # Node without camera is rejected
+    assert any("missing connected hardware camera" in r
+               for r in decision.rejected[0].reasons)
+    # Disconnected hardware doesn't count
+    disconnected = node_with_telemetry("node_disc",
+        hardware=[{"kind": "camera", "identifier": "cam1", "status": "disconnected"}])
+    decision = route_task(req, [disconnected])
+    assert decision.selected_node_id is None
+
+
+def test_required_compute_gate():
+    """Required compute capability is a hard gate."""
+    gpu_node = node_with_telemetry("node_gpu",
+        compute_capabilities=[{"capability": "gpu_available", "status": "available"}])
+    cpu_node = node_with_telemetry("node_cpu",
+        compute_capabilities=[{"capability": "cpu_inference", "status": "available"}])
+    req = check_requirements({
+        "required_capabilities": ["x.y"],
+        "required_compute": ["gpu_available"],
+    })
+    decision = route_task(req, [gpu_node, cpu_node])
+    assert decision.selected_node_id == "node_gpu"
+    assert any("missing available compute gpu_available" in r
+               for r in decision.rejected[0].reasons)
+    # Busy compute doesn't count
+    busy = node_with_telemetry("node_busy",
+        compute_capabilities=[{"capability": "gpu_available", "status": "busy"}])
+    decision = route_task(req, [busy])
+    assert decision.selected_node_id is None
+
+
+def test_max_telemetry_age_gate():
+    """Max telemetry age is a hard gate."""
+    now = datetime.now(timezone.utc).isoformat()
+    old_ts = (datetime.now(timezone.utc) - timedelta(minutes=10)).isoformat()
+    fresh_node = node_with_telemetry("node_fresh", telemetry_timestamp=now)
+    stale_node = node_with_telemetry("node_stale", telemetry_timestamp=old_ts)
+    req = check_requirements({
+        "required_capabilities": ["x.y"],
+        "max_telemetry_age_seconds": 300,  # 5 minutes
+    })
+    decision = route_task(req, [fresh_node, stale_node])
+    assert decision.selected_node_id == "node_fresh"
+    assert any("telemetry too old" in r for r in decision.rejected[0].reasons)
+    # No telemetry timestamp fails
+    no_ts = node_with_telemetry("node_no_ts", telemetry_timestamp="")
+    decision = route_task(req, [no_ts])
+    assert decision.selected_node_id is None
+    assert any("no telemetry timestamp" in r for r in decision.rejected[0].reasons)
+
+
+def test_min_health_gate():
+    """Minimum health is a hard gate."""
+    online = node_with_telemetry("node_online", health_status="ONLINE")
+    degraded = node_with_telemetry("node_degraded", health_status="DEGRADED")
+    stale = node_with_telemetry("node_stale", health_status="STALE")
+    req = check_requirements({
+        "required_capabilities": ["x.y"],
+        "min_health": "ONLINE",
+    })
+    decision = route_task(req, [online, degraded, stale])
+    assert decision.selected_node_id == "node_online"
+    assert len(decision.rejected) == 2
+    # DEGRADED is below ONLINE
+    assert any("health DEGRADED below minimum ONLINE" in r
+               for r in decision.rejected[0].reasons)
+    # Lower min_health allows more - both ONLINE and DEGRADED eligible
+    # Tie-break by node_id: node_degraded < node_online alphabetically
+    req2 = check_requirements({
+        "required_capabilities": ["x.y"],
+        "min_health": "DEGRADED",
+    })
+    decision2 = route_task(req2, [online, degraded, stale])
+    assert decision2.selected_node_id == "node_degraded"
+    assert len(decision2.rejected) == 1  # only STALE rejected
+
+
+def test_telemetry_freshness_preference():
+    """Fresh telemetry gives preference bonus."""
+    now = datetime.now(timezone.utc).isoformat()
+    old_ts = (datetime.now(timezone.utc) - timedelta(minutes=10)).isoformat()
+    fresh = node_with_telemetry("node_fresh", telemetry_timestamp=now)
+    stale = node_with_telemetry("node_stale", telemetry_timestamp=old_ts)
+    policy = check_policy({"prefer_fresh_telemetry": True})
+    req = check_requirements({"required_capabilities": ["x.y"]})
+    decision = route_task(req, [stale, fresh], policy)
+    assert decision.selected_node_id == "node_fresh"
+    assert any("fresh telemetry" in r for r in decision.reasons)
+
+
+def test_connected_hardware_preference():
+    """Connected hardware count gives preference bonus."""
+    hw_node = node_with_telemetry("node_hw",
+        hardware=[{"kind": "camera", "identifier": "cam1", "status": "connected"},
+                  {"kind": "printer_3d", "identifier": "printer1", "status": "connected"}])
+    no_hw = node_with_telemetry("node_no_hw", hardware=[])
+    policy = check_policy({"prefer_connected_hardware": True})
+    req = check_requirements({"required_capabilities": ["x.y"]})
+    decision = route_task(req, [no_hw, hw_node], policy)
+    assert decision.selected_node_id == "node_hw"
+    assert any("2 connected hardware item" in r for r in decision.reasons)
+
+
+def test_compute_capabilities_preference():
+    """Available compute capabilities give preference bonus."""
+    compute_node = node_with_telemetry("node_compute",
+        compute_capabilities=[{"capability": "ollama", "status": "available"},
+                              {"capability": "gpu_available", "status": "available"}])
+    no_compute = node_with_telemetry("node_no_compute",
+        compute_capabilities=[{"capability": "cpu_inference", "status": "unavailable"}])
+    policy = check_policy({"prefer_compute_capabilities": True})
+    req = check_requirements({"required_capabilities": ["x.y"]})
+    decision = route_task(req, [no_compute, compute_node], policy)
+    assert decision.selected_node_id == "node_compute"
+    assert any("available compute capability" in r for r in decision.reasons)
+
+
+def test_required_hardware_positive_reason():
+    """Required hardware present shows as positive reason."""
+    cam_node = node_with_telemetry("node_cam",
+        hardware=[{"kind": "camera", "identifier": "cam1", "status": "connected"}])
+    req = check_requirements({
+        "required_capabilities": ["x.y"],
+        "required_hardware": ["camera"],
+    })
+    decision = route_task(req, [cam_node])
+    assert any("required hardware camera connected" in r for r in decision.reasons)
+
+
+def test_required_compute_positive_reason():
+    """Required compute present shows as positive reason."""
+    gpu_node = node_with_telemetry("node_gpu",
+        compute_capabilities=[{"capability": "gpu_available", "status": "available"}])
+    req = check_requirements({
+        "required_capabilities": ["x.y"],
+        "required_compute": ["gpu_available"],
+    })
+    decision = route_task(req, [gpu_node])
+    assert any("required compute gpu_available available" in r for r in decision.reasons)
+
+
+def test_invalid_required_hardware_refused():
+    """Invalid required_hardware values are refused at validation."""
+    with pytest.raises(ValueError):
+        check_requirements({"required_hardware": ["invalid_kind"]})
+
+
+def test_invalid_required_compute_refused():
+    """Invalid required_compute values are refused at validation."""
+    with pytest.raises(ValueError):
+        check_requirements({"required_compute": ["quantum"]})
+
+
+def test_invalid_min_health_refused():
+    """Invalid min_health values are refused at validation."""
+    with pytest.raises(ValueError):
+        check_requirements({"min_health": "SUPER_HEALTHY"})

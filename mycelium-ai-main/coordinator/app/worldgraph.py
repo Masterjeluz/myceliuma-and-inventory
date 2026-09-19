@@ -90,6 +90,9 @@ async def build_world_graph(reader, entity_id: str, depth: int = 1, *,
                             source: str = "all",
                             kind: str = "all",
                             since: str = "",
+                            # BIG #39: Hardware Reality Layer
+                            include_hardware: bool = False,
+                            include_compute: bool = False,
                             ) -> dict:
     """Project inventory graph + optional Mycelium overlay."""
     if isinstance(depth, bool) or depth not in GRAPH_DEPTHS:
@@ -117,6 +120,11 @@ async def build_world_graph(reader, entity_id: str, depth: int = 1, *,
         _overlay_fabrication(nodes, edges, fabrication)
     if registry_nodes:
         _overlay_registry_nodes(nodes, edges, registry_nodes)
+        # BIG #39: Hardware and compute overlays from node registry
+        if include_hardware:
+            _overlay_hardware(nodes, edges, registry_nodes)
+        if include_compute:
+            _overlay_compute(nodes, edges, registry_nodes)
     if printers:
         _overlay_printers(nodes, edges, printers)
     if memories:
@@ -592,7 +600,11 @@ def _overlay_registry_nodes(nodes: dict, edges: list,
     """Coordinator node registry as overlay (BIG #10 uniform
     layer). Nodes carry derived status, capability/model counts
     and revision hints (last_seen); they never merge with
-    INVENTory entities."""
+    INVENTory entities.
+
+    BIG #39: Includes health status, telemetry summary, and
+    hardware/compute capability counts.
+    """
     for item in list(registry or [])[:MAX_REGISTRY_NODES]:
         if not isinstance(item, dict):
             continue
@@ -601,6 +613,11 @@ def _overlay_registry_nodes(nodes: dict, edges: list,
             continue
         capabilities = item.get("capabilities", [])
         models = item.get("models", [])
+        telemetry = item.get("telemetry", {})
+        hardware = item.get("hardware", [])
+        compute = item.get("compute_capabilities", [])
+        health_status = item.get("health_status", "UNKNOWN")
+        telemetry_ts = item.get("telemetry_timestamp", "")
         nodes[node_id] = {
             "id": node_id,
             "type": "node",
@@ -611,6 +628,7 @@ def _overlay_registry_nodes(nodes: dict, edges: list,
             "metadata": {
                 "status": str(item.get("derived_status",
                                        item.get("status", ""))),
+                "health": health_status,
                 "tier": str(item.get("tier", "")),
                 "capabilities": len(capabilities)
                 if isinstance(capabilities, list) else 0,
@@ -618,10 +636,134 @@ def _overlay_registry_nodes(nodes: dict, edges: list,
                 if isinstance(models, list) else 0,
                 "revision": str(item.get("last_seen", "")),
                 "last_seen": str(item.get("last_seen", "")),
+                "telemetry_timestamp": telemetry_ts,
+                "telemetry_fields": len(telemetry) if isinstance(telemetry, dict) else 0,
+                "hardware_count": len(hardware) if isinstance(hardware, list) else 0,
+                "hardware_connected": sum(1 for h in hardware if isinstance(h, dict) and h.get("status") == "connected") if isinstance(hardware, list) else 0,
+                "compute_count": len(compute) if isinstance(compute, list) else 0,
+                "compute_available": sum(1 for c in compute if isinstance(c, dict) and c.get("status") == "available") if isinstance(compute, list) else 0,
+                "cpu_percent": telemetry.get("cpu_percent") if isinstance(telemetry, dict) else None,
+                "memory_percent": telemetry.get("memory_percent") if isinstance(telemetry, dict) else None,
+                "energy_source": item.get("energy_state", {}).get("source") if isinstance(item.get("energy_state"), dict) else "unknown",
             },
         }
         if len(nodes) >= MAX_NODES:
             return
+
+
+# BIG #39: Hardware Reality Layer - hardware inventory as overlay nodes
+MAX_HARDWARE_OVERLAY = 30
+
+def _overlay_hardware(nodes: dict, edges: list,
+                      registry: list[dict]) -> None:
+    """Node-reported hardware inventory as overlay nodes.
+    
+    Each hardware item becomes a node linked to its host node.
+    Only connected hardware is shown. Hardware never merges with
+    INVENTory hardware entities - this is node-reported runtime state.
+    """
+    for item in list(registry or [])[:MAX_REGISTRY_NODES]:
+        if not isinstance(item, dict):
+            continue
+        node_id = str(item.get("node_id", ""))
+        if not node_id:
+            continue
+        hardware = item.get("hardware", [])
+        if not isinstance(hardware, list):
+            continue
+        for hw in hardware[:5]:  # limit per node
+            if not isinstance(hw, dict):
+                continue
+            if str(hw.get("status", "")).lower() != "connected":
+                continue
+            identifier = str(hw.get("identifier", ""))
+            if not identifier:
+                continue
+            hw_node_id = f"hw_{node_id}_{identifier}"
+            if hw_node_id in nodes:
+                continue
+            kind = str(hw.get("kind", "other"))
+            details = hw.get("details", {})
+            nodes[hw_node_id] = {
+                "id": hw_node_id,
+                "type": "hardware",
+                "label": f"{kind}: {identifier}",
+                "source": "mycelium",
+                "metadata": {
+                    "kind": kind,
+                    "identifier": identifier,
+                    "host_node": node_id,
+                    "details": details if isinstance(details, dict) else {},
+                    "connected_since": hw.get("connected_since"),
+                },
+            }
+            # Edge from node to hardware
+            if len(edges) < MAX_EDGES:
+                edges.append({
+                    "from": node_id,
+                    "predicate": "HAS",
+                    "to": hw_node_id,
+                    "provenance": {"source_type": "node-reported",
+                                   "creator_id": f"node:{node_id}",
+                                   "human_verified": False},
+                })
+            if len(nodes) >= MAX_NODES:
+                return
+
+
+# BIG #39: Hardware Reality Layer - compute capabilities as overlay
+MAX_COMPUTE_OVERLAY = 20
+
+def _overlay_compute(nodes: dict, edges: list,
+                     registry: list[dict]) -> None:
+    """Node-reported compute/AI capabilities as overlay nodes.
+    
+    Each available compute capability becomes a node linked to its host.
+    """
+    for item in list(registry or [])[:MAX_REGISTRY_NODES]:
+        if not isinstance(item, dict):
+            continue
+        node_id = str(item.get("node_id", ""))
+        if not node_id:
+            continue
+        compute = item.get("compute_capabilities", [])
+        if not isinstance(compute, list):
+            continue
+        for comp in compute[:3]:  # limit per node
+            if not isinstance(comp, dict):
+                continue
+            if str(comp.get("status", "")).lower() != "available":
+                continue
+            capability = str(comp.get("capability", ""))
+            if not capability:
+                continue
+            comp_node_id = f"compute_{node_id}_{capability}"
+            if comp_node_id in nodes:
+                continue
+            details = comp.get("details", {})
+            nodes[comp_node_id] = {
+                "id": comp_node_id,
+                "type": "compute",
+                "label": f"compute: {capability}",
+                "source": "mycelium",
+                "metadata": {
+                    "capability": capability,
+                    "host_node": node_id,
+                    "details": details if isinstance(details, dict) else {},
+                    "since": comp.get("since"),
+                },
+            }
+            if len(edges) < MAX_EDGES:
+                edges.append({
+                    "from": node_id,
+                    "predicate": "PROVIDES",
+                    "to": comp_node_id,
+                    "provenance": {"source_type": "node-reported",
+                                   "creator_id": f"node:{node_id}",
+                                   "human_verified": False},
+                })
+            if len(nodes) >= MAX_NODES:
+                return
 
 
 def _overlay_printers(nodes: dict, edges: list,

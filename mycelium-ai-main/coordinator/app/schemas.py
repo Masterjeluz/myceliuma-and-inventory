@@ -66,6 +66,13 @@ class Heartbeat(BaseModel):
                                                 max_length=20)
     executors: list[str] | None = Field(default=None, max_length=20)
     resources: dict[str, Any] | None = None
+    # BIG #39 Hardware Reality Layer: telemetry and hardware inventory
+    telemetry: dict[str, Any] | None = Field(default=None)
+    hardware: list[dict[str, Any]] | None = Field(default=None,
+                                                   max_length=50)
+    compute_capabilities: list[dict[str, Any]] | None = Field(default=None,
+                                                               max_length=20)
+    energy_state: dict[str, Any] | None = Field(default=None)
 
 
 class TaskCreate(BaseModel):

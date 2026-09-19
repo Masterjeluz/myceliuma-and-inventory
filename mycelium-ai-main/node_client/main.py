@@ -4,36 +4,272 @@ import logging
 import os
 import platform
 import socket
+import time
 import uuid
 
 import httpx
+import psutil
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger("mycelium.node")
 
+BOOT_TIME = time.time()
+
 
 def detected_memory_mb() -> int:
     """Return local physical memory without adding a dependency to small nodes."""
-    if os.name == "nt":
-        try:
-            import ctypes
-
-            class MemoryStatus(ctypes.Structure):
-                _fields_ = [("length", ctypes.c_ulong), ("memory_load", ctypes.c_ulong),
-                            ("total_phys", ctypes.c_ulonglong), ("avail_phys", ctypes.c_ulonglong),
-                            ("total_page_file", ctypes.c_ulonglong), ("avail_page_file", ctypes.c_ulonglong),
-                            ("total_virtual", ctypes.c_ulonglong), ("avail_virtual", ctypes.c_ulonglong),
-                            ("avail_extended_virtual", ctypes.c_ulonglong)]
-            status = MemoryStatus()
-            status.length = ctypes.sizeof(status)
-            ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status))
-            return status.total_phys // (1024 * 1024)
-        except (AttributeError, OSError):
-            return 0
     try:
-        return (os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES")) // (1024 * 1024)
-    except (AttributeError, OSError, ValueError):
-        return 0
+        return psutil.virtual_memory().total // (1024 * 1024)
+    except Exception:
+        if os.name == "nt":
+            try:
+                import ctypes
+
+                class MemoryStatus(ctypes.Structure):
+                    _fields_ = [("length", ctypes.c_ulong), ("memory_load", ctypes.c_ulong),
+                                ("total_phys", ctypes.c_ulonglong), ("avail_phys", ctypes.c_ulonglong),
+                                ("total_page_file", ctypes.c_ulonglong), ("avail_page_file", ctypes.c_ulonglong),
+                                ("total_virtual", ctypes.c_ulonglong), ("avail_virtual", ctypes.c_ulonglong),
+                                ("avail_extended_virtual", ctypes.c_ulonglong)]
+                status = MemoryStatus()
+                status.length = ctypes.sizeof(status)
+                ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status))
+                return status.total_phys // (1024 * 1024)
+            except (AttributeError, OSError):
+                return 0
+        try:
+            return (os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES")) // (1024 * 1024)
+        except (AttributeError, OSError, ValueError):
+            return 0
+
+
+def collect_telemetry() -> dict:
+    """Collect system telemetry. Only safe, read-only metrics."""
+    telemetry = {
+        "hostname": socket.gethostname(),
+        "os": platform.system(),
+        "platform": platform.platform(),
+        "cpu_count": os.cpu_count() or 1,
+        "boot_time": BOOT_TIME,
+    }
+    try:
+        telemetry["cpu_percent"] = psutil.cpu_percent(interval=0.1)
+    except Exception:
+        telemetry["cpu_percent"] = 0.0
+    try:
+        mem = psutil.virtual_memory()
+        telemetry["memory_total_mb"] = mem.total // (1024 * 1024)
+        telemetry["memory_available_mb"] = mem.available // (1024 * 1024)
+        telemetry["memory_percent"] = mem.percent
+    except Exception:
+        telemetry["memory_total_mb"] = detected_memory_mb()
+        telemetry["memory_available_mb"] = 0
+        telemetry["memory_percent"] = 0.0
+    try:
+        disk = psutil.disk_usage("/")
+        telemetry["disk_total_gb"] = round(disk.total / (1024**3), 1)
+        telemetry["disk_free_gb"] = round(disk.free / (1024**3), 1)
+        telemetry["disk_percent"] = round((disk.used / disk.total) * 100, 1)
+    except Exception:
+        telemetry["disk_total_gb"] = 0.0
+        telemetry["disk_free_gb"] = 0.0
+        telemetry["disk_percent"] = 0.0
+    try:
+        telemetry["uptime_seconds"] = int(time.time() - BOOT_TIME)
+    except Exception:
+        telemetry["uptime_seconds"] = 0
+    # Temperature (Linux only, best effort)
+    try:
+        temps = psutil.sensors_temperatures()
+        if temps:
+            # Get first CPU temperature
+            for name, entries in temps.items():
+                for entry in entries:
+                    if entry.current:
+                        telemetry["temperature_celsius"] = entry.current
+                        break
+                if "temperature_celsius" in telemetry:
+                    break
+    except Exception:
+        pass
+    # Load average (Unix only)
+    try:
+        if hasattr(os, "getloadavg"):
+            telemetry["load_average"] = list(os.getloadavg())
+    except Exception:
+        pass
+    # Network interfaces (names only)
+    try:
+        net_if = psutil.net_if_addrs()
+        telemetry["network_interfaces"] = list(net_if.keys())[:10]
+    except Exception:
+        telemetry["network_interfaces"] = []
+    return telemetry
+
+
+def collect_hardware() -> list[dict]:
+    """Collect hardware inventory. Only safe, read-only detection."""
+    hardware = []
+    # Cameras (Linux video4linux)
+    try:
+        import glob
+        for video_dev in glob.glob("/dev/video*"):
+            hardware.append({
+                "kind": "camera",
+                "identifier": video_dev,
+                "details": {"subsystem": "v4l2"},
+                "status": "connected",
+                "connected_since": time.time(),
+            })
+    except Exception:
+        pass
+    # USB devices
+    try:
+        import subprocess
+        result = subprocess.run(["lsusb"], capture_output=True, text=True, timeout=5)
+        if result.returncode == 0:
+            for line in result.stdout.strip().split("\n")[:20]:
+                if line.strip():
+                    parts = line.split()
+                    if len(parts) >= 6:
+                        bus_dev = f"{parts[1]}:{parts[3].rstrip(':')}"
+                        desc = " ".join(parts[6:])
+                        hardware.append({
+                            "kind": "usb",
+                            "identifier": bus_dev,
+                            "details": {"description": desc[:120]},
+                            "status": "connected",
+                            "connected_since": time.time(),
+                        })
+    except Exception:
+        pass
+    # 3D printers (serial devices commonly used)
+    try:
+        import glob
+        for serial_dev in glob.glob("/dev/ttyUSB*") + glob.glob("/dev/ttyACM*"):
+            hardware.append({
+                "kind": "printer_3d",
+                "identifier": serial_dev,
+                "details": {"subsystem": "serial"},
+                "status": "connected",
+                "connected_since": time.time(),
+            })
+    except Exception:
+        pass
+    # GPU detection
+    try:
+        import subprocess
+        result = subprocess.run(["nvidia-smi", "--query-gpu=name,memory.total", "--format=csv,noheader"],
+                                capture_output=True, text=True, timeout=5)
+        if result.returncode == 0:
+            for line in result.stdout.strip().split("\n"):
+                if line.strip():
+                    parts = [p.strip() for p in line.split(",")]
+                    if len(parts) >= 2:
+                        hardware.append({
+                            "kind": "gpu",
+                            "identifier": parts[0],
+                            "details": {"memory_mb": parts[1], "vendor": "nvidia"},
+                            "status": "connected",
+                            "connected_since": time.time(),
+                        })
+    except Exception:
+        pass
+    return hardware
+
+
+def collect_compute_capabilities() -> list[dict]:
+    """Detect compute/AI capabilities. Only safe checks."""
+    compute = []
+    # Ollama availability
+    try:
+        import subprocess
+        result = subprocess.run(["ollama", "list"], capture_output=True, text=True, timeout=5)
+        if result.returncode == 0:
+            models = []
+            for line in result.stdout.strip().split("\n")[1:]:  # skip header
+                if line.strip():
+                    parts = line.split()
+                    if parts:
+                        models.append(parts[0])
+            compute.append({
+                "capability": "ollama",
+                "details": {"models": models[:20]},
+                "status": "available",
+                "since": time.time(),
+            })
+            for model in models[:10]:
+                compute.append({
+                    "capability": "local_models",
+                    "details": {"model": model},
+                    "status": "available",
+                    "since": time.time(),
+                })
+    except Exception:
+        pass
+    # CPU inference always available
+    compute.append({
+        "capability": "cpu_inference",
+        "details": {},
+        "status": "available",
+        "since": time.time(),
+    })
+    # GPU availability
+    try:
+        import subprocess
+        result = subprocess.run(["nvidia-smi"], capture_output=True, timeout=3)
+        if result.returncode == 0:
+            compute.append({
+                "capability": "gpu_available",
+                "details": {"vendor": "nvidia"},
+                "status": "available",
+                "since": time.time(),
+            })
+            # Try to get VRAM
+            try:
+                result = subprocess.run(
+                    ["nvidia-smi", "--query-gpu=memory.total", "--format=csv,noheader,nounits"],
+                    capture_output=True, text=True, timeout=3)
+                if result.returncode == 0:
+                    vram_mb = sum(int(x.strip()) for x in result.stdout.strip().split("\n") if x.strip().isdigit())
+                    if vram_mb > 0:
+                        compute.append({
+                            "capability": "vram_mb",
+                            "details": {"vram_mb": vram_mb},
+                            "status": "available",
+                            "since": time.time(),
+                        })
+            except Exception:
+                pass
+    except Exception:
+        pass
+    # Capability flags based on what's available
+    if any(c["capability"] == "ollama" for c in compute):
+        compute.append({"capability": "research", "details": {}, "status": "available", "since": time.time()})
+        compute.append({"capability": "analysis", "details": {}, "status": "available", "since": time.time()})
+    if any(c["capability"] == "gpu_available" for c in compute):
+        compute.append({"capability": "vision", "details": {}, "status": "available", "since": time.time()})
+    compute.append({"capability": "inventory", "details": {}, "status": "available", "since": time.time()})
+    return compute
+
+
+def collect_energy_state() -> dict:
+    """Collect energy/power state. Best effort."""
+    energy = {"source": "unknown"}
+    try:
+        battery = psutil.sensors_battery()
+        if battery:
+            energy["source"] = "battery"
+            energy["level_percent"] = int(battery.percent)
+            energy["charging"] = battery.power_plugged
+        else:
+            # No battery = likely grid
+            energy["source"] = "grid"
+            energy["level_percent"] = 100
+            energy["charging"] = True
+    except Exception:
+        energy["source"] = "unknown"
+    return energy
 
 
 FETCH_MAX_CHARS = 65536
@@ -256,6 +492,11 @@ async def run(config: argparse.Namespace) -> None:
                 heartbeat = {"available": True}
                 if token:
                     heartbeat["node_token"] = token
+                # BIG #39: Include telemetry, hardware, compute capabilities, energy state
+                heartbeat["telemetry"] = collect_telemetry()
+                heartbeat["hardware"] = collect_hardware()
+                heartbeat["compute_capabilities"] = collect_compute_capabilities()
+                heartbeat["energy_state"] = collect_energy_state()
                 await client.post(f"{base_url}/nodes/{config.node_id}/heartbeat", json=heartbeat)
                 claim_url = f"{base_url}/tasks/claim/{config.node_id}"
                 if token:

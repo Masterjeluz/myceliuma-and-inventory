@@ -161,6 +161,112 @@ def guide_items(limit: int = 12) -> list[dict]:
                 "Open nodes", "/nodes"))
     except Exception:
         pass
+    # BIG #39: Hardware Reality Layer - hardware-aware guidance
+    try:
+        from . import main as _main
+        nodes_data = _main.list_nodes()
+        # Online nodes with Ollama
+        ollama_nodes = [n for n in nodes_data
+                        if n.get("health_status") == "ONLINE"
+                        and any(c.get("capability") == "ollama"
+                                for c in (n.get("compute_capabilities") or [])
+                                if isinstance(c, dict))]
+        if ollama_nodes:
+            node = ollama_nodes[0]
+            name = node.get("display_name") or node.get("hostname") or node.get("node_id")
+            items.append(_item(
+                "node", "🧠",
+                f"Research node '{name}' is online with Ollama.",
+                "Local LLM inference available for research tasks.",
+                "Open nodes", "/nodes"))
+        # Online nodes with GPU
+        gpu_nodes = [n for n in nodes_data
+                     if n.get("health_status") == "ONLINE"
+                     and any(c.get("capability") == "gpu_available"
+                             for c in (n.get("compute_capabilities") or [])
+                             if isinstance(c, dict))]
+        if gpu_nodes:
+            node = gpu_nodes[0]
+            name = node.get("display_name") or node.get("hostname") or node.get("node_id")
+            items.append(_item(
+                "node", "🎮",
+                f"Compute node '{name}' has GPU available.",
+                "GPU acceleration for inference and training workloads.",
+                "Open nodes", "/nodes"))
+        # Nodes with cameras
+        camera_nodes = [n for n in nodes_data
+                        if n.get("health_status") == "ONLINE"
+                        and any(h.get("kind") == "camera"
+                                for h in (n.get("hardware") or [])
+                                if isinstance(h, dict) and h.get("status") == "connected")]
+        if camera_nodes:
+            node = camera_nodes[0]
+            name = node.get("display_name") or node.get("hostname") or node.get("node_id")
+            cam_count = sum(1 for h in (node.get("hardware") or [])
+                            if isinstance(h, dict) and h.get("kind") == "camera" and h.get("status") == "connected")
+            items.append(_item(
+                "node", "📷",
+                f"Node '{name}' has {cam_count} camera(s) connected.",
+                "Visual observation and analysis available.",
+                "Open nodes", "/nodes"))
+        # Nodes with 3D printers
+        printer_nodes = [n for n in nodes_data
+                         if n.get("health_status") == "ONLINE"
+                         and any(h.get("kind") == "printer_3d"
+                                 for h in (n.get("hardware") or [])
+                                 if isinstance(h, dict) and h.get("status") == "connected")]
+        if printer_nodes:
+            node = printer_nodes[0]
+            name = node.get("display_name") or node.get("hostname") or node.get("node_id")
+            items.append(_item(
+                "node", "🖨",
+                f"Fabrication node '{name}' has 3D printer connected.",
+                "Physical printing capability available.",
+                "Open nodes", "/nodes"))
+        # Offline nodes that were previously online
+        offline_nodes = [n for n in nodes_data
+                         if n.get("derived_status") in ("offline", "stale")
+                         and n.get("health_status") in ("OFFLINE", "STALE")]
+        if offline_nodes:
+            node = offline_nodes[0]
+            name = node.get("display_name") or node.get("hostname") or node.get("node_id")
+            items.append(_item(
+                "node", "💻",
+                f"Node '{name}' is {node.get('derived_status', 'offline').lower()}.",
+                "Pull-only helper stopped claiming work. Check connectivity.",
+                "Open nodes", "/nodes"))
+        # Registered hardware not currently connected
+        registered_hw = []
+        for n in nodes_data:
+            for h in (n.get("hardware") or []):
+                if isinstance(h, dict) and h.get("status") == "disconnected":
+                    registered_hw.append((n, h))
+        if registered_hw:
+            node, hw = registered_hw[0]
+            name = node.get("display_name") or node.get("hostname") or node.get("node_id")
+            items.append(_item(
+                "node", "🔌",
+                f"Hardware '{hw.get('identifier', '?')}' ({hw.get('kind', '?')}) on '{name}' is registered but disconnected.",
+                "Device was previously seen but not currently connected.",
+                "Open nodes", "/nodes"))
+        # Research waiting for eligible node
+        from .routing import route_task, check_requirements
+        from . import main as _main2
+        try:
+            research_req = check_requirements({
+                "required_capabilities": ["research.fetch", "analysis.ollama"],
+            })
+            decision = route_task(research_req, nodes_data)
+            if decision.selected_node_id is None:
+                items.append(_item(
+                    "node", "🔬",
+                    "Research is waiting: no eligible node with Ollama + fetch.",
+                    "Tasks queue until a capable, fresh, authenticated node appears.",
+                    "Open nodes", "/nodes"))
+        except Exception:
+            pass
+    except Exception:
+        pass
     try:
         from . import main as _main
         from .missions import list_missions

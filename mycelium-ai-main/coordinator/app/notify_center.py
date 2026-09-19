@@ -8,6 +8,10 @@ must be backed by stored state, never a claim):
   new_observation, new_connection, camera_ready,
   fabrication_ready, morning_report, conversation_analyzed,
   system_attention
+  # BIG #39 Hardware Reality Layer:
+  node_online, node_degraded, node_stale, hardware_connected,
+  hardware_disconnected, capability_available, capability_unavailable,
+  telemetry_stale, mission_blocked_hardware
 
 Transports:
   IN_APP — REAL (polling via existing notifications store; the /mobile
@@ -38,6 +42,16 @@ NOTIFICATION_TYPES = frozenset({
     "morning_report",
     "conversation_analyzed",
     "system_attention",
+    # BIG #39 Hardware Reality Layer
+    "node_online",
+    "node_degraded",
+    "node_stale",
+    "hardware_connected",
+    "hardware_disconnected",
+    "capability_available",
+    "capability_unavailable",
+    "telemetry_stale",
+    "mission_blocked_hardware",
 })
 
 IN_APP_TRANSPORT = "IN_APP"
@@ -60,6 +74,16 @@ _SEVERITY_MAP = {
     "morning_report": "info",
     "conversation_analyzed": "info",
     "system_attention": "warning",
+    # BIG #39
+    "node_online": "node_status",
+    "node_degraded": "warning",
+    "node_stale": "node_status",
+    "hardware_connected": "info",
+    "hardware_disconnected": "warning",
+    "capability_available": "info",
+    "capability_unavailable": "warning",
+    "telemetry_stale": "warning",
+    "mission_blocked_hardware": "warning",
 }
 
 _UI_SEVERITY_MAP = {

@@ -96,6 +96,9 @@ def _ensure_node_columns(db) -> None:
     Auth hash, display name, model/executor advertisements,
     resource hints and locality zone. All nullable/defaulted so
     existing positional INSERTs (9 values) keep working.
+
+    Hardware Reality Layer (BIG #39): telemetry, hardware inventory,
+    compute capabilities, and energy state columns.
     """
     existing = {row["name"] for row in db.execute("PRAGMA table_info(nodes)").fetchall()}
     for column, ddl in (
@@ -107,6 +110,12 @@ def _ensure_node_columns(db) -> None:
         ("locality_zone", "TEXT DEFAULT 'local_network'"),
         ("last_auth", "TEXT DEFAULT ''"),
         ("coordinator_capable", "INTEGER NOT NULL DEFAULT 0"),
+        ("telemetry", "TEXT DEFAULT '{}'"),
+        ("telemetry_timestamp", "TEXT DEFAULT ''"),
+        ("hardware", "TEXT DEFAULT '[]'"),
+        ("compute_capabilities", "TEXT DEFAULT '[]'"),
+        ("energy_state", "TEXT DEFAULT '{}'"),
+        ("health", "TEXT DEFAULT ''"),
     ):
         if column not in existing:
             db.execute(f"ALTER TABLE nodes ADD COLUMN {column} {ddl}")

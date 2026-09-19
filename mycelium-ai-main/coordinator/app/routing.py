@@ -14,6 +14,9 @@ Eligibility (all hard, any failure rejects the node):
 4. required model types each present on the node
 5. required executor advertised (when set)
 6. locality label compatible (or requirement 'any')
+7. telemetry freshness (when required) - BIG #39
+8. required hardware present (when specified) - BIG #39
+9. required compute capabilities present (when specified) - BIG #39
 
 Ordering among eligible nodes (preferences, never requirements):
 
@@ -21,6 +24,8 @@ Ordering among eligible nodes (preferences, never requirements):
 - energy policy compatible (+1): solar source when the policy
   prefers it, energy_level meeting the policy minimum
 - resource minimums met (+1): min_memory_mb, needs_gpu
+- telemetry freshness bonus (+1): recent telemetry (< 60s)
+- hardware availability bonus (+1): required hardware connected
 - deterministic tie-break: lowest node_id wins
 
 Energy and resources never disqualify; they only order. A node
@@ -40,10 +45,14 @@ from .nodes import (
     check_capabilities,
     check_locality,
     check_model_id,
+    VALID_HARDWARE_KINDS,
+    VALID_COMPUTE_CAPABILITIES,
 )
 
 MAX_REQUIREMENTS = 30
 MAX_MODEL_IDS = 10
+MAX_HARDWARE_REQUIREMENTS = 10
+MAX_COMPUTE_REQUIREMENTS = 10
 
 
 class TaskRequirements(BaseModel):
@@ -63,6 +72,13 @@ class TaskRequirements(BaseModel):
     needs_gpu: bool = False
     locality: str = Field(default="any", max_length=20)
     physical_action: bool = False
+    # BIG #39: Hardware Reality Layer requirements
+    required_hardware: list[str] = Field(default_factory=list,
+                                          max_length=MAX_HARDWARE_REQUIREMENTS)
+    required_compute: list[str] = Field(default_factory=list,
+                                         max_length=MAX_COMPUTE_REQUIREMENTS)
+    max_telemetry_age_seconds: int = Field(default=0, ge=0, le=3600)
+    min_health: str = Field(default="", max_length=20)  # ONLINE, DEGRADED, etc.
 
 
 class RoutingPolicy(BaseModel):
@@ -71,6 +87,10 @@ class RoutingPolicy(BaseModel):
     prefer_solar: bool = False
     min_energy_level: int | None = Field(default=None, ge=0, le=100)
     require_authenticated: bool = True
+    # BIG #39: Hardware Reality Layer preferences
+    prefer_fresh_telemetry: bool = False
+    prefer_connected_hardware: bool = False
+    prefer_compute_capabilities: bool = False
 
 
 class RejectedNode(BaseModel):
@@ -130,6 +150,26 @@ def check_requirements(raw) -> TaskRequirements:
             f"locality '{requirements.locality}' unknown; expected "
             f"one of {sorted(VALID_LOCALITIES)}")
     check_locality(requirements.locality)
+    # BIG #39: Hardware Reality Layer - validate hardware and compute requirements
+    for hw in requirements.required_hardware:
+        hw_clean = str(hw).strip().lower()
+        if hw_clean not in VALID_HARDWARE_KINDS:
+            raise ValueError(
+                f"required_hardware '{hw}' unknown; expected one of "
+                f"{sorted(VALID_HARDWARE_KINDS)}")
+    for comp in requirements.required_compute:
+        comp_clean = str(comp).strip().lower()
+        if comp_clean not in VALID_COMPUTE_CAPABILITIES:
+            raise ValueError(
+                f"required_compute '{comp}' unknown; expected one of "
+                f"{sorted(VALID_COMPUTE_CAPABILITIES)}")
+    if requirements.min_health:
+        health_clean = str(requirements.min_health).strip().upper()
+        if health_clean not in ("ONLINE", "DEGRADED", "STALE", "OFFLINE", "UNKNOWN"):
+            raise ValueError(
+                f"min_health '{requirements.min_health}' unknown; expected one of "
+                "ONLINE, DEGRADED, STALE, OFFLINE, UNKNOWN")
+        requirements.min_health = health_clean
     return requirements
 
 
@@ -189,6 +229,56 @@ def _eligible(node: dict, requirements: TaskRequirements,
         return False, [f"{node_id}: locality "
                        f"'{node.get('locality_zone', '?')}' does not "
                        f"satisfy '{want_locality}'"], 0
+    # BIG #39: Hardware Reality Layer - hard gates for hardware and compute
+    if requirements.required_hardware:
+        node_hardware = node.get("hardware", [])
+        if not isinstance(node_hardware, list):
+            node_hardware = []
+        connected_hardware = {str(item.get("kind", "")).strip().lower()
+                              for item in node_hardware
+                              if isinstance(item, dict)
+                              and str(item.get("status", "")).lower() == "connected"}
+        missing_hw = [hw for hw in requirements.required_hardware
+                      if hw.strip().lower() not in connected_hardware]
+        if missing_hw:
+            return False, [f"{node_id}: missing connected hardware "
+                           f"{', '.join(sorted(missing_hw))}"], 0
+    if requirements.required_compute:
+        node_compute = node.get("compute_capabilities", [])
+        if not isinstance(node_compute, list):
+            node_compute = []
+        available_compute = {str(item.get("capability", "")).strip().lower()
+                             for item in node_compute
+                             if isinstance(item, dict)
+                             and str(item.get("status", "")).lower() == "available"}
+        missing_comp = [comp for comp in requirements.required_compute
+                        if comp.strip().lower() not in available_compute]
+        if missing_comp:
+            return False, [f"{node_id}: missing available compute "
+                           f"{', '.join(sorted(missing_comp))}"], 0
+    # BIG #39: Telemetry freshness hard gate
+    if requirements.max_telemetry_age_seconds > 0:
+        telemetry_ts = node.get("telemetry_timestamp", "")
+        if not telemetry_ts:
+            return False, [f"{node_id}: no telemetry timestamp"], 0
+        try:
+            from datetime import datetime, timezone
+            ts = datetime.fromisoformat(telemetry_ts)
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=timezone.utc)
+            age = int((datetime.now(timezone.utc) - ts).total_seconds())
+            if age > requirements.max_telemetry_age_seconds:
+                return False, [f"{node_id}: telemetry too old ({age}s > "
+                               f"{requirements.max_telemetry_age_seconds}s)"], 0
+        except (ValueError, TypeError):
+            return False, [f"{node_id}: invalid telemetry timestamp"], 0
+    # BIG #39: Minimum health requirement
+    if requirements.min_health:
+        node_health = node.get("health_status", "UNKNOWN")
+        health_order = {"ONLINE": 4, "DEGRADED": 3, "STALE": 2, "OFFLINE": 1, "UNKNOWN": 0}
+        if health_order.get(node_health, 0) < health_order.get(requirements.min_health, 0):
+            return False, [f"{node_id}: health {node_health} below minimum "
+                           f"{requirements.min_health}"], 0
     # Eligible: collect positive reasons + preference score.
     score = 0
     node_model_ids = {str(entry.get("model_id", ""))
@@ -236,9 +326,57 @@ def _eligible(node: dict, requirements: TaskRequirements,
         else:
             reasons.append(f"{node_id}: energy level below policy "
                            "minimum (hint only, still eligible)")
+    # BIG #39: Telemetry freshness preference
+    if policy.prefer_fresh_telemetry:
+        telemetry_ts = node.get("telemetry_timestamp", "")
+        if telemetry_ts:
+            try:
+                from datetime import datetime, timezone
+                ts = datetime.fromisoformat(telemetry_ts)
+                if ts.tzinfo is None:
+                    ts = ts.replace(tzinfo=timezone.utc)
+                age = int((datetime.now(timezone.utc) - ts).total_seconds())
+                if age < 60:
+                    score += 1
+                    reasons.append(f"{node_id}: fresh telemetry ({age}s)")
+                else:
+                    reasons.append(f"{node_id}: telemetry age {age}s (hint only)")
+            except (ValueError, TypeError):
+                reasons.append(f"{node_id}: invalid telemetry timestamp (hint only)")
+        else:
+            reasons.append(f"{node_id}: no telemetry (hint only)")
+    # BIG #39: Connected hardware preference
+    if policy.prefer_connected_hardware:
+        node_hardware = node.get("hardware", [])
+        if isinstance(node_hardware, list):
+            connected_count = sum(1 for item in node_hardware
+                                  if isinstance(item, dict)
+                                  and str(item.get("status", "")).lower() == "connected")
+            if connected_count > 0:
+                score += 1
+                reasons.append(f"{node_id}: {connected_count} connected hardware item(s)")
+            else:
+                reasons.append(f"{node_id}: no connected hardware (hint only)")
+    # BIG #39: Compute capabilities preference
+    if policy.prefer_compute_capabilities:
+        node_compute = node.get("compute_capabilities", [])
+        if isinstance(node_compute, list):
+            available_count = sum(1 for item in node_compute
+                                  if isinstance(item, dict)
+                                  and str(item.get("status", "")).lower() == "available")
+            if available_count > 0:
+                score += 1
+                reasons.append(f"{node_id}: {available_count} available compute capability(s)")
+            else:
+                reasons.append(f"{node_id}: no available compute (hint only)")
     for cap in requirements.required_capabilities:
         reasons.append(f"{node_id}: required capability "
                        f"{cap.strip().lower()} present")
+    # BIG #39: Required hardware and compute as positive reasons
+    for hw in requirements.required_hardware:
+        reasons.append(f"{node_id}: required hardware {hw} connected")
+    for comp in requirements.required_compute:
+        reasons.append(f"{node_id}: required compute {comp} available")
     return True, reasons, score
 
 

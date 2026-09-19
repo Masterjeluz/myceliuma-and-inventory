@@ -1,12 +1,15 @@
-# Mycelium V2 Roadmap — BIG #37 → BIG #40 (directional)
+# Mycelium V2 Roadmap — BIG #37 → BIG #41 (directional)
 
-Status after BIG #38: living automation — observe → research →
-propose → wait-for-YES → act inside approved plan → observe →
-verify → record. Mission templates chain research queue +
-candidates + writes with human gates at every consequential
-step. No new autonomy levels, no gate removal. 1251 Mycelium
-tests green; INVENTory untouched (179 + 1 pre-existing). See
-`docs/BIG38-final-report.md`.
+Status after BIG #39: hardware reality layer — nodes report
+read-only telemetry/hardware/compute/energy on heartbeat; the
+coordinator validates fail-closed, derives
+ONLINE/DEGRADED/STALE/OFFLINE/UNKNOWN health, routes by
+connected hardware / available compute / telemetry freshness,
+guides by what is really online, and shows per-node hardware
+detail on mobile and in the world graph. No new execution
+power, no gate removal. 1325 Mycelium tests green; INVENTory
+untouched (179 + 1 pre-existing). See
+`docs/BIG39-final-report.md`.
 
 Principles for every step: reuse stores, explicit promotion,
 provenance always, honest REAL/TEST/SIMULATED/UNAVAILABLE/FUTURE,
@@ -64,14 +67,25 @@ default-deny, live gate re-check, secret scan, health
 isolation, capability allow-list, no shell surface, prompt
 injection contained. 20 tests + 17 smoke checks green.
 
-## BIG #39 — Presence
+## BIG #39 — Hardware Reality Layer (DONE 2026-09-19)
+
+Shipped: telemetry/hardware/compute/energy heartbeat fields
+with closed-set fail-closed validation, derived node health,
+telemetry-aware routing gates + preferences, world-graph
+hardware/compute overlays (`node-reported`,
+`human_verified=False`), mobile hardware view, hardware-aware
+guide, additive node bus/notification types, read-only
+node-client collectors. 74 tests + 25 smoke checks green.
+
+## BIG #40 — Presence (NEXT)
 
 Per-recipient in-app notification delivery, morning "why open
 Mycelium today" answer, overnight digest of queue +
-discoveries + connections. Web push only with a real transport;
-until then explicit UNAVAILABLE.
+discoveries + connections — now feasible on real node state
+(BIG #39 health/hardware/compute). Web push only with a real
+transport; until then explicit UNAVAILABLE.
 
-## BIG #40 — Mycelium V2
+## BIG #41 — Mycelium V2 (directional)
 
 The coherent autonomous local-first ecosystem: everything above
 working together — conversation → idea → research → node →

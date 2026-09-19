@@ -389,3 +389,263 @@ def derive_status(stored_status: str, last_seen: str,
             else "offline"
     return stored_status if stored_status in ("online", "busy") \
         else "unknown"
+
+
+# -- telemetry validation (BIG #39 Hardware Reality Layer) ----------
+
+VALID_TELEMETRY_FIELDS = frozenset({
+    "hostname", "os", "platform", "cpu_percent", "cpu_count",
+    "memory_percent", "memory_total_mb", "memory_available_mb",
+    "disk_percent", "disk_total_gb", "disk_free_gb",
+    "uptime_seconds", "temperature_celsius", "load_average",
+    "network_interfaces", "boot_time",
+})
+
+VALID_HARDWARE_KINDS = frozenset({
+    "camera", "usb", "printer_3d", "sensor", "storage",
+    "gpu", "display", "audio", "network", "other",
+})
+
+VALID_COMPUTE_CAPABILITIES = frozenset({
+    "ollama", "local_models", "cpu_inference", "gpu_available",
+    "vram_mb", "research", "vision", "inventory", "analysis",
+})
+
+VALID_ENERGY_STATES = frozenset({"grid", "solar", "battery", "unknown"})
+
+MAX_TELEMETRY_FIELDS = 30
+MAX_HARDWARE_ITEMS = 50
+MAX_COMPUTE_ITEMS = 20
+
+
+def check_telemetry(values) -> dict:
+    """Validate node telemetry payload. Only known fields, bounded values."""
+    if values is None:
+        return {}
+    if not isinstance(values, dict):
+        raise NodeRefusedError("telemetry must be an object")
+    unknown = set(values) - VALID_TELEMETRY_FIELDS
+    if unknown:
+        raise NodeRefusedError(
+            f"telemetry carries unknown fields: {sorted(unknown)}")
+    if len(values) > MAX_TELEMETRY_FIELDS:
+        raise NodeRefusedError(
+            f"at most {MAX_TELEMETRY_FIELDS} telemetry fields")
+    cleaned: dict = {}
+    for key, value in values.items():
+        if key in ("cpu_percent", "memory_percent", "disk_percent"):
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                raise NodeRefusedError(f"telemetry '{key}' must be a number")
+            if not 0 <= value <= 100:
+                raise NodeRefusedError(f"telemetry '{key}' must be 0..100")
+            cleaned[key] = float(value)
+        elif key in ("cpu_count", "memory_total_mb", "memory_available_mb",
+                     "uptime_seconds", "disk_total_gb", "disk_free_gb"):
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                raise NodeRefusedError(f"telemetry '{key}' must be a number")
+            if value < 0 or value > 10**9:
+                raise NodeRefusedError(f"telemetry '{key}' out of bounds")
+            cleaned[key] = int(value) if key != "disk_total_gb" and key != "disk_free_gb" else float(value)
+        elif key == "temperature_celsius":
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                raise NodeRefusedError("temperature_celsius must be a number")
+            if not -50 <= value <= 150:
+                raise NodeRefusedError("temperature_celsius out of plausible range")
+            cleaned[key] = float(value)
+        elif key == "load_average":
+            if not isinstance(value, (list, tuple)) or len(value) != 3:
+                raise NodeRefusedError("load_average must be [1m, 5m, 15m]")
+            cleaned[key] = [float(v) for v in value if isinstance(v, (int, float))]
+        elif key == "network_interfaces":
+            if not isinstance(value, list):
+                raise NodeRefusedError("network_interfaces must be a list")
+            cleaned[key] = [str(v)[:80] for v in value[:20]]
+        elif key in ("hostname", "os", "platform"):
+            if not isinstance(value, str):
+                raise NodeRefusedError(f"telemetry '{key}' must be text")
+            cleaned[key] = value.strip()[:120]
+        elif key == "boot_time":
+            if not isinstance(value, (int, float, str)):
+                raise NodeRefusedError("boot_time must be a timestamp")
+            cleaned[key] = str(value)[:40]
+    return cleaned
+
+
+def check_hardware(values) -> list[dict]:
+    """Validate hardware inventory list. Each item: kind, identifier, details."""
+    if values is None:
+        return []
+    if not isinstance(values, (list, tuple)):
+        raise NodeRefusedError("hardware must be a list")
+    if len(values) > MAX_HARDWARE_ITEMS:
+        raise NodeRefusedError(f"at most {MAX_HARDWARE_ITEMS} hardware items")
+    cleaned: list[dict] = []
+    for entry in values:
+        if not isinstance(entry, dict):
+            raise NodeRefusedError("each hardware item must be an object")
+        unknown = set(entry) - {"kind", "identifier", "details", "status", "connected_since"}
+        if unknown:
+            raise NodeRefusedError(
+                f"hardware item carries unknown fields: {sorted(unknown)}")
+        kind = str(entry.get("kind", "")).strip().lower()
+        if kind not in VALID_HARDWARE_KINDS:
+            raise NodeRefusedError(
+                f"hardware kind '{kind}' unknown; expected one of {sorted(VALID_HARDWARE_KINDS)}")
+        identifier = str(entry.get("identifier", "")).strip()[:120]
+        if not identifier:
+            raise NodeRefusedError("hardware item needs an identifier")
+        details = entry.get("details", {})
+        if not isinstance(details, dict):
+            details = {}
+        status = str(entry.get("status", "connected")).strip().lower()
+        if status not in ("connected", "disconnected", "error", "unknown"):
+            status = "unknown"
+        connected_since = entry.get("connected_since")
+        if connected_since is not None:
+            if not isinstance(connected_since, (int, float, str)):
+                connected_since = None
+            else:
+                connected_since = str(connected_since)[:40]
+        cleaned.append({
+            "kind": kind,
+            "identifier": identifier,
+            "details": details,
+            "status": status,
+            "connected_since": connected_since,
+        })
+    return cleaned
+
+
+def check_compute_capabilities(values) -> list[dict]:
+    """Validate compute/AI capabilities list. Each item: capability, details."""
+    if values is None:
+        return []
+    if not isinstance(values, (list, tuple)):
+        raise NodeRefusedError("compute_capabilities must be a list")
+    if len(values) > MAX_COMPUTE_ITEMS:
+        raise NodeRefusedError(f"at most {MAX_COMPUTE_ITEMS} compute capabilities")
+    cleaned: list[dict] = []
+    for entry in values:
+        if not isinstance(entry, dict):
+            raise NodeRefusedError("each compute capability must be an object")
+        unknown = set(entry) - {"capability", "details", "status", "since"}
+        if unknown:
+            raise NodeRefusedError(
+                f"compute capability carries unknown fields: {sorted(unknown)}")
+        capability = str(entry.get("capability", "")).strip().lower()
+        if capability not in VALID_COMPUTE_CAPABILITIES:
+            raise NodeRefusedError(
+                f"compute capability '{capability}' unknown; expected one of {sorted(VALID_COMPUTE_CAPABILITIES)}")
+        details = entry.get("details", {})
+        if not isinstance(details, dict):
+            details = {}
+        status = str(entry.get("status", "available")).strip().lower()
+        if status not in ("available", "busy", "unavailable", "unknown"):
+            status = "unknown"
+        since = entry.get("since")
+        if since is not None:
+            if not isinstance(since, (int, float, str)):
+                since = None
+            else:
+                since = str(since)[:40]
+        cleaned.append({
+            "capability": capability,
+            "details": details,
+            "status": status,
+            "since": since,
+        })
+    return cleaned
+
+
+def check_energy_state(values) -> dict:
+    """Validate energy/physical state. Source from closed set, level 0-100."""
+    if values is None:
+        return {}
+    if not isinstance(values, dict):
+        raise NodeRefusedError("energy_state must be an object")
+    unknown = set(values) - {"source", "level_percent", "charging", "details", "since"}
+    if unknown:
+        raise NodeRefusedError(
+            f"energy_state carries unknown fields: {sorted(unknown)}")
+    cleaned: dict = {}
+    source = str(values.get("source", "unknown")).strip().lower()
+    if source not in VALID_ENERGY_STATES:
+        raise NodeRefusedError(
+            f"energy source '{source}' unknown; expected one of {sorted(VALID_ENERGY_STATES)}")
+    cleaned["source"] = source
+    level = values.get("level_percent")
+    if level is not None:
+        if isinstance(level, bool) or not isinstance(level, (int, float)):
+            raise NodeRefusedError("energy level must be a number 0..100")
+        if not 0 <= level <= 100:
+            raise NodeRefusedError("energy level must be 0..100")
+        cleaned["level_percent"] = int(level)
+    charging = values.get("charging")
+    if charging is not None:
+        if not isinstance(charging, bool):
+            raise NodeRefusedError("charging must be boolean")
+        cleaned["charging"] = charging
+    details = values.get("details", {})
+    if not isinstance(details, dict):
+        details = {}
+    cleaned["details"] = details
+    since = values.get("since")
+    if since is not None:
+        if not isinstance(since, (int, float, str)):
+            since = None
+        else:
+            since = str(since)[:40]
+        cleaned["since"] = since
+    return cleaned
+
+
+def compute_node_health(record: dict) -> dict:
+    """Compute node health status from record. Returns dict with status and details."""
+    derived = record.get("derived_status", "unknown")
+    telemetry_ts = record.get("telemetry_timestamp", "")
+    now = datetime.now(timezone.utc)
+    telemetry_age_seconds = None
+    if telemetry_ts:
+        try:
+            ts = datetime.fromisoformat(telemetry_ts)
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=timezone.utc)
+            telemetry_age_seconds = int((now - ts).total_seconds())
+        except (ValueError, TypeError):
+            telemetry_age_seconds = None
+
+    # Health states: ONLINE, DEGRADED, STALE, OFFLINE, UNKNOWN
+    if derived == "disabled":
+        health = "OFFLINE"
+    elif derived == "offline":
+        health = "OFFLINE"
+    elif derived == "stale":
+        health = "STALE"
+    elif derived in ("online", "busy"):
+        if telemetry_age_seconds is None:
+            health = "DEGRADED"
+        elif telemetry_age_seconds > 300:  # 5 minutes
+            health = "DEGRADED"
+        elif telemetry_age_seconds > 60:
+            health = "ONLINE"  # fresh but not real-time
+        else:
+            health = "ONLINE"
+    else:
+        health = "UNKNOWN"
+
+    # Collect telemetry summary for health details
+    telemetry = record.get("telemetry", {})
+    hardware = record.get("hardware", [])
+    compute = record.get("compute_capabilities", [])
+    energy = record.get("energy_state", {})
+
+    details = {
+        "telemetry_age_seconds": telemetry_age_seconds,
+        "telemetry_fields": len(telemetry) if isinstance(telemetry, dict) else 0,
+        "hardware_count": len(hardware) if isinstance(hardware, list) else 0,
+        "compute_capabilities": [c.get("capability") for c in compute if isinstance(c, dict)] if isinstance(compute, list) else [],
+        "energy_source": energy.get("source") if isinstance(energy, dict) else "unknown",
+        "energy_level": energy.get("level_percent") if isinstance(energy, dict) else None,
+    }
+
+    return {"health": health, "details": details}

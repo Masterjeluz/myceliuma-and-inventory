@@ -549,7 +549,11 @@ def register_node(node: NodeRegistration) -> dict[str, str]:
 def heartbeat(node_id: str, heartbeat_data: Heartbeat) -> Response:
     """Heartbeat with credential check and optional advertisement
     refresh. Unknown nodes 404; bad credentials and disabled
-    nodes are refused; nothing secret is logged or returned."""
+    nodes are refused; nothing secret is logged or returned.
+
+    BIG #39: Accepts telemetry, hardware inventory, compute capabilities,
+    and energy state for Hardware Reality Layer.
+    """
     with connection() as db:
         row = db.execute(
             "SELECT status, auth_token_hash FROM nodes WHERE node_id=?",
@@ -592,19 +596,41 @@ def heartbeat(node_id: str, heartbeat_data: Heartbeat) -> Response:
         if heartbeat_data.resources is not None:
             updates["resources"] = dump(check_resources(
                 heartbeat_data.resources))
+        # BIG #39: Hardware Reality Layer telemetry
+        from .nodes import (
+            check_telemetry, check_hardware, check_compute_capabilities,
+            check_energy_state
+        )
+        if heartbeat_data.telemetry is not None:
+            updates["telemetry"] = dump(check_telemetry(
+                heartbeat_data.telemetry))
+            updates["telemetry_timestamp"] = now()
+        if heartbeat_data.hardware is not None:
+            updates["hardware"] = dump(check_hardware(
+                heartbeat_data.hardware))
+        if heartbeat_data.compute_capabilities is not None:
+            updates["compute_capabilities"] = dump(check_compute_capabilities(
+                heartbeat_data.compute_capabilities))
+        if heartbeat_data.energy_state is not None:
+            updates["energy_state"] = dump(check_energy_state(
+                heartbeat_data.energy_state))
     except NodeRefusedError as error:
         raise HTTPException(status_code=422, detail=str(error))
     with connection() as db:
+        # Build dynamic UPDATE for all provided fields
+        set_clauses = ["last_seen=?", "status=?", "last_auth=?"]
+        params = [updates["last_seen"], updates["status"], updates["last_auth"]]
+        optional_fields = ("capabilities", "models", "executors", "resources",
+                           "telemetry", "telemetry_timestamp", "hardware",
+                           "compute_capabilities", "energy_state")
+        for field in optional_fields:
+            if field in updates:
+                set_clauses.append(f"{field}=COALESCE(?, {field})")
+                params.append(updates[field])
+        params.append(node_id)
         db.execute(
-            "UPDATE nodes SET last_seen=?, status=?, last_auth=?, "
-            "capabilities=COALESCE(?, capabilities), "
-            "models=COALESCE(?, models), "
-            "executors=COALESCE(?, executors), "
-            "resources=COALESCE(?, resources) WHERE node_id=?",
-            (updates["last_seen"], updates["status"],
-             updates["last_auth"], updates.get("capabilities"),
-             updates.get("models"), updates.get("executors"),
-             updates.get("resources"), node_id))
+            f"UPDATE nodes SET {', '.join(set_clauses)} WHERE node_id=?",
+            tuple(params))
     return Response(status_code=204)
 
 
@@ -612,18 +638,20 @@ NODE_PUBLIC_COLUMNS = (
     "node_id, hostname, tier, capabilities, cpu_cores, memory_mb, "
     "energy_source, last_seen, status, display_name, models, "
     "executors, resources, locality_zone, last_auth, "
-    "coordinator_capable"
+    "coordinator_capable, telemetry, telemetry_timestamp, hardware, "
+    "compute_capabilities, energy_state, health"
 )
 
 
 def _node_to_json(row) -> dict:
     record = dict(row)
-    for key in ("capabilities", "models", "executors", "resources"):
+    for key in ("capabilities", "models", "executors", "resources",
+                "telemetry", "hardware", "compute_capabilities", "energy_state"):
         try:
             record[key] = load(record.get(key) or (
-                "[]" if key != "resources" else "{}"))
+                "[]" if key not in ("resources", "telemetry", "energy_state") else "{}"))
         except ValueError:
-            record[key] = [] if key != "resources" else {}
+            record[key] = [] if key not in ("resources", "telemetry", "energy_state") else {}
     record["derived_status"] = derive_status(
         record.get("status", "unknown"), record.get("last_seen", ""))
     try:
@@ -631,7 +659,34 @@ def _node_to_json(row) -> dict:
             int(record.get("coordinator_capable", 0) or 0))
     except (TypeError, ValueError):
         record["coordinator_capable"] = False
+    # Compute health status from telemetry freshness and node state
+    record["health_status"] = _compute_health_status(record)
     return record
+
+
+def _compute_health_status(record: dict) -> str:
+    """Compute node health from telemetry freshness and state."""
+    derived = record.get("derived_status", "unknown")
+    if derived == "disabled":
+        return "OFFLINE"
+    if derived == "offline":
+        return "OFFLINE"
+    if derived == "stale":
+        return "STALE"
+    # Online/busy nodes: check telemetry freshness
+    telemetry_ts = record.get("telemetry_timestamp", "")
+    if telemetry_ts:
+        try:
+            from datetime import datetime, timezone, timedelta
+            ts = datetime.fromisoformat(telemetry_ts)
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=timezone.utc)
+            age = datetime.now(timezone.utc) - ts
+            if age > timedelta(minutes=5):
+                return "DEGRADED"
+        except (ValueError, TypeError):
+            pass
+    return "ONLINE"
 
 
 @app.get("/api/v1/nodes")
@@ -796,6 +851,15 @@ def _routing_candidates(now_str: str | None = None) -> list[dict]:
             "has_token": has_token,
             "last_auth": last_auth,
             "authenticated": last_auth == "token",
+            # BIG #39: Hardware Reality Layer projection for
+            # telemetry-aware routing (already-validated store
+            # data; never credentials).
+            "hardware": record["hardware"],
+            "compute_capabilities": record["compute_capabilities"],
+            "telemetry_timestamp": record.get(
+                "telemetry_timestamp", ""),
+            "health_status": record.get("health_status",
+                                        "UNKNOWN"),
         })
     return candidates
 
@@ -7517,7 +7581,12 @@ async def _graph_data(entity_id: str, depth: int,
             truth=str(selected.get("truth", "all")),
             source=str(selected.get("source", "all")),
             kind=str(selected.get("kind", "all")),
-            since=str(selected.get("since", "")))
+            since=str(selected.get("since", "")),
+            # BIG #39: Hardware Reality Layer overlays from the
+            # node registry (node-reported runtime state, never
+            # world truth).
+            include_hardware="hardware" in flags,
+            include_compute="compute" in flags)
     except (ValueError, InventoryRefusedError) as exc:
         error = str(exc)
     except InventoryUnavailable:
@@ -7605,7 +7674,7 @@ async def world_page(entity_id: str = "", depth: int = 1,
     <label>Source <select name="source" aria-label="Source filter"><option value="all">all</option><option value="inventory">world</option><option value="mycelium">mycelium</option></select></label>
     <label>Since <input type="text" name="since" placeholder="2026-01-01" value="{_ui.esc(filters['since'])}" style="width:7rem" aria-label="Since date"></label>
     <button type="submit">Grow</button></form>
-    <p class="muted">Overlay layers: missions, nodes, research, observations, printers, memory, candidates, conversations. Truth: all · verified · memory · candidate · observation. Health never enters the graph.</p></div>
+    <p class="muted">Overlay layers: missions, nodes, hardware, compute, research, observations, printers, memory, candidates, conversations. Truth: all · verified · memory · candidate · observation. Health never enters the graph.</p></div>
     {filter_note}
     <p class="muted">Every node is real: world entities from INVENTory, overlays from Mycelium. Select to inspect — the context rail opens here, no page jump — or open a neighborhood to grow.</p>
     {_ui.graph_panel(_json.dumps(graph), "/world", entity_id, depth, show, error)}
@@ -9236,14 +9305,56 @@ def _mobile_symbiosis_html(dash: dict) -> str:
 
 
 def _mobile_nodes_html(dash: dict) -> str:
-    """NODES: status + WHAT IT CAN DO + the mesh path."""
+    """NODES: health + telemetry + hardware + WHAT IT CAN DO."""
     from . import ui as _ui
+
+    def _node_detail(node: dict) -> str:
+        telemetry = node.get("telemetry", {})
+        hardware = node.get("hardware", {})
+        compute = node.get("compute", {})
+        energy = node.get("energy", {})
+        bits: list[str] = []
+        if isinstance(telemetry, dict):
+            cpu = telemetry.get("cpu_percent")
+            mem = telemetry.get("memory_percent")
+            if cpu is not None or mem is not None:
+                bits.append(
+                    f"cpu {cpu}% · mem {mem}%"
+                    if cpu is not None and mem is not None
+                    else f"cpu {cpu}%"
+                    if cpu is not None else f"mem {mem}%")
+            uptime = telemetry.get("uptime_seconds")
+            if uptime is not None:
+                bits.append(f"up {_ui.esc(str(uptime))}s")
+        if isinstance(hardware, dict):
+            kinds = hardware.get("kinds", [])
+            if kinds:
+                bits.append(
+                    f"hw {hardware.get('connected', 0)}/"
+                    f"{hardware.get('count', 0)}: "
+                    f"{_ui.esc(', '.join(str(kind) for kind in kinds[:6]))}")
+        if isinstance(compute, dict):
+            caps = compute.get("capabilities", [])
+            if caps:
+                bits.append(
+                    f"compute {compute.get('available', 0)}/"
+                    f"{compute.get('count', 0)}: "
+                    f"{_ui.esc(', '.join(str(cap) for cap in caps[:6]))}")
+        if isinstance(energy, dict) and energy.get("source"):
+            level = energy.get("level_percent")
+            bits.append(f"power {_ui.esc(str(energy.get('source')))}"
+                        + (f" {level}%" if level is not None
+                           else ""))
+        return "<br>".join(
+            f"<small class=\"muted\">{bit}</small>" for bit in bits)
+
     panel = dash.get("nodes", {})
     rows = "".join(
         f"<li>{_ui.status_dot(node.get('status', ''))}"
         f"<b>{_ui.esc(node.get('node_id', ''))}</b> — "
         f"{_ui.esc(node.get('status', ''))} · "
-        f"{_ui.esc(', '.join(node.get('roles', [])))}<br>"
+        f"health {_ui.esc(node.get('health', 'UNKNOWN'))}<br>"
+        f"{_node_detail(node)}<br>"
         f"<small>WHAT IT CAN DO: "
         f"{_ui.esc(', '.join(node.get('capabilities', [])))}</small></li>"
         for node in panel.get("nodes", [])[:12]) or \

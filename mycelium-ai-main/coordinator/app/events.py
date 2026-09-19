@@ -71,6 +71,11 @@ VALID_EVENT_TYPES = frozenset({
     "research.routed",
     "research.fetched",
     "relation.proposed",
+    # BIG #39 Hardware Reality Layer
+    "node.health_changed",
+    "node.hardware_changed",
+    "node.compute_changed",
+    "node.telemetry_received",
 })
 
 VALID_SEVERITIES = frozenset({"info", "approval_required",
