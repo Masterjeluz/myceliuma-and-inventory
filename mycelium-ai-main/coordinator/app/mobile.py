@@ -678,6 +678,17 @@ def campaign_panel(limit: int = 3) -> dict:
     return {"campaigns": cards, "href": "/campaigns"}
 
 
+def world_panel() -> dict:
+    """World HUD for the phone: campaign, quest, attention,
+    nodes, work, discoveries — same HUD as /world, small
+    words, same hrefs. Read-only."""
+    try:
+        from .world import world_hud
+        return {"hud": world_hud(), "href": "/world"}
+    except Exception:
+        return {"hud": {}, "href": "/world"}
+
+
 def mesh_receipts_panel(limit: int = 5) -> list[dict]:
     """Remote node task receipts for the phone: recent delegated
     tasks with their WHAT/WHERE/RESULT vocabulary."""
@@ -764,6 +775,7 @@ def dashboard(node: str = "") -> dict:
         "intel": intel_panel(),
         "quests": quests_panel(),
         "campaigns": campaign_panel(),
+        "world": world_panel(),
         "hardware": hardware_panel(),
         "finance": finance_panel(),
         "energy": energy_panel(),

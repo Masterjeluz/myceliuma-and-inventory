@@ -7850,6 +7850,309 @@ async def _world_seeds() -> list:
     return seeds[:12]
 
 
+def _world_hud_html() -> str:
+    """Lightweight world HUD (BIG #44): current campaign /
+    quest, attention, nodes, active work, discoveries. Only
+    values that exist — never scores. Best-effort."""
+    from . import ui as _ui
+    try:
+        from .world import world_hud
+        hud = world_hud()
+    except Exception:
+        return ""
+    cells = []
+    campaign = hud.get("campaign", {}) or {}
+    if campaign.get("title"):
+        cells.append(
+            f"<div class=\"hud-cell\"><small>CAMPAIGN</small><br>"
+            f"<a href=\"{_ui.esc(campaign.get('href', '/campaigns'))}\">"
+            f"{_ui.esc(campaign['title'])}</a> "
+            f"{_ui.esc(campaign.get('progress', ''))}</div>")
+    quest = hud.get("quest", {}) or {}
+    if quest.get("title"):
+        cells.append(
+            f"<div class=\"hud-cell\"><small>QUEST</small><br>"
+            f"<a href=\"{_ui.esc(quest.get('href', '/quests'))}\">"
+            f"{_ui.esc(quest['title'])}</a> "
+            f"{_ui.esc(quest.get('progress', ''))}</div>")
+    attention = hud.get("attention", {}) or {}
+    if any(attention.get(key, 0) for key in
+           ("needs", "waiting", "discovered", "offline")):
+        cells.append(
+            f"<div class=\"hud-cell\"><small>ATTENTION</small><br>"
+            f"<a href=\"/presence\">"
+            f"{attention.get('needs', 0)} needs · "
+            f"{attention.get('waiting', 0)} waiting · "
+            f"{attention.get('discovered', 0)} discovered · "
+            f"{attention.get('offline', 0)} quiet</a></div>")
+    nodes = hud.get("nodes", {}) or {}
+    if nodes.get("total"):
+        cells.append(
+            f"<div class=\"hud-cell\"><small>NODES</small><br>"
+            f"<a href=\"/nodes\">{nodes.get('awake', 0)}/"
+            f"{nodes.get('total', 0)} awake</a></div>")
+    work = hud.get("work", {}) or {}
+    if work.get("busy_nodes"):
+        cells.append(
+            f"<div class=\"hud-cell\"><small>ACTIVE WORK</small><br>"
+            f"<a href=\"/activity\">{work.get('busy_nodes', 0)} "
+            f"node(s) busy</a></div>")
+    discoveries = hud.get("discoveries", {}) or {}
+    if discoveries.get("open"):
+        cells.append(
+            f"<div class=\"hud-cell\"><small>DISCOVERIES</small><br>"
+            f"<a href=\"/symbiosis\">{discoveries.get('open', 0)} "
+            f"open</a></div>")
+    if not cells:
+        return ""
+    return ("<div class=\"panel hud\" role=\"status\" "
+            "aria-label=\"World summary\">"
+            "<div class=\"hud-row\">" + "".join(cells) +
+            "</div></div>")
+
+
+def _world_objects_html() -> str:
+    """World-object shelf (BIG #44): NODE/PROJECT/MACHINE/
+    ENERGY/CAMPAIGN/CRAFT/DISCOVERY/SYMBIOSIS/RESEARCH cards
+    with state, trust, activity, href + text. Best-effort."""
+    from . import ui as _ui
+    try:
+        from .world import world_objects
+        objects = world_objects(limit=12)
+    except Exception:
+        return ""
+    if not objects:
+        return ""
+    cards = []
+    for item in objects:
+        trust = (f" · trust {_ui.esc(item['trust'])}"
+                 if item.get("trust") else "")
+        attention = (f" · <b>{_ui.esc(item['attention'])}</b>"
+                     if item.get("attention") else "")
+        activity = (f"<br><small class=\"muted\">"
+                    f"{_ui.esc(item['activity'])}</small>"
+                    if item.get("activity") else "")
+        cards.append(
+            f"<div class=\"sprout wobject kind-"
+            f"{_ui.esc(item['kind'].lower())}\">"
+            f"<b>{_ui.esc(item['glyph'])} "
+            f"{_ui.esc(item['label'])}</b> "
+            f"<span class=\"muted\">"
+            f"{_ui.esc(item['kind'])} · "
+            f"{_ui.esc(item['state'])}{trust}{attention}</span>"
+            f"{activity}<br>"
+            f"<a href=\"{_ui.esc(item['href'])}\">Open →</a>"
+            f"<span class=\"sr\">{_ui.esc(item['text'])}</span>"
+            f"</div>")
+    return ("<div class=\"panel\"><h2>World objects</h2>"
+            "<p class=\"muted\">Every object is a real record — "
+            "open it to reach entity, campaign, quest, guide, "
+            "craft, symbiosis or evidence. No decoration without "
+            "a destination.</p>"
+            "<div class=\"grove\">" + "".join(cards) +
+            "</div></div>")
+
+
+async def _world_symbiosis_html(entity_id: str) -> str:
+    """Symbiosis network tree (BIG #44): PROJECT with branch
+    children carrying state + strength + href. Best-effort."""
+    from . import ui as _ui
+    try:
+        from .world import symbiosis_network, symbiosis_seedlings
+    except Exception:
+        return ""
+    network = None
+    if entity_id:
+        try:
+            network = await symbiosis_network(
+                entity_id, limit=12)
+        except ValueError:
+            return ("<div class=\"panel\"><p>Unknown entity — "
+                    "use a prefix_id like proj_….</p></div>")
+        except Exception:
+            network = None
+    if network and network.get("children"):
+        branches = []
+        for child in network["children"]:
+            strength = child.get("strength", "seedling")
+            branches.append(
+                f"<li><span class=\"strength {strength}\">"
+                f"</span> <b>"
+                f"{_ui.esc(child.get('group', ''))}</b> "
+                f"<a href=\"{_ui.esc(child['href'])}\">"
+                f"{_ui.esc(child['entity_id'][:60])}</a> "
+                f"<span class=\"muted\">"
+                f"{_ui.esc(child.get('predicate', ''))} · "
+                f"{_ui.esc(child.get('state', ''))} "
+                f"({strength})</span></li>")
+        counts = network.get("counts", {})
+        return (
+            f"<div class=\"panel\"><h2>Symbiosis network</h2>"
+            f"<p><b>{_ui.esc(network['root'][:60])}</b> "
+            f"<span class=\"muted\">{counts.get('verified', 0)} "
+            f"established · {counts.get('supported', 0)} "
+            f"growing · {counts.get('proposed', 0)} "
+            f"seedlings</span></p>"
+            f"<ul class=\"symtree\">{''.join(branches)}</ul>"
+            f"<p><a href=\"/symbiosis?entity_id="
+            f"{_ui.esc(network['root'])}\">Full symbiosis →</a>"
+            f"</p></div>")
+    try:
+        seedlings = symbiosis_seedlings(limit=6)
+    except Exception:
+        return ""
+    if not seedlings:
+        return ""
+    rows = "".join(
+        f"<li><span class=\"strength seedling\"></span> "
+        f"<a href=\"{_ui.esc(seed['href'])}\">"
+        f"{_ui.esc(seed['entity_id'][:80])}</a> "
+        f"<span class=\"muted\">seedling — uncertain until "
+        f"reviewed</span></li>" for seed in seedlings)
+    return (f"<div class=\"panel\"><h2>Symbiosis network</h2>"
+            f"<p class=\"muted\">Open seedlings waiting for "
+            f"review — pick an entity above to grow its "
+            f"network.</p><ul class=\"symtree\">{rows}</ul>"
+            f"</div>")
+
+
+async def _world_craft_html(entity_id: str) -> str:
+    """Craft world chain (BIG #44): vertical IDEA→…→PROJECT
+    with evidence states for the focused entity. Best-effort."""
+    from . import ui as _ui
+    if not entity_id:
+        return ""
+    try:
+        from .craft import craft_tree, stage_states
+        tree = await craft_tree(entity_id, 1)
+        states = {entry["key"]: entry
+                  for entry in stage_states(tree)}
+    except Exception:
+        return ""
+    stops = []
+    for stage in tree.get("stages", []):
+        entry = states.get(stage.get("key", ""), {})
+        glyph = entry.get("glyph", "○")
+        word = entry.get("state", "missing")
+        stops.append(
+            f"<div class=\"trail-stop trail-{_ui.esc(word)}\">"
+            f"<span class=\"trail-glyph\">{_ui.esc(glyph)}</span> "
+            f"<b>{_ui.esc(stage.get('title', ''))}</b> "
+            f"<span class=\"muted\">{_ui.esc(word)}</span>"
+            f"</div>")
+    if not stops:
+        return ""
+    return (
+        f"<div class=\"panel\"><h2>Craft world</h2>"
+        f"<p class=\"muted\">Growth: "
+        f"{_ui.esc(tree.get('growth', 'seed'))} — ✓ evidence, "
+        f"● active, ○ missing, ! blocked. Never invented.</p>"
+        f"<div class=\"trail\">" +
+        "<div class=\"trail-link\">↓</div>".join(stops) +
+        f"</div><p><a href=\"/craft?entity_id="
+        f"{_ui.esc(entity_id)}\">Open craft tree →</a></p></div>")
+
+
+def _world_campaign_html() -> str:
+    """Campaigns as world progression (BIG #44): title,
+    current, next, blocked, progress — all from live campaign
+    state. Best-effort."""
+    from . import ui as _ui
+    try:
+        from .campaigns import list_campaign_details
+        campaigns = list_campaign_details(limit=3)
+    except Exception:
+        return ""
+    if not campaigns:
+        return ""
+    cards = []
+    for campaign in campaigns:
+        current = campaign.get("current_quest", {}) or {}
+        nxt = campaign.get("next_action", {}) or {}
+        blocked = campaign.get("blocked_count", 0)
+        cards.append(
+            f"<div class=\"sprout campaign\">"
+            f"<b>🌱 {_ui.esc(campaign.get('title', ''))}</b> "
+            f"<span class=\"muted\">"
+            f"{campaign.get('completed_count', 0)}/"
+            f"{campaign.get('total_count', 0)}</span><br>"
+            f"<small>Current: "
+            f"{_ui.esc(current.get('title', '—')[:60])}</small>"
+            f"<br><small>Next: "
+            f"{_ui.esc(nxt.get('step', '—')[:60])}</small>"
+            + (f"<br><small><b>Blocked:</b> {blocked} "
+               f"quest(s)</small>" if blocked else "") +
+            f"<br><a href=\"/campaigns\">Open campaign →</a>"
+            f"</div>")
+    return ("<div class=\"panel\"><h2>World progression</h2>"
+            "<div class=\"grove\">" + "".join(cards) +
+            "</div></div>")
+
+
+def _world_energy_html() -> str:
+    """Energy in the world (BIG #44): only when real records
+    exist. Solar flow, battery store, machine activity, grid
+    link — words first, glyphs second."""
+    from . import ui as _ui
+    try:
+        from .world import energy_objects
+        objects = energy_objects(limit=6)
+    except Exception:
+        return ""
+    if not objects:
+        return ""
+    rows = "".join(
+        f"<li>{_ui.esc(item['glyph'])} "
+        f"<b>{_ui.esc(item['label'])}</b> "
+        f"<span class=\"muted\">{_ui.esc(item['state'])} · "
+        f"{_ui.esc(item['detail'])}</span></li>"
+        for item in objects)
+    return (f"<div class=\"panel\"><h2>Energy in the world</h2>"
+            f"<ul class=\"energyflow\">{rows}</ul>"
+            f"<p><a href=\"/energy\">Energy detail →</a> "
+            f"<span class=\"muted\">Unknown stays unknown; no "
+            f"routing changes.</span></p></div>")
+
+
+def _world_presence_html() -> str:
+    """Presence in the world (BIG #44): bands as world states
+    with real hrefs. Semantics unchanged."""
+    from . import ui as _ui
+    try:
+        from .game import presence_as_stakes
+        stakes = presence_as_stakes(limit=60)
+    except Exception:
+        return ""
+    bands = stakes.get("bands", {}) or {}
+    parts = []
+    meta = {"needs": ("📌 needs", "attention marker"),
+            "waiting": ("⏳ waiting", "paused, quiet objects"),
+            "available": ("🟢 available", "workshop resources"),
+            "discovered": ("🔵 discovered", "discovery glow"),
+            "offline": ("🌙 quiet", "dimmed nodes")}
+    for band in ("needs", "waiting", "available", "discovered",
+                 "offline"):
+        items = bands.get(band, []) or []
+        if not items:
+            continue
+        title, reads = meta[band]
+        lines = "".join(
+            f"<li><a href=\"{_ui.esc(item.get('href', '/presence'))}\">"
+            f"{_ui.esc(item.get('title', '')[:70])}</a></li>"
+            for item in items[:3])
+        parts.append(
+            f"<div class=\"sprout band-{band}\"><b>{title}</b> "
+            f"<span class=\"muted\">({reads})</span>"
+            f"<ul>{lines}</ul></div>")
+    if not parts:
+        return ""
+    return ("<div class=\"panel\"><h2>World attention</h2>"
+            "<div class=\"grove\">" + "".join(parts) +
+            "</div><p><a href=\"/presence\">Full attention →</a> "
+            "· <a href=\"/guide\">Why? Ask the guide →</a></p>"
+            "</div>")
+
+
 def _world_state_strip() -> str:
     """Compact living world-state for the cockpit (BIG #41).
 
@@ -7940,6 +8243,18 @@ async def world_page(entity_id: str = "", depth: int = 1,
     if entity_id:
         graph, error = await _graph_data(entity_id, depth,
                                          flags, filters)
+    # BIG #44 living world panels (all best-effort, "" when
+    # their stores are empty — never filler).
+    try:
+        _symbiosis_panel = await _world_symbiosis_html(
+            entity_id.strip()[:100] if entity_id else "")
+    except Exception:
+        _symbiosis_panel = ""
+    try:
+        _craft_panel = await _world_craft_html(
+            entity_id.strip()[:100] if entity_id else "")
+    except Exception:
+        _craft_panel = ""
     truth_options = "".join(
         f"<option value='{name}'"
         + (" selected" if name == filters["truth"] else "")
@@ -7964,6 +8279,7 @@ async def world_page(entity_id: str = "", depth: int = 1,
     <p><a href="/nodes">Nodes</a> · <a href="/conversations">Conversations</a> · <a href="/research">Research</a> · <a href="/missions">Missions</a> · <a href="/memory">Memory</a> · <a href="/cameras">Cameras</a> · <a href="/workshop/3d">3D</a> · <a href="/mobile">Mobile input</a> · <a href="/activity">Activity</a> · <a href="/search">Search</a> · <a href="/quests">Quests</a> · <a href="/hardware">Hardware</a> · <a href="/finance">Finance</a> · <a href="/energy">Energy</a></p>
     <p class="muted">Jelles ↔ chat ↔ mobile ↔ brain ↔ missions ↔ research ↔ memory ↔ INVENTory ↔ cameras ↔ 3D ↔ projects ↔ files ↔ nodes ↔ fabrication ↔ verification — one workshop, no loose pages. Statuses stay honest: REAL / TEST / SIMULATED / UNAVAILABLE.</p>
     {_world_state_strip()}</div>
+    {_world_hud_html()}
     {_last_flow_panel()}
     <div class="panel"><h2>Layers & truth</h2>
     <form method="get" action="/world" aria-label="Graph layers and filters">
@@ -7978,6 +8294,12 @@ async def world_page(entity_id: str = "", depth: int = 1,
     {filter_note}
     <p class="muted">Every node is real: world entities from INVENTory, overlays from Mycelium. Select to inspect — the context rail opens here, no page jump — or open a neighborhood to grow.</p>
     {_ui.graph_panel(_json.dumps(graph), "/world", entity_id, depth, show, error)}
+    {_world_campaign_html()}
+    {_world_objects_html()}
+    {_symbiosis_panel}
+    {_craft_panel}
+    {_world_energy_html()}
+    {_world_presence_html()}
     <div class="panel"><h2>Do something with this</h2>
     <p class="muted">Pick a node above, then act through real endpoints: research continues in <a href="/research">Research</a>, plans wait in <a href="/missions">Missions</a>, imports land in <a href="/conversations">Conversations</a>, approvals wait in <a href="/agents">Agents</a>. Growth views: <a href="/craft">Craft Tree</a> · <a href="/symbiosis">Symbiosis</a> · <a href="/guide">Guide</a>.</p></div>"""
     context = _ui.context_block(
@@ -9303,6 +9625,7 @@ def mobile_page(node: str = "") -> str:
     {_mobile_craft_html(dash)}
     {_mobile_symbiosis_html(dash)}
     {_mobile_nodes_html(dash)}
+    {_mobile_world_html(dash)}
     {_mobile_recent_html(dash, node)}
     <div class="panel"><h2>Remember this</h2>
     <form method="post" action="/web/candidates">
@@ -9726,6 +10049,54 @@ def _mobile_nodes_html(dash: dict) -> str:
         f"<p class=\"muted\">PHONE → COORDINATOR → NODE(S). "
         f"Coordinator stays authoritative; no shell, no wildcard. "
         f"<a href=\"/nodes\">Open nodes</a></p></div>")
+
+
+def _mobile_world_html(dash: dict) -> str:
+    """World HUD for the phone (BIG #44): campaign, quest,
+    attention, nodes, work, discoveries — same HUD as /world,
+    small words, same hrefs. NOW/WAITING/AVAILABLE/DISCOVERED/
+    OFFLINE vocabulary stays shared with desktop."""
+    from . import ui as _ui
+    panel = dash.get("world", {}) if isinstance(
+        dash.get("world"), dict) else {}
+    hud = panel.get("hud", {}) if isinstance(
+        panel.get("hud"), dict) else {}
+    rows = []
+    campaign = hud.get("campaign", {}) or {}
+    if campaign.get("title"):
+        rows.append(
+            f"<li>🗺 <a href=\""
+            f"{_ui.esc(campaign.get('href', '/campaigns'))}\">"
+            f"{_ui.esc(campaign['title'])}</a> "
+            f"{_ui.esc(campaign.get('progress', ''))}</li>")
+    quest = hud.get("quest", {}) or {}
+    if quest.get("title"):
+        rows.append(
+            f"<li>🧭 <a href=\""
+            f"{_ui.esc(quest.get('href', '/quests'))}\">"
+            f"{_ui.esc(quest['title'])}</a> "
+            f"{_ui.esc(quest.get('progress', ''))}</li>")
+    attention = hud.get("attention", {}) or {}
+    if any(attention.get(key, 0) for key in
+           ("needs", "waiting", "discovered", "offline")):
+        rows.append(
+            f"<li>📌 <a href=\"/presence\">"
+            f"{attention.get('needs', 0)} needs · "
+            f"{attention.get('waiting', 0)} waiting · "
+            f"{attention.get('discovered', 0)} discovered · "
+            f"{attention.get('offline', 0)} quiet</a></li>")
+    nodes = hud.get("nodes", {}) or {}
+    if nodes.get("total"):
+        rows.append(
+            f"<li>⬢ <a href=\"/nodes\">{nodes.get('awake', 0)}/"
+            f"{nodes.get('total', 0)} awake</a></li>")
+    if not rows:
+        return ""
+    return (
+        f"<div class=\"panel\" id=\"world\"><h2>World</h2>"
+        f"<ul>{''.join(rows)}</ul>"
+        f"<p><a href=\"/world\">Open living world →</a> · "
+        f"<a href=\"/game\">Game view →</a></p></div>")
 
 
 def _mobile_recent_html(dash: dict, node: str) -> str:

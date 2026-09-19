@@ -223,13 +223,31 @@ def guide_items(limit: int = 12) -> list[dict]:
                  if record.get("derived_status") in
                  ("stale", "offline")]
         if quiet:
+            first = quiet[0]
+            node_id = str(first.get("node_id", "?"))
+            task = first.get("current_task") or {}
+            last_task = (f"task #{task.get('id')}"
+                         if isinstance(task, dict) and
+                         task.get("id") else "no task assigned")
             items.append(_item(
                 "node", "💻",
-                f"{len(quiet)} node(s) quiet: "
-                f"{quiet[0].get('node_id', '?')}.",
+                f"{len(quiet)} node(s) quiet: {node_id}.",
                 "Nodes are pull-only helpers; a quiet node "
-                "simply stops claiming work.",
-                "Open nodes", "/nodes"))
+                "simply stops claiming work. Last heartbeat "
+                f"{str(first.get('last_seen', '?'))[:16]}; "
+                f"last known: {last_task}. A fresh heartbeat "
+                "restores availability — nothing else can.",
+                "Open nodes", "/nodes",
+                blocked_by=[{
+                    "label": "stale heartbeat",
+                    "href": "/nodes"}],
+                unlocks=[{
+                    "label": "node claims work again",
+                    "href": "/nodes"}],
+                evidence=[{
+                    "label": f"{node_id} reality",
+                    "href": f"/api/v1/nodes/{node_id}/reality"},
+                    {"label": "nodes", "href": "/nodes"}]))
     except Exception:
         pass
     # BIG #39: Hardware Reality Layer - hardware-aware guidance
@@ -301,11 +319,29 @@ def guide_items(limit: int = 12) -> list[dict]:
         if offline_nodes:
             node = offline_nodes[0]
             name = node.get("display_name") or node.get("hostname") or node.get("node_id")
+            task = node.get("current_task") or {}
+            last_task = (f"task #{task.get('id')}"
+                         if isinstance(task, dict) and
+                         task.get("id") else "no task assigned")
             items.append(_item(
                 "node", "💻",
                 f"Node '{name}' is {node.get('derived_status', 'offline').lower()}.",
-                "Pull-only helper stopped claiming work. Check connectivity.",
-                "Open nodes", "/nodes"))
+                "Pull-only helper stopped claiming work. Last "
+                f"heartbeat "
+                f"{str(node.get('last_seen', '?'))[:16]}; last "
+                f"known: {last_task}. Check connectivity — a "
+                "fresh heartbeat is what restores it.",
+                "Open nodes", "/nodes",
+                blocked_by=[{
+                    "label": "no heartbeat",
+                    "href": "/nodes"}],
+                unlocks=[{
+                    "label": "node back online",
+                    "href": "/nodes"}],
+                evidence=[{
+                    "label": f"{name} reality",
+                    "href": f"/api/v1/nodes/"
+                            f"{node.get('node_id', '')}/reality"}]))
         # Registered hardware not currently connected
         registered_hw = []
         for n in nodes_data:

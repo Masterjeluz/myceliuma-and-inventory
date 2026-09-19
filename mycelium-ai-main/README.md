@@ -93,6 +93,13 @@ persoonlijke computer-agent (verticale slice, live bewezen):
   safe), guide companion cards (BLOCKED BY/UNLOCKS/EVIDENCE),
   mobile campaign panel, game-like morning headers; zie
   `docs/living-game-layer.md`
+- **Living Solarpunk World** (`/world` als centrum, HUD,
+  wereldobjecten, symbiose-netwerk, craft-wereld, energie,
+  aandachtspanelen): elk object een echt record met href en
+  tekst, solarpunk-accenten, achtergrond met solar- en
+  needs-signalen, verified-glow in de graaf, gedeelde
+  mobiele woordenschat; zie
+  `docs/living-solarpunk-world.md`
 - **Veiligheid**: geen shell/RCE, geen credentials-opslag, geen
   auto-approval/bypass, geen permanente autonomie, screenshots lokaal
 
@@ -294,7 +301,8 @@ coordinator/app/conversation_bridge.py, context_packet.py,
 coordinator/app/context_engine.py, living_state.py,
                  knowledge.py, node_client/bootstrap.py (one-command)
 coordinator/app/campaigns.py, game.py, quests.py,
-                 hardware_links.py, finance.py, energy.py
+                 hardware_links.py, finance.py, energy.py,
+                 world.py
 desktop_agent/   standalone lokale agent (poll, claim, voer uit, rapporteer)
 node_client/     lichte client voor seed/worker/core nodes (pull-only, token-optie)
 docs/            architectuurstatus, roadmap, principes, oorsprong
@@ -321,7 +329,7 @@ Zie `docs/ARCHITECTURE_STATUS.md` (wat het systeem is),
 `docs/ROADMAP-V2.md`, `docs/living-automation.md`,
 `docs/automation-security.md`, `docs/hardware-reality-layer.md`,
 `docs/presence-ecosystem.md`, `docs/v2-ecosystem.md`,
-`docs/living-game-layer.md`,
+`docs/living-game-layer.md`, `docs/living-solarpunk-world.md`,
 `docs/mobile-node-flow.md`, `docs/linux-node-setup.md`,
 `docs/camera-workflow.md`, `docs/3d-workflow.md` en
 `docs/ROADMAP.md` (wat volgt). Teststatus: volle suite 1x per

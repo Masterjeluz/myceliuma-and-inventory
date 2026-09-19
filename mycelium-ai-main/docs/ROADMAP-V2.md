@@ -1,4 +1,4 @@
-# Mycelium V2 Roadmap — BIG #37 → BIG #43 (directional)
+# Mycelium V2 Roadmap — BIG #37 → BIG #44 (directional)
 
 Status after BIG #41: Mycelium V2 foundation — the BIG #1–40
 systems working as one ecosystem: targeted mesh delegation
@@ -130,9 +130,19 @@ campaign panel, morning CURRENT CAMPAIGN + game headers,
 worldgraph verified-hardware glow. 15 tests + 47 smoke
 checks green. See `docs/BIG43-final-report.md`.
 
-## BIG #44 — (NEXT, not started)
+## BIG #44 — Living Solarpunk World (DONE 2026-09-20)
 
-Direction only: deeper campaign arcs (multi-project chains),
-craft-stage ↔ quest-step cross-links, energy-aware routing
-using the BIG #42 store, evening digest. Nothing designed
-yet — BIG #43 stops here.
+Shipped: /world as primary experience (HUD, world objects,
+campaign progression, symbiosis network, craft world,
+energy, attention panels — all best-effort, empty means
+absent), original solarpunk visual language (pixel-step
+HUD, kind-accented objects, network/energy styling),
+background gains solar + needs signals (still one loop,
+reduced-motion safe), graph verified-hardware glow,
+guide node-dimm evidence (heartbeat/task/restore path),
+mobile world panel sharing desktop vocabulary. 13 tests +
+41 smoke checks green. See `docs/BIG44-final-report.md`.
+
+## BIG #45 — (NEXT, not started)
+
+Nothing designed yet — BIG #44 stops here.

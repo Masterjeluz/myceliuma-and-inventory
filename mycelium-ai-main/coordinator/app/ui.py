@@ -208,6 +208,28 @@ radial-gradient(500px 500px at 50% 110%, rgba(76,107,79,.12), transparent 70%)}
 .guide-card .companion{margin-top:.35rem}
 .guide-card .companion small{display:block}
 .sym-verified-glow{box-shadow:0 0 10px rgba(165,196,138,.45)}
+/* BIG #44 living solarpunk world: the workshop as a place.
+   World objects, HUD, symbiosis network, energy flow —
+   presentation over real records. Text always accompanies
+   glyphs; motion stays in the existing gated animations. */
+.hud{border-top:2px solid var(--moss)}
+.hud-row{display:flex;flex-wrap:wrap;gap:.6rem}
+.hud-cell{flex:1 1 140px;background:var(--surface-2);border:1px solid var(--line);border-radius:2px;box-shadow:2px 2px 0 var(--soil-2);padding:.45rem .6rem}
+.hud-cell small{color:var(--ink-faint);letter-spacing:.08em}
+.wobject{border-top:2px solid var(--fern)}
+.wobject.kind-node{border-top-color:var(--ink-dim)}
+.wobject.kind-campaign{border-top-color:var(--amber)}
+.wobject.kind-energy{border-top-color:var(--spore)}
+.wobject.kind-discovery{border-top-color:var(--spore)}
+.wobject.kind-symbiosis{border-top-color:var(--moss-bright)}
+.wobject.kind-research{border-top-color:var(--moss)}
+ul.symtree{list-style:none;margin:.4rem 0;padding-left:1.1rem;border-left:2px solid var(--fern)}
+ul.symtree li{position:relative;padding:.25rem 0}
+ul.symtree li::before{content:"";position:absolute;left:-1.1rem;top:1em;width:1rem;height:2px;background:var(--fern)}
+ul.energyflow{list-style:none;margin:.4rem 0;padding:0}
+ul.energyflow li{padding:.3rem .6rem;border-left:3px solid var(--spore);margin:.25rem 0;background:var(--surface)}
+.solar-note{color:var(--amber)}
+.verified-glow{filter:drop-shadow(0 0 3px var(--moss-bright))}
 @media (prefers-reduced-motion:reduce){.living-canvas{display:none}}
 """
 
@@ -439,6 +461,8 @@ var discovery = clampInt('data-discovery', 0, 0, 24);
 var verified = clampInt('data-verified', 0, 0, 24);
 var fab = clampInt('data-fab', 0, 0, 12);
 var offline = clampInt('data-offline', 0, 0, 30);
+var energy = clampInt('data-energy', 0, 0, 24);
+var needs = clampInt('data-needs', 0, 0, 40);
 var tempo = 1 + Math.min(onlineNodes, 6) * 0.08 + Math.min(research, 4) * 0.04;
 var dim = 1 - Math.min(offline, 6) * 0.05;
 var spores = [];
@@ -473,7 +497,10 @@ var col = '201,214,107';
 if (waiting && (i % 5 === 0)) col = '217,164,65';
 else if (research > 0 && (i % 7 === 0)) col = '150,200,160';
 else if (fab > 0 && (i % 6 === 0)) col = '217,140,90';
+else if (energy > 0 && (i % 8 === 0)) col = '255,214,120';
 if (discovery > 0 && (i % 9 === 0)) o = Math.min(0.6, o * 1.5);
+if (energy > 0 && (i % 8 === 0)) { py -= 6; o = Math.min(0.65, o * 1.6); }
+if (needs > 0 && (i % 11 === 0)) { col = '217,164,65'; o = Math.min(0.6, o * 1.4); }
 x.beginPath();
 x.arc(px, py, p.r, 0, 6.283);
 x.fillStyle = 'rgba(' + col + ',' + o.toFixed(2) + ')';
@@ -497,8 +524,11 @@ def living_bg() -> str:
     world: research quickens flow, fresh candidates pulse,
     verified connections draw faint mycelium threads, active
     fabrication warms spores, offline nodes dim the field.
-    Every signal derives from real stores, clamped, ambient
-    only — motion never claims specific events happened."""
+    BIG #44 living solarpunk world: solar production lifts
+    bright energy spores, presence NEEDS tint a few spores
+    amber as subtle world emphasis. Every signal derives from
+    real stores, clamped, ambient only — motion never claims
+    specific events happened."""
     spores = 26
     waiting = False
     online_nodes = 0
@@ -507,6 +537,8 @@ def living_bg() -> str:
     verified = 0
     fab = 0
     offline = 0
+    energy = 0
+    needs = 0
     try:
         from .living_state import current_state
         state = current_state()
@@ -555,6 +587,21 @@ def living_bg() -> str:
         offline = max(0, min(30, quiet_nodes))
     except Exception:
         pass
+    try:
+        from .energy import list_records as _energy_records
+        production = sum(
+            1 for record in _energy_records(limit=100)
+            if record.kind == "production" and
+            record.value is not None)
+        energy = max(0, min(24, production))
+    except Exception:
+        pass
+    try:
+        from .presence import attention_snapshot as _snapshot
+        counts = (_snapshot(limit=60).get("counts", {}) or {})
+        needs = max(0, min(40, int(counts.get("needs", 0))))
+    except Exception:
+        pass
     return ('<div class="living-bg" aria-hidden="true"></div>'
             '<canvas id="living-canvas" class="living-canvas" '
             f'data-spores="{spores}" '
@@ -565,6 +612,8 @@ def living_bg() -> str:
             f'data-verified="{verified}" '
             f'data-fab="{fab}" '
             f'data-offline="{offline}" '
+            f'data-energy="{energy}" '
+            f'data-needs="{needs}" '
             'aria-hidden="true"></canvas>'
             f'<script>{LIVING_BG_JS}</script>')
 
@@ -876,6 +925,16 @@ function wshape(g, p){
   el.setAttribute('stroke-width', k === 'project' ? 3 : 1.5);
   if (p.n.source !== 'inventory') el.setAttribute('stroke-dasharray', '4 2');
   if (k === 'observation') el.setAttribute('class', 'pulse');
+  const verified = p.n.metadata && p.n.metadata.verified === true;
+  if (verified) {
+    el.setAttribute('stroke-width', 3);
+    el.setAttribute('class', ((k === 'observation') ? 'pulse ' : '') + 'verified-glow');
+    const ring = document.createElementNS(NS, 'circle');
+    ring.setAttribute('cx', p.x); ring.setAttribute('cy', p.y); ring.setAttribute('r', 13);
+    ring.setAttribute('fill', 'none'); ring.setAttribute('stroke', c);
+    ring.setAttribute('stroke-opacity', '.5'); ring.setAttribute('stroke-width', '1.5');
+    grp.appendChild(ring);
+  }
   grp.appendChild(el);
   const t = document.createElementNS(NS, 'text');
   t.setAttribute('x', p.x + 13); t.setAttribute('y', p.y + 4);
