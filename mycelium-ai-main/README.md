@@ -75,8 +75,13 @@ persoonlijke computer-agent (verticale slice, live bewezen):
 - **Wereldmodel**: INVENTory alleen-lezen via GET-only loopback-bridge,
   nu met hybride retrieval (semantisch + lexicaal + relaties,
   provenance-bewust, met fallback zonder embedding-model)
-- **Missie-sjablonen, camera-abstractie en wereldgrafiek** als
-  foundation voor begrijpen en waarnemen (zie `docs/`)
+- **Living Automation** (`/automation`, `/api/v1/automation/*`):
+  observe → research → propose → wait-for-YES → act inside
+  approved plan → observe → verify → record. Mission templates
+  chain research queue + candidates + writes with human gates at
+  every consequential step. No background threads, default-deny
+  step kinds, live gate re-check on resume, bounds on every run;
+  see `docs/living-automation.md` and `docs/automation-security.md`
 - **Veiligheid**: geen shell/RCE, geen credentials-opslag, geen
   auto-approval/bypass, geen permanente autonomie, screenshots lokaal
 
@@ -280,7 +285,7 @@ coordinator/app/context_engine.py, living_state.py,
 desktop_agent/   standalone lokale agent (poll, claim, voer uit, rapporteer)
 node_client/     lichte client voor seed/worker/core nodes (pull-only, token-optie)
 docs/            architectuurstatus, roadmap, principes, oorsprong
-tests/           1162 tests (pytest -v)
+tests/           1251 tests (pytest -v)
 ```
 
 Zie `docs/ARCHITECTURE_STATUS.md` (wat het systeem is),
@@ -300,10 +305,11 @@ Zie `docs/ARCHITECTURE_STATUS.md` (wat het systeem is),
 `docs/living-ecosystem.md`, `docs/conversation-bridge.md`,
 `docs/context-packets.md`, `docs/overnight-research.md`,
 `docs/knowledge-lifecycle.md`, `docs/research-routing.md`,
-`docs/ROADMAP-V2.md`,
+`docs/ROADMAP-V2.md`, `docs/living-automation.md`,
+`docs/automation-security.md`,
 `docs/mobile-node-flow.md`, `docs/linux-node-setup.md`,
 `docs/camera-workflow.md`, `docs/3d-workflow.md` en
-`docs/ROADMAP.md` (wat volgt). Teststatus: **1162 passed**.
+`docs/ROADMAP.md` (wat volgt). Teststatus: **1251 passed**.
 
 ## Bijdragen
 

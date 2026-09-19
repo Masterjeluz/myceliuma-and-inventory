@@ -105,6 +105,25 @@ def build_context_packet(*, goal: str = "", project_id: str = "",
                 "open_questions": len(dossier.open_questions)})
     except Exception:
         packet["warnings"].append("research unavailable")
+    packet["automation"] = []
+    try:
+        from .automation import list_runs
+        for run in list_runs(limit=limit):
+            if run.state == "cancelled":
+                continue
+            waiting = run.waiting or {}
+            packet["automation"].append({
+                "id": run.run_id, "goal": run.goal[:200],
+                "state": run.state,
+                "steps": f"{sum(1 for s in run.steps if s.status == 'done')}"
+                         f"/{len(run.steps)}",
+                "waiting": str(waiting.get("reason", ""))[:200],
+                "approval_url": str(waiting.get("approval_url", ""))[:200],
+                "mission_id": run.mission_id})
+            if len(packet["automation"]) >= limit:
+                break
+    except Exception:
+        packet["warnings"].append("automation unavailable")
     if conversation_id:
         try:
             if conversation_id.startswith("conv_"):
@@ -415,6 +434,30 @@ def _knowledge_section(intent: str, project_id: str,
     return section
 
 
+def _automation_section(max_items: int) -> list[dict]:
+    """Active automation runs for a handoff: state, progress,
+    waiting gate, next action. Read-only, bounded."""
+    out: list[dict] = []
+    try:
+        from .automation import list_runs
+        for run in list_runs(limit=max_items):
+            if run.state == "cancelled":
+                continue
+            waiting = run.waiting or {}
+            out.append({
+                "id": run.run_id, "goal": run.goal[:200],
+                "state": run.state,
+                "steps": f"{sum(1 for s in run.steps if s.status == 'done')}"
+                         f"/{len(run.steps)}",
+                "waiting": str(waiting.get("reason", ""))[:200],
+                "approval_url": str(
+                    waiting.get("approval_url", ""))[:200],
+                "mission_id": run.mission_id})
+    except Exception:
+        pass
+    return out
+
+
 def build_packet_v2(*, task: str = "", intent: str = "",
                     project_id: str = "", conversation_id: str = "",
                     include_health: bool = False,
@@ -476,6 +519,7 @@ def build_packet_v2(*, task: str = "", intent: str = "",
             "observations", [])[:max_items],
         "research": composed["sections"].get("research", [])[:max_items],
         "knowledge": knowledge,
+        "automation": _automation_section(max_items),
         "decisions": decisions,
         "unresolved_questions": unresolved[:12],
         "constraints": [
@@ -563,6 +607,16 @@ def render_packet_v2_markdown(packet: dict) -> str:
     if not knowledge.get("supported") and not knowledge.get(
             "candidates") and not knowledge.get("observations"):
         lines.append("- (no active candidates)")
+    lines.append("")
+    lines.append("## AUTOMATION")
+    for item in packet.get("automation", [])[:8]:
+        waiting = f" — waits: {item['waiting']}" \
+            if item.get("waiting") else ""
+        lines.append(
+            f"- {item.get('id', '')}: {item.get('goal', '')} "
+            f"[{item.get('state', '')}]{waiting}")
+    if not packet.get("automation"):
+        lines.append("- (no active automation runs)")
     lines.append("")
     lines.append("## UNRESOLVED QUESTIONS")
     lines.extend(f"- {item}" for item in packet.get(

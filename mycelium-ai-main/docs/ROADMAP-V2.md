@@ -1,14 +1,12 @@
 # Mycelium V2 Roadmap — BIG #37 → BIG #40 (directional)
 
-Status after BIG #37: conversation intelligence on the
-living world — deterministic extractive themes, decisions,
-promises, contradictions, categorized missed items,
-research proposals, entity links, symbiosis discoveries;
-cross-conversation dedupe + REVISIT; timeline; packet
-intelligence; opt-in graph overlay; archive UI with
-DISCOVERY; guide/mobile/notifications wiring. 1231
-Mycelium tests green; INVENTory untouched (179 + 1
-pre-existing). See `docs/BIG37-final-report.md`.
+Status after BIG #38: living automation — observe → research →
+propose → wait-for-YES → act inside approved plan → observe →
+verify → record. Mission templates chain research queue +
+candidates + writes with human gates at every consequential
+step. No new autonomy levels, no gate removal. 1251 Mycelium
+tests green; INVENTory untouched (179 + 1 pre-existing). See
+`docs/BIG38-final-report.md`.
 
 Principles for every step: reuse stores, explicit promotion,
 provenance always, honest REAL/TEST/SIMULATED/UNAVAILABLE/FUTURE,
@@ -54,19 +52,24 @@ dedupe, REVISIT, timeline, packet section, graph overlay,
 archive UI, guide/mobile/notifications. No LLM involved;
 analysis stays OBSERVATION/CANDIDATE.
 
-## BIG #38 — Living Automation
+## BIG #38 — Living Automation (DONE 2026-09-19)
 
-Observe → research → propose → act → observe loops inside
-approved plans only: mission templates that chain research
-queue + candidates + writes with human gates at every
-consequential step. No new autonomy levels, no gate removal.
+Shipped: automation engine (`automation.py`) with runs,
+bounded steps, closed safe-step allow-list, gates, resume
+with live re-check, bounds, templates, overnight eligibility.
+API + web routes (`/automation`, `/automation/{run_id}`).
+Surfaces: guide, mobile, morning report, context packet,
+living state. Notifications reuse existing kinds. Security:
+default-deny, live gate re-check, secret scan, health
+isolation, capability allow-list, no shell surface, prompt
+injection contained. 20 tests + 17 smoke checks green.
 
 ## BIG #39 — Presence
 
-Notifications, mornings, overnight: per-recipient in-app
-delivery, morning "why open Mycelium today" answer, overnight
-digest of queue + discoveries + connections. Web push only with
-a real transport; until then explicit UNAVAILABLE.
+Per-recipient in-app notification delivery, morning "why open
+Mycelium today" answer, overnight digest of queue +
+discoveries + connections. Web push only with a real transport;
+until then explicit UNAVAILABLE.
 
 ## BIG #40 — Mycelium V2
 

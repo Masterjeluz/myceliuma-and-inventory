@@ -337,4 +337,32 @@ def guide_items(limit: int = 12) -> list[dict]:
                 if conversations else "/conversations"))
     except Exception:
         pass
+    try:
+        from .automation import list_runs
+        for run in list_runs(limit=50):
+            if run.state == "waiting_for_human":
+                waiting = run.waiting or {}
+                items.append(_item(
+                    "mission", "🟡",
+                    f"Automation waits: {run.goal[:90]}",
+                    str(waiting.get("reason", "gate unmet"))[:200],
+                    "Resume run", f"/automation/{run.run_id}"))
+            elif run.state == "blocked":
+                items.append(_item(
+                    "mission", "⚠",
+                    f"Automation blocked: {run.goal[:90]}",
+                    "A bound or refusal stopped the run; inspect "
+                    "before re-driving.",
+                    "Inspect run", f"/automation/{run.run_id}"))
+            elif run.state == "failed":
+                items.append(_item(
+                    "mission", "✕",
+                    f"Automation failed: {run.goal[:90]}",
+                    "A step failed safely; nothing executed "
+                    "beyond the plan.",
+                    "Review run", f"/automation/{run.run_id}"))
+            if len(items) >= 20:
+                break
+    except Exception:
+        pass
     return items[: max(1, min(int(limit or 12), 20))]

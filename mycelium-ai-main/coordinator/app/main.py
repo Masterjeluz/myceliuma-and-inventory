@@ -5176,6 +5176,15 @@ def report_morning() -> dict:
         sections["fabrication"] = [
             f"{row['fabrication_id']} [{row['status']}]"
             for row in fabs]
+    try:
+        from .automation import list_runs as _auto_runs
+        _auto_lines = [
+            f"{run.run_id} {run.goal[:80]} [{run.state}]"
+            for run in _auto_runs(limit=10)]
+    except Exception:
+        _auto_lines = []
+    if _auto_lines:
+        sections["automation"] = _auto_lines[:8]
     if _waiting_lines:
         sections["waiting"] = _waiting_lines[:8]
     if _agenda_lines:
@@ -8446,9 +8455,31 @@ def mission_page(mission_id: str) -> str:
     <p>{buttons}</p>
     {f"<p class=\"muted\">World: <a href='/world?entity_id={_ui.esc(first_entity)}'>graph around first context entity</a></p>" if first_entity else ""}</div>
     <h2>Steps</h2><ul>{steps}</ul>
-    <h2>Events</h2><ul>{events or "<li>—</li>"}</ul>"""
+    <h2>Events</h2><ul>{events or "<li>—</li>"}</ul>
+    <h2>Automation</h2><ul>{_mission_automation_html(mission_id)}</ul>"""
     return _ui.shell("Mission", "/missions", main, "",
                      _ui.command_bar())
+
+
+def _mission_automation_html(mission_id: str) -> str:
+    """Automation runs linked to one mission, with drive buttons."""
+    from . import ui as _ui
+    try:
+        from .automation import list_runs
+        linked = [run for run in list_runs(limit=200)
+                  if run.mission_id == mission_id][:5]
+    except Exception:
+        linked = []
+    rows = "".join(
+        f"<li><a href=\"/automation/{_ui.esc(run.run_id)}\">"
+        f"{_ui.esc(run.goal[:80])}</a> "
+        f"{_ui.status_dot(run.state)}{_ui.esc(run.state)} "
+        f"<form method=\"post\" "
+        f"action=\"/web/automation/runs/{_ui.esc(run.run_id)}/drive\" "
+        f"style=\"display:inline\"><button>Drive</button></form></li>"
+        for run in linked)
+    return rows or ("<li>No automation linked — start one from "
+                    "<a href=\"/automation\">Automation</a>.</li>")
 
 
 @app.post("/web/missions/from-template")
@@ -11496,6 +11527,273 @@ def api_mesh_validate(body: dict) -> dict:
                 body.get("payload"), dict) else {})
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
+
+
+# =============================================================================
+# BIG #38 — LIVING AUTOMATION. First-class automation runs over
+# the existing architecture: safe steps drive automatically,
+# consequential work waits with the exact gate named, resume
+# re-reads live stores. No second mission engine, no new gates.
+# =============================================================================
+
+
+@app.post("/api/v1/automation/runs", status_code=201)
+def api_automation_create(body: dict) -> dict:
+    from .automation import (AutomationRefusedError, create_run,
+                             run_to_json)
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=422, detail="JSON body required")
+    try:
+        run = create_run(
+            str(body.get("goal", "")),
+            body.get("steps", []) or [],
+            mission_id=str(body.get("mission_id", "")),
+            bounds=body.get("bounds"),
+            overnight=bool(body.get("overnight", False)),
+            actor=str(body.get("actor", "api")))
+    except AutomationRefusedError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    return run_to_json(run)
+
+
+@app.post("/api/v1/automation/from-template", status_code=201)
+def api_automation_from_template(body: dict) -> dict:
+    from .automation import (AutomationRefusedError,
+                             create_from_template, run_to_json)
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=422, detail="JSON body required")
+    try:
+        run = create_from_template(
+            str(body.get("template_id", "")),
+            body.get("args") if isinstance(body.get("args"),
+                                           dict) else {},
+            mission_id=str(body.get("mission_id", "")),
+            bounds=body.get("bounds"),
+            overnight=bool(body.get("overnight", False)),
+            actor=str(body.get("actor", "api")))
+    except AutomationRefusedError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    return run_to_json(run)
+
+
+@app.get("/api/v1/automation/templates")
+def api_automation_templates() -> dict:
+    from .automation import list_templates
+    return {"templates": list_templates()}
+
+
+@app.get("/api/v1/automation/runs")
+def api_automation_list(state: str = "", limit: int = 50) -> dict:
+    from .automation import list_runs, run_to_json
+    try:
+        count = max(1, min(int(limit or 50), 200))
+    except (TypeError, ValueError):
+        count = 50
+    return {"runs": [run_to_json(run)
+                     for run in list_runs(limit=count,
+                                          state=state[:30])]}
+
+
+@app.get("/api/v1/automation/runs/{run_id}")
+def api_automation_get(run_id: str) -> dict:
+    from .automation import load_run, run_to_json
+    run = load_run(run_id)
+    if run is None:
+        raise HTTPException(status_code=404,
+                            detail="automation run not found")
+    return run_to_json(run)
+
+
+@app.get("/api/v1/automation/runs/{run_id}/overnight")
+def api_automation_overnight(run_id: str) -> dict:
+    from .automation import AutomationRefusedError, overnight_eligible
+    try:
+        return overnight_eligible(run_id)
+    except AutomationRefusedError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+
+@app.post("/api/v1/automation/runs/{run_id}/drive")
+async def api_automation_drive(run_id: str, body: dict | None = None) -> dict:
+    from .automation import AutomationRefusedError, drive_run
+    payload = body if isinstance(body, dict) else {}
+    try:
+        budget = int(payload.get("budget_steps", 10))
+    except (TypeError, ValueError):
+        budget = 10
+    try:
+        return await drive_run(run_id, budget_steps=budget)
+    except AutomationRefusedError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+
+@app.post("/api/v1/automation/runs/{run_id}/resume")
+async def api_automation_resume(run_id: str,
+                                body: dict | None = None) -> dict:
+    from .automation import AutomationRefusedError, resume_run
+    payload = body if isinstance(body, dict) else {}
+    try:
+        budget = int(payload.get("budget_steps", 10))
+    except (TypeError, ValueError):
+        budget = 10
+    try:
+        return await resume_run(run_id, budget_steps=budget)
+    except AutomationRefusedError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+
+@app.post("/api/v1/automation/runs/{run_id}/cancel")
+def api_automation_cancel(run_id: str, body: dict | None = None) -> dict:
+    from .automation import (AutomationRefusedError, cancel_run,
+                             run_to_json)
+    payload = body if isinstance(body, dict) else {}
+    try:
+        run = cancel_run(
+            run_id, reason=str(payload.get("reason", "")))
+    except AutomationRefusedError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    return run_to_json(run)
+
+
+@app.post("/web/automation/from-template")
+async def web_automation_from_template(
+        request: Request) -> RedirectResponse:
+    from .automation import AutomationRefusedError, create_from_template
+    fields = await _form_fields(request)
+    args = {"goal": fields.get("goal", ""),
+            "conversation_id": fields.get("conversation_id", ""),
+            "observation_id": fields.get("observation_id", ""),
+            "entity_id": fields.get("entity_id", "")}
+    try:
+        run = create_from_template(
+            fields.get("template_id", ""), args, actor="web")
+    except AutomationRefusedError:
+        return RedirectResponse("/automation", status_code=303)
+    return RedirectResponse(f"/automation/{run.run_id}",
+                            status_code=303)
+
+
+@app.post("/web/automation/runs/{run_id}/{op}")
+async def web_automation_op(run_id: str,
+                            op: str) -> RedirectResponse:
+    from .automation import (AutomationRefusedError, cancel_run,
+                             drive_run, resume_run)
+    try:
+        if op == "drive":
+            await drive_run(run_id, budget_steps=10)
+        elif op == "resume":
+            await resume_run(run_id, budget_steps=10)
+        elif op == "cancel":
+            cancel_run(run_id, reason="operator stop")
+    except AutomationRefusedError:
+        pass
+    return RedirectResponse(f"/automation/{run_id}", status_code=303)
+
+
+def _automation_quest_html(run_id: str, goal: str, state: str,
+                           steps: list) -> str:
+    from . import ui as _ui
+    trail = _ui.quest_steps([
+        {"status": ("done" if step.get("status") == "done"
+                    else "open" if step.get("status") == "pending"
+                    else step.get("status", "open")),
+         "description": f"{step.get('kind', '')} — "
+                        f"{step.get('step_id', '')}"}
+        for step in steps[:8]])
+    return (
+        f"<div class=\"sprout { _ui.growth_class(state)}\">"
+        f"<b>{_ui.esc(goal[:90])}</b><br>"
+        f"{_ui.status_dot(state)}{_ui.chip(state)}"
+        f"<br>{trail}"
+        f"<a href='/automation/{_ui.esc(run_id)}'>Open run</a></div>")
+
+
+@app.get("/automation", response_class=HTMLResponse)
+def automation_page() -> str:
+    """Living automation: runs as quest trails over safe steps."""
+    from . import ui as _ui
+    from .automation import list_runs, list_templates
+    cards = "".join(
+        _automation_quest_html(run.run_id, run.goal, run.state,
+                               [step.model_dump(mode="json")
+                                for step in run.steps])
+        for run in list_runs(limit=30)) or \
+        _ui.empty("No automation runs yet — start one from a template.")
+    templates = "".join(
+        f"<li><b>{_ui.esc(template['title'])}</b> "
+        f"<span class=\"muted\">{_ui.esc(template['description'][:160])}</span>"
+        f"<form method=\"post\" action=\"/web/automation/from-template\" "
+        f"style=\"display:inline\">"
+        f"<input type=\"hidden\" name=\"template_id\" value=\"{_ui.esc(template['template_id'])}\">"
+        f"<input type=\"text\" name=\"goal\" placeholder=\"Goal\" style=\"width:30%\" aria-label=\"Goal\">"
+        f"<input type=\"text\" name=\"conversation_id\" placeholder=\"conv_… (optional)\" style=\"width:22%\" aria-label=\"Conversation\">"
+        f"<button type=\"submit\">Start</button></form></li>"
+        for template in list_templates())
+    main = f"""<h1>Automation — the workshop keeps going</h1>
+    <p class="muted">Safe steps drive automatically; consequential work waits with the exact gate named; resume re-checks live state. No background threads — every drive is an explicit call.</p>
+    <div class="panel"><h2>Start from template</h2><ul>{templates}</ul></div>
+    <h2>Runs</h2><div class="grove">{cards}</div>"""
+    return _ui.shell("Automation", "/automation",
+                     _ui.living_bg() + main, _ui.command_bar())
+
+
+@app.get("/automation/{run_id}", response_class=HTMLResponse)
+def automation_detail_page(run_id: str):
+    """One run: quest trail, waiting bundle, actions, packet link."""
+    from . import ui as _ui
+    from .automation import load_run
+    run = load_run(run_id)
+    if run is None:
+        return HTMLResponse("Automation run not found", status_code=404)
+    data = run.model_dump(mode="json")
+    waiting = data.get("waiting") or {}
+    waiting_html = ""
+    if data["state"] in ("waiting_for_human", "waiting_for_agent") \
+            and waiting:
+        gate = waiting.get("gate") or {}
+        approval_url = waiting.get("approval_url", "/activity")
+        gate_text = (str(gate.get("type", "")) + " " +
+                     str(gate.get("ref", ""))).strip()
+        waiting_html = (
+            f"<div class=\"panel auto-wait\"><h2>Waiting — exact gate</h2>"
+            f"<p><b>{_ui.esc(waiting.get('reason', ''))}</b></p>"
+            + _ui.kv_list([
+                ("Action", _ui.esc(waiting.get("action", ""))),
+                ("Scope", _ui.esc(
+                    str(waiting.get("scope", ""))[:300])),
+                ("Source", _ui.esc(waiting.get("source", ""))),
+                ("Gate", _ui.esc(gate_text)),
+                ("Approval",
+                 f"<a href=\"{_ui.esc(approval_url)}\">"
+                 f"{_ui.esc(approval_url)}</a>")])
+            + f"<form method=\"post\" action=\"/web/automation/runs/"
+            f"{_ui.esc(run_id)}/resume\" style=\"display:inline\">"
+            f"<button>Resume (re-checks live state)</button></form>"
+            f"</div>")
+    trail = _ui.quest_steps([
+        {"status": ("done" if step.get("status") == "done"
+                    else "open" if step.get("status") == "pending"
+                    else step.get("status", "open")),
+         "description": f"{step.get('kind', '')} — "
+                        f"{step.get('step_id', '')} "
+                        f"{str(step.get('error', ''))[:80]}"}
+        for step in data.get("steps", [])])
+    bounds = data.get("bounds", {})
+    actions = ""
+    if data["state"] == "running":
+        actions += f"<form method=\"post\" action=\"/web/automation/runs/{_ui.esc(run_id)}/drive\" style=\"display:inline\"><button>Drive 10 steps</button></form> "
+    if data["state"] not in ("completed", "failed", "cancelled"):
+        actions += f"<form method=\"post\" action=\"/web/automation/runs/{_ui.esc(run_id)}/cancel\" style=\"display:inline\"><button>STOP</button></form>"
+    main = f"""<h1>Automation run</h1>
+    <div class="panel"><p><b>{_ui.esc(data.get('goal', ''))}</b></p>
+    <p>{_ui.status_dot(data['state'])}<b>{_ui.esc(data['state'])}</b> · {data.get('steps_done', 0)}/{data.get('steps_total', len(data.get('steps', [])))} steps · bounds max {bounds.get('max_steps', '?')} steps / {bounds.get('max_runtime_seconds', '?')}s</p>
+    <p class=\"muted\">template { _ui.esc(data.get('template_id', '') or '—')} · mission {f"<a href='/missions/{_ui.esc(data.get('mission_id', ''))}'>{_ui.esc(data.get('mission_id', ''))}</a>" if data.get('mission_id') else '—'} · overnight-eligible: <b>{'yes' if _ui.esc(str(data.get('overnight', False))) == 'True' else 'no'}</b></p>
+    <p>{actions}</p>
+    <p class=\"muted\">Continue elsewhere: <a href=\"/api/v1/context/packet?goal={_ui.esc(data.get('goal', '')[:80])}\">context packet (JSON)</a> · <a href=\"/api/v1/context/packet.md?goal={_ui.esc(data.get('goal', '')[:80])}\">Markdown</a></p></div>
+    {waiting_html}
+    <h2>Quest trail</h2>{trail}"""
+    return _ui.shell("Automation run", "/automation",
+                     _ui.living_bg() + main, _ui.command_bar())
 
 
 @app.get("/guide", response_class=HTMLResponse)

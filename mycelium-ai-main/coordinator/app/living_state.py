@@ -153,6 +153,18 @@ def current_state() -> dict:
         camera_ready = bool(list_inbox_files(limit=1))
     except Exception:
         pass
+    automation_running = 0
+    automation_waiting = 0
+    try:
+        from .automation import list_runs
+        for run in list_runs(limit=50):
+            if run.state == "running":
+                automation_running += 1
+            elif run.state in ("waiting_for_human",
+                               "waiting_for_agent"):
+                automation_waiting += 1
+    except Exception:
+        pass
     if new_observations:
         reasons.append(
             f"{new_observations} nieuwe observatie(s) vandaag")
@@ -167,6 +179,12 @@ def current_state() -> dict:
             f"{fabrication_waiting} fabricatie wacht")
     if camera_ready:
         reasons.append("cameramateriaal klaar voor analyse")
+    if automation_running:
+        reasons.append(
+            f"{automation_running} automation-run(s) actief")
+    if automation_waiting:
+        reasons.append(
+            f"{automation_waiting} automation-run(s) wachten op jou")
     unlinked = 0
     try:
         from .conversation_bridge import list_imports, load_analysis
@@ -199,6 +217,8 @@ def current_state() -> dict:
         state = "QUIET"
     return {"state": state, "glyph": GLYPHS[state],
             "line": LINES[state], "reasons": reasons[:5],
+            "automation_running": automation_running,
+            "automation_waiting": automation_waiting,
             "waiting_approvals": waiting,
             "candidates_waiting": candidates_waiting,
             "running_missions": running_missions,

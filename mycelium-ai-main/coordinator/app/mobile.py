@@ -443,6 +443,23 @@ def progress_panel() -> dict:
                 break
     except Exception:
         pass
+    try:
+        from .automation import list_runs
+        for run in list_runs(limit=20):
+            if run.state in ("completed", "failed", "cancelled"):
+                continue
+            done = sum(1 for step in run.steps
+                       if step.status == "done")
+            quests.append({
+                "title": _clip(f"Automation: {run.goal}", 100),
+                "done": done, "total": len(run.steps),
+                "status": str(run.state),
+                "href": f"/automation/{run.run_id}",
+            })
+            if len(quests) >= 10:
+                break
+    except Exception:
+        pass
     return {"quests": quests}
 
 

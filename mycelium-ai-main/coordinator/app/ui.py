@@ -159,6 +159,14 @@ radial-gradient(500px 500px at 50% 110%, rgba(76,107,79,.12), transparent 70%)}
 .timeline li{position:relative;padding:.35rem 0 .35rem 1.2rem;border-left:2px solid var(--line);margin-left:.4rem}
 .timeline li::before{content:"";position:absolute;left:-5px;top:.8em;width:8px;height:8px;border-radius:50%;background:var(--moss)}
 .timeline li.wait::before{background:var(--amber);box-shadow:0 0 6px var(--amber)}
+/* BIG #38 living automation: subtle motion on real state only.
+   Global reduced-motion rule above kills all of this on request. */
+.sym-PROPOSED{animation:breathe 6s ease-in-out infinite}
+.auto-wait{border-left:3px solid var(--amber)}
+.auto-wait .q-now{animation:pulse 2.2s ease-out infinite}
+.craft-stage.gap{border-top:2px dashed var(--amber-dim)}
+.discovery{border-left:3px solid var(--spore)}
+.discovery .burst{color:var(--spore)}
 .quickgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:.5rem;margin:.6rem 0}
 .quickgrid a{display:block;text-align:center;background:var(--surface-2);border:1px solid var(--line);border-radius:var(--r-sm);padding:.7rem .4rem;text-decoration:none;font-size:1.4rem}
 .quickgrid a small{display:block;font-size:.72rem;color:var(--ink-dim);margin-top:.2rem}
@@ -408,7 +416,9 @@ def living_bg() -> str:
             int(state.get("new_candidates_24h", 0)) + \
             int(state.get("new_connections_24h", 0)) + \
             int(state.get("running_missions", 0)) + \
-            int(state.get("active_research_runs", 0))
+            int(state.get("active_research_runs", 0)) + \
+            int(state.get("automation_running", 0)) + \
+            int(state.get("automation_waiting", 0))
         spores = max(8, min(48, 16 + activity * 2))
         waiting = int(state.get("waiting_approvals", 0)) > 0
     except Exception:

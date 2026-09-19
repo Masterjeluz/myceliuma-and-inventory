@@ -98,7 +98,8 @@ def morning_report(sections: dict) -> Report:
     allowed = ("today", "health", "recovery", "projects",
                "tasks", "missions", "waiting", "agenda", "skills",
                "inventory", "workshop", "research", "fabrication",
-               "devices", "findings", "suggestions", "fun")
+               "devices", "findings", "suggestions", "fun",
+               "automation")
     if not isinstance(sections, dict):
         raise ReportRefusedError("Morning report needs an object")
     unknown = set(sections) - set(allowed)
@@ -112,8 +113,9 @@ def morning_report(sections: dict) -> Report:
               "skills": "Skills", "inventory": "Inventory",
               "workshop": "Workshop", "research": "Research",
               "fabrication": "Fabrication", "devices": "Devices",
-              "findings": "Watcher findings",
-              "suggestions": "Suggestions", "fun": "Fun"}
+               "findings": "Watcher findings",
+               "suggestions": "Suggestions", "fun": "Fun",
+               "automation": "Automation"}
     return assemble_report([(titles[key], sections[key])
                             for key in allowed
                             if key in sections])
