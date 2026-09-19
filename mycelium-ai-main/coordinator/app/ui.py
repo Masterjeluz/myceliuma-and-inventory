@@ -184,6 +184,30 @@ radial-gradient(500px 500px at 50% 110%, rgba(76,107,79,.12), transparent 70%)}
 .quickgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:.5rem;margin:.6rem 0}
 .quickgrid a{display:block;text-align:center;background:var(--surface-2);border:1px solid var(--line);border-radius:var(--r-sm);padding:.7rem .4rem;text-decoration:none;font-size:1.4rem}
 .quickgrid a small{display:block;font-size:.72rem;color:var(--ink-dim);margin-top:.2rem}
+/* BIG #43 living game layer: original solarpunk-workshop
+   accents over real state. Pixel-stepped corners, warm solar
+   marks, quest trails, campaign cards, symbiosis strength.
+   Usability first; all motion dies under reduced-motion. */
+.pixel{border-radius:2px;box-shadow:2px 2px 0 var(--soil-2)}
+.sunmark{color:var(--amber)}
+.leafmark{color:var(--moss-bright)}
+.trail{display:flex;flex-direction:column;gap:0;margin:.6rem 0}
+.trail-stop{display:flex;gap:.5rem;align-items:baseline;padding:.3rem .6rem;background:var(--surface);border:1px solid var(--line);border-radius:var(--r-sm)}
+.trail-completed{border-left:3px solid var(--moss-bright)}
+.trail-active{border-left:3px solid var(--amber)}
+.trail-blocked,.trail-failed{border-left:3px solid var(--danger)}
+.trail-waiting,.trail-missing{border-left:3px dotted var(--ink-faint)}
+.trail-glyph{font-weight:bold;min-width:1.2em;text-align:center}
+.trail-link{color:var(--moss);padding-left:1rem;line-height:1}
+.campaign{border-top:2px solid var(--amber)}
+.campaign h3 .sunmark{margin-right:.2rem}
+.strength{display:inline-block;min-width:4rem;height:8px;border-radius:99px;background:var(--soil-2);border:1px solid var(--line);vertical-align:middle}
+.strength.seedling{background:linear-gradient(90deg,var(--soil-2),var(--spore));opacity:.6}
+.strength.growing{background:linear-gradient(90deg,var(--fern),var(--moss))}
+.strength.strong{background:linear-gradient(90deg,var(--moss-bright),var(--spore));box-shadow:0 0 8px rgba(165,196,138,.4)}
+.guide-card .companion{margin-top:.35rem}
+.guide-card .companion small{display:block}
+.sym-verified-glow{box-shadow:0 0 10px rgba(165,196,138,.45)}
 @media (prefers-reduced-motion:reduce){.living-canvas{display:none}}
 """
 
@@ -402,28 +426,57 @@ var x = c.getContext('2d');
 function size(){ c.width = window.innerWidth; c.height = window.innerHeight; }
 size();
 window.addEventListener('resize', size);
-var density = parseInt(c.getAttribute('data-spores') || '26', 10);
-if (!(density >= 8 && density <= 48)) density = 26;
+function clampInt(name, fallback, lo, hi){
+var v = parseInt(c.getAttribute(name) || String(fallback), 10);
+if (!(v >= lo && v <= hi)) v = fallback;
+return v;
+}
+var density = clampInt('data-spores', 26, 8, 48);
 var waiting = c.getAttribute('data-waiting') === '1';
-var onlineNodes = parseInt(c.getAttribute('data-nodes') || '0', 10);
-if (!(onlineNodes >= 0 && onlineNodes <= 30)) onlineNodes = 0;
-var tempo = 1 + Math.min(onlineNodes, 6) * 0.08;
+var onlineNodes = clampInt('data-nodes', 0, 0, 30);
+var research = clampInt('data-research', 0, 0, 12);
+var discovery = clampInt('data-discovery', 0, 0, 24);
+var verified = clampInt('data-verified', 0, 0, 24);
+var fab = clampInt('data-fab', 0, 0, 12);
+var offline = clampInt('data-offline', 0, 0, 30);
+var tempo = 1 + Math.min(onlineNodes, 6) * 0.08 + Math.min(research, 4) * 0.04;
+var dim = 1 - Math.min(offline, 6) * 0.05;
 var spores = [];
 for (var i = 0; i < density; i++) spores.push({x: Math.random(), y: Math.random(), r: 1 + Math.random() * 2, s: .0002 + Math.random() * .0006, o: .15 + Math.random() * .3});
 var pulse = 0;
 function frame(){
 pulse += .008 * tempo;
 x.clearRect(0, 0, c.width, c.height);
-for (var i = 0; i < spores.length; i++){
-var p = spores[i];
+var i, p, px, py;
+if (verified > 0) {
+x.strokeStyle = 'rgba(125,155,106,0.07)';
+x.lineWidth = 1;
+for (i = 0; i + 1 < spores.length; i += 3) {
+var a = spores[i], b = spores[i + 1];
+var dx = (a.x - b.x) * c.width, dy = (a.y - b.y) * c.height;
+if (dx * dx + dy * dy < 120 * 120) {
+x.beginPath();
+x.moveTo(a.x * c.width, a.y * c.height);
+x.lineTo(b.x * c.width, b.y * c.height);
+x.stroke();
+}
+}
+}
+for (i = 0; i < spores.length; i++){
+p = spores[i];
 p.y -= p.s * tempo;
 if (p.y < -0.02) { p.y = 1.02; p.x = Math.random(); }
-var px = p.x * c.width + Math.sin(pulse + i) * 8;
-var py = p.y * c.height;
+px = p.x * c.width + Math.sin(pulse + i) * 8;
+py = p.y * c.height;
+var o = p.o * dim;
+var col = '201,214,107';
+if (waiting && (i % 5 === 0)) col = '217,164,65';
+else if (research > 0 && (i % 7 === 0)) col = '150,200,160';
+else if (fab > 0 && (i % 6 === 0)) col = '217,140,90';
+if (discovery > 0 && (i % 9 === 0)) o = Math.min(0.6, o * 1.5);
 x.beginPath();
 x.arc(px, py, p.r, 0, 6.283);
-var amber = waiting && (i % 5 === 0);
-x.fillStyle = amber ? 'rgba(217,164,65,' + p.o.toFixed(2) + ')' : 'rgba(201,214,107,' + p.o.toFixed(2) + ')';
+x.fillStyle = 'rgba(' + col + ',' + o.toFixed(2) + ')';
 x.fill();
 }
 window.requestAnimationFrame(frame);
@@ -440,11 +493,20 @@ def living_bg() -> str:
     BIG #35: density follows recent ecosystem activity (more
     events = more spores, 8..48) and every fifth spore glows
     amber while approvals wait. BIG #41: drift tempo rises
-    slightly with online nodes (capped +48%). Ambient only —
-    motion never claims specific events happened."""
+    slightly with online nodes (capped +48%). BIG #43 living
+    world: research quickens flow, fresh candidates pulse,
+    verified connections draw faint mycelium threads, active
+    fabrication warms spores, offline nodes dim the field.
+    Every signal derives from real stores, clamped, ambient
+    only — motion never claims specific events happened."""
     spores = 26
     waiting = False
     online_nodes = 0
+    research = 0
+    discovery = 0
+    verified = 0
+    fab = 0
+    offline = 0
     try:
         from .living_state import current_state
         state = current_state()
@@ -459,6 +521,38 @@ def living_bg() -> str:
         waiting = int(state.get("waiting_approvals", 0)) > 0
         online_nodes = max(0, min(30, int(
             state.get("online_nodes", 0))))
+        research = max(0, min(12, int(
+            state.get("active_research_runs", 0))))
+        discovery = max(0, min(24, int(
+            state.get("new_candidates_24h", 0))))
+    except Exception:
+        pass
+    try:
+        from .hardware_links import list_links
+        verified = sum(1 for link in list_links(
+            status="VERIFIED", limit=200))
+        verified = max(0, min(24, verified))
+    except Exception:
+        pass
+    try:
+        from . import main as _main
+        live_fabs = 0
+        quiet_nodes = 0
+        for item in _main.list_fabrications(20):
+            try:
+                data = item.model_dump(mode="json") \
+                    if hasattr(item, "model_dump") else dict(item)
+            except Exception:
+                continue
+            if str(data.get("status", "")) in (
+                    "started", "approved", "ready", "waiting"):
+                live_fabs += 1
+        fab = max(0, min(12, live_fabs))
+        for record in _main.list_nodes():
+            if str(record.get("derived_status", "")) not in (
+                    "online", "busy"):
+                quiet_nodes += 1
+        offline = max(0, min(30, quiet_nodes))
     except Exception:
         pass
     return ('<div class="living-bg" aria-hidden="true"></div>'
@@ -466,6 +560,11 @@ def living_bg() -> str:
             f'data-spores="{spores}" '
             f'data-waiting="{1 if waiting else 0}" '
             f'data-nodes="{online_nodes}" '
+            f'data-research="{research}" '
+            f'data-discovery="{discovery}" '
+            f'data-verified="{verified}" '
+            f'data-fab="{fab}" '
+            f'data-offline="{offline}" '
             'aria-hidden="true"></canvas>'
             f'<script>{LIVING_BG_JS}</script>')
 
@@ -578,15 +677,46 @@ def guide_card(item: dict) -> str:
     kind = str(item.get("kind", ""))
     nxt = item.get("next", {}) if isinstance(item.get("next"), dict) else {}
     after = str(item.get("after", ""))
+
+    def _links(entries) -> str:
+        bits = []
+        for entry in (entries or [])[:4]:
+            if not isinstance(entry, dict):
+                continue
+            label = str(entry.get("label", ""))[:60]
+            href = str(entry.get("href", "/"))[:200]
+            if label and href:
+                bits.append(f"<a href=\"{esc(href)}\">"
+                            f"{esc(label)}</a>")
+        return " · ".join(bits)
+
     afterwards = (f"<br><small class=\"muted\">Afterwards: "
                   f"{esc(after)}</small>" if after else "")
+    # BIG #43 companion fields: BLOCKED BY / UNLOCKS / EVIDENCE.
+    # Rendered only when present; existing cards unchanged.
+    companion = ""
+    blocked_by = _links(item.get("blocked_by"))
+    unlocks = _links(item.get("unlocks"))
+    evidence = _links(item.get("evidence"))
+    if blocked_by or unlocks or evidence:
+        rows = ""
+        if blocked_by:
+            rows += (f"<small><b>Blocked by:</b> "
+                     f"{blocked_by}</small>")
+        if unlocks:
+            rows += (f"<small><b>Unlocks:</b> "
+                     f"{unlocks}</small>")
+        if evidence:
+            rows += (f"<small><b>Evidence:</b> "
+                     f"{evidence}</small>")
+        companion = f"<div class=\"companion\">{rows}</div>"
     return (f"<div class=\"sprout guide-card kind-{esc(kind)}\">"
             f"<b>{esc(item.get('glyph', '🌱'))} "
             f"{esc(item.get('what', ''))}</b><br>"
             f"<small>{esc(item.get('why', ''))}</small><br>"
             f"<a href=\"{esc(nxt.get('href', '/'))}\">"
             f"{esc(nxt.get('label', 'Open'))} →</a>"
-            f"{afterwards}</div>")
+            f"{afterwards}{companion}</div>")
 
 
 def presence_card(item: dict) -> str:

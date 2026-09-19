@@ -82,6 +82,17 @@ persoonlijke computer-agent (verticale slice, live bewezen):
   every consequential step. No background threads, default-deny
   step kinds, live gate re-check on resume, bounds on every run;
   see `docs/living-automation.md` and `docs/automation-security.md`
+- **Living Game Layer** (`/game`, `/campaigns`,
+  `GET /api/v1/game/state`): quest campaigns over real quests
+  (live counts, current quest, next action, evidence — no XP,
+  no rewards), read-only game-state view (10 sections, a view
+  not a database), symbiosis as progression display
+  (strong/growing/seedling, never silent promotion), living
+  background reacting to real state (research, discoveries,
+  verified links, fabrication, offline nodes; reduced-motion
+  safe), guide companion cards (BLOCKED BY/UNLOCKS/EVIDENCE),
+  mobile campaign panel, game-like morning headers; zie
+  `docs/living-game-layer.md`
 - **Veiligheid**: geen shell/RCE, geen credentials-opslag, geen
   auto-approval/bypass, geen permanente autonomie, screenshots lokaal
 
@@ -274,7 +285,7 @@ Zie [docs/architecture.md](docs/architecture.md) voor grenzen en vervolgkeuzes, 
 
 ```
 coordinator/     lokale API, taakqueue en dashboard
-coordinator/app/ missies, chat, providers, desktop-contracten, runtime
+coordinator/app/ missies, chat, providers, desktop-contracten, runtime, game-laag
 coordinator/app/controlled_writes.py, inventory_writes.py,
                  verification.py, git_commit.py, project_package.py
 coordinator/app/nodes.py, routing.py, sim_nodes.py
@@ -282,10 +293,12 @@ coordinator/app/conversation_bridge.py, context_packet.py,
                  ecosystem.py, notify_center.py, linux_node.py
 coordinator/app/context_engine.py, living_state.py,
                  knowledge.py, node_client/bootstrap.py (one-command)
+coordinator/app/campaigns.py, game.py, quests.py,
+                 hardware_links.py, finance.py, energy.py
 desktop_agent/   standalone lokale agent (poll, claim, voer uit, rapporteer)
 node_client/     lichte client voor seed/worker/core nodes (pull-only, token-optie)
 docs/            architectuurstatus, roadmap, principes, oorsprong
-tests/           1380 tests (pytest -v)
+tests/           pytest -v (volle suite 1x per BIG, in begrensde batches)
 ```
 
 Zie `docs/ARCHITECTURE_STATUS.md` (wat het systeem is),
@@ -308,9 +321,12 @@ Zie `docs/ARCHITECTURE_STATUS.md` (wat het systeem is),
 `docs/ROADMAP-V2.md`, `docs/living-automation.md`,
 `docs/automation-security.md`, `docs/hardware-reality-layer.md`,
 `docs/presence-ecosystem.md`, `docs/v2-ecosystem.md`,
+`docs/living-game-layer.md`,
 `docs/mobile-node-flow.md`, `docs/linux-node-setup.md`,
 `docs/camera-workflow.md`, `docs/3d-workflow.md` en
-`docs/ROADMAP.md` (wat volgt). Teststatus: **1380 passed**.
+`docs/ROADMAP.md` (wat volgt). Teststatus: volle suite 1x per
+BIG (`pytest -v` per project, in begrensde batches) — zie het
+actuele BIG-rapport in `docs/`.
 
 ## Bijdragen
 

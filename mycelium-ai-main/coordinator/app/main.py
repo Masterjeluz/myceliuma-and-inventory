@@ -333,7 +333,7 @@ from .routing import (
     requirements_from_payload,
     route_task,
 )
-from .schemas import AdviseRequest, AdviseResponse, AdvancedOpBody, CadDocumentBody, CadOpBody, CadPartBody, CampaignBody, CameraRegisterBody, CaptureCloseBody, CaptureOpenBody, ChatMissionBody, ChatRequest, ChatResponse, ClaimedTask, DecideApprovalBody, DesktopActionBody, DesktopClaimBody, DesktopDecisionBody, DesktopDispatchBody, DesktopResultBody,     DistEnvelopeBody, DroneCreateBody, DroneMissionApproveBody, DroneMissionBody,     FabGenerateBody, FabSliceBody, FamiliarCreateBody, FoodCreateBody, GarminImportBody, GitCommitBody, HealthMeasureBody, Heartbeat, InstagramImportBody,     InterfaceChatBody, IntegrationEnvelopeBody, IntegrationKeyBody, IntegrationTriggerBody, InventoryWriteBody, JobRunBody, LiveContextBody, LiveProposeBody, LiveSessionBody, MealCreateBody, MealItemBody, MemoryConsolidateBody, MemoryCreateBody, MemoryRetrieveBody, MemoryVerifyBody,     MissionApproveBody, MissionCreateBody, MissionRunBody, MissionStepBody, NodeRegistration, NodeRotateBody,     NotifyBody, OperatorBody, OutboxAckBody, OutboxEnqueueBody, PhoneCameraBody,     PlanBody, PlanToProposalBody, PipelinePlanBody, PrintCancelBody, PrintProposeBody, PrinterRegisterBody, PrinterSelectBody, PromptEditBody, ResearchAdvanceBody, ResearchClaimBody, ResearchRecordBody, ResearchSourceBody, RobotActionBody, RobotApproveBody, RobotCreateBody, RobotSafetyBody, RobotTelemetryBody, SessionOpenBody,     StreamStartBody, SuggestStepsBody, SkillAcceptBody, SkillAdvanceBody, SkillCreateBody, SkillDiscoverBody, SkillEvidenceBody, SpoolCreateBody, SyncApplyBody, TaskAssignBody, TaskCreate, TaskFromProposalBody, TaskResult, TaskRouteBody,     TemplateMissionBody, TransformBody, TwinLinkBody, VisionAnalyzeBody, VisionProposeBody, VoiceApprovalRequestBody, VoiceApproveBody, VoiceChatBody,     VoiceSynthesizeBody, VoiceTranscribeBody, WriteDecisionBody, CommandBody, RecoverBody, AgendaImportBody, BootstrapBody, ResearchRunBody, ResearchExecuteBody, PresenceTriageBody, PresenceNotifyBody, MeshDelegateBody, MeshPreviewBody, HardwareLinkBody, HardwareVerifyBody, HardwareRevokeBody, FinanceRecordBody, FinanceStatusBody, EnergyRecordBody, QuestCreateBody, WorkflowDispatchBody
+from .schemas import AdviseRequest, AdviseResponse, AdvancedOpBody, CadDocumentBody, CadOpBody, CadPartBody, CampaignBody, CameraRegisterBody, CaptureCloseBody, CaptureOpenBody, ChatMissionBody, ChatRequest, ChatResponse, ClaimedTask, DecideApprovalBody, DesktopActionBody, DesktopClaimBody, DesktopDecisionBody, DesktopDispatchBody, DesktopResultBody,     DistEnvelopeBody, DroneCreateBody, DroneMissionApproveBody, DroneMissionBody,     FabGenerateBody, FabSliceBody, FamiliarCreateBody, FoodCreateBody, GarminImportBody, GitCommitBody, HealthMeasureBody, Heartbeat, InstagramImportBody,     InterfaceChatBody, IntegrationEnvelopeBody, IntegrationKeyBody, IntegrationTriggerBody, InventoryWriteBody, JobRunBody, LiveContextBody, LiveProposeBody, LiveSessionBody, MealCreateBody, MealItemBody, MemoryConsolidateBody, MemoryCreateBody, MemoryRetrieveBody, MemoryVerifyBody,     MissionApproveBody, MissionCreateBody, MissionRunBody, MissionStepBody, NodeRegistration, NodeRotateBody,     NotifyBody, OperatorBody, OutboxAckBody, OutboxEnqueueBody, PhoneCameraBody,     PlanBody, PlanToProposalBody, PipelinePlanBody, PrintCancelBody, PrintProposeBody, PrinterRegisterBody, PrinterSelectBody, PromptEditBody, ResearchAdvanceBody, ResearchClaimBody, ResearchRecordBody, ResearchSourceBody, RobotActionBody, RobotApproveBody, RobotCreateBody, RobotSafetyBody, RobotTelemetryBody, SessionOpenBody,     StreamStartBody, SuggestStepsBody, SkillAcceptBody, SkillAdvanceBody, SkillCreateBody, SkillDiscoverBody, SkillEvidenceBody, SpoolCreateBody, SyncApplyBody, TaskAssignBody, TaskCreate, TaskFromProposalBody, TaskResult, TaskRouteBody,     TemplateMissionBody, TransformBody, TwinLinkBody, VisionAnalyzeBody, VisionProposeBody, VoiceApprovalRequestBody, VoiceApproveBody, VoiceChatBody,     VoiceSynthesizeBody, VoiceTranscribeBody, WriteDecisionBody, CommandBody, RecoverBody, AgendaImportBody, BootstrapBody, ResearchRunBody, ResearchExecuteBody, PresenceTriageBody, PresenceNotifyBody, MeshDelegateBody, MeshPreviewBody, HardwareLinkBody, CampaignCreateBody, HardwareVerifyBody, HardwareRevokeBody, FinanceRecordBody, FinanceStatusBody, EnergyRecordBody, QuestCreateBody, WorkflowDispatchBody
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 logger = logging.getLogger("mycelium.coordinator")
@@ -5459,6 +5459,20 @@ def report_morning() -> dict:
                 "amount(s)"]
     except Exception:
         pass
+    # BIG #43 living game layer: current campaign — only when
+    # campaigns exist, never filler.
+    try:
+        from .campaigns import list_campaign_details as _camps43
+        _camps = _camps43(limit=5)
+        if _camps:
+            sections["campaigns"] = [
+                f"{campaign.get('title', '')[:90]} "
+                f"{campaign.get('completed_count', 0)}/"
+                f"{campaign.get('total_count', 0)} "
+                f"[{campaign.get('state', '')}]"
+                for campaign in _camps[:5]]
+    except Exception:
+        pass
     try:
         from .energy import list_records as _e_list42
         from .finance import list_records as _f_list42
@@ -8070,6 +8084,20 @@ async def _form_fields(request: Request) -> dict[str, str]:
         body, keep_blank_values=True).items() if values}
 
 
+#: BIG #43 living game layer: game-like morning headers.
+#: Presentation only — report JSON titles stay stable.
+_GAME_TITLE = {
+    "Today": "🌱 World state",
+    "Current campaign": "🎯 Current campaign",
+    "Energy": "⚡ Energy",
+    "Workshop": "🔧 Workshop",
+    "Hardware verification": "🔧 Hardware",
+    "Discoveries": "🧠 Discoveries",
+    "Devices": "🌐 Node mesh",
+    "Needs you": "📌 What needs me",
+}
+
+
 @app.get("/morning", response_class=HTMLResponse)
 def morning_page() -> str:
     """Mobile-first morning report: cards per section."""
@@ -8095,7 +8123,9 @@ def morning_page() -> str:
     except (AttributeError, TypeError, KeyError):
         overnight_html = ""
     cards = "".join(
-        f"<div class=\"sprout\"><h3>{_ui.esc(section['title'])}</h3><ul>"
+        f"<div class=\"sprout\"><h3>"
+        f"{_ui.esc(_GAME_TITLE.get(section['title'], section['title']))}"
+        f"</h3><ul>"
         + "".join(f"<li>{_ui.esc(item)}</li>"
                   for item in section["items"][:15])
         + "</ul></div>"
@@ -12613,7 +12643,11 @@ async def symbiosis_page(entity_id: str = "") -> str:
         try:
             result = await for_entity(entity_id, 1)
             rows = "".join(
-                f"<tr><td>{_ui.symbiosis_chip(item['state'])}</td>"
+                f"<tr><td>{_ui.symbiosis_chip(item['state'])} "
+                f"<span class=\"strength "
+                f"{'strong' if item['state'] == 'VERIFIED' else 'growing' if item['state'] == 'SUPPORTED' else 'seedling'}\" "
+                f"role=\"img\" aria-label=\"connection strength: "
+                f"{'strong' if item['state'] == 'VERIFIED' else 'growing' if item['state'] == 'SUPPORTED' else 'seedling'}\"></span></td>"
                 f"<td><a href=\"/world?entity_id={_ui.esc(item['entity_b'])}\">"
                 f"{_ui.esc(item['entity_b'])}</a></td>"
                 f"<td>{_ui.esc(item['predicate'][:80])}</td></tr>"
@@ -12650,6 +12684,15 @@ async def symbiosis_page(entity_id: str = "") -> str:
             f"each other through an explicit relation. Never "
             f"invented: SUPPORTED/VERIFIED are real INVENTory "
             f"edges, PROPOSED are open candidates.</p>"
+            f"<div class=\"panel\"><h2>Progression</h2>"
+            f"<p><span class=\"strength strong\"></span> strong — "
+            f"VERIFIED edge (human-verified) · "
+            f"<span class=\"strength growing\"></span> growing — "
+            f"SUPPORTED edge (real relation) · "
+            f"<span class=\"strength seedling\"></span> seedling — "
+            f"PROPOSED (uncertain until you review). "
+            f"Strength is display only; states never promote "
+            f"silently.</p></div>"
             f"<div class=\"panel\"><form method=\"get\" "
             f"action=\"/symbiosis\"><label>Entity "
             f"<input type=\"text\" name=\"entity_id\" "
@@ -12738,7 +12781,13 @@ async def craft_page(entity_id: str = "", depth: int = 1) -> str:
             for item in seeds[:8])
     except Exception:
         pass
-    main = (f"<h1>Craft Tree — from idea to made thing</h1>"
+    main = (f"<h1>Craft Tree — from idea to made thing 🌿</h1>"
+            f"<p class=\"muted\">Gameplay over real records: ✓ "
+            f"means evidence-backed, ! means blocked, ○ means "
+            f"missing with a real next action. "
+            f"<a href=\"/campaigns\">Campaigns</a> chain quests "
+            f"across these stages; <a href=\"/game\">game view</a> "
+            f"shows quest-linked chains.</p>"
             f"<div class=\"panel\"><form method=\"get\" "
             f"action=\"/craft\"><label>Entity "
             f"<input type=\"text\" name=\"entity_id\" "
@@ -13846,6 +13895,289 @@ def quests_page() -> str:
                "POST /api/v1/quests.</p>")
             + "<p><a href=\"/missions\">Missions</a> · "
             "<a href=\"/guide\">Guide</a> · "
-            "<a href=\"/world\">World</a></p>")
+            "<a href=\"/world\">World</a> · "
+            "<a href=\"/campaigns\">Campaigns</a></p>")
     return _ui.shell("Quest trails", "/quests", main, "",
+                     _ui.living_bg())
+
+
+# =============================================================================
+# BIG #43 — LIVING GAME LAYER. Presentation over real state.
+# Campaigns group quests; the game-state endpoint aggregates;
+# /game + /campaigns render the world as a living workshop.
+# Nothing here approves, executes, or stores game truth.
+# =============================================================================
+
+
+@app.post("/api/v1/campaigns", status_code=201)
+def api_campaign_create(body: CampaignCreateBody) -> dict:
+    """Define a quest campaign over real quests. Unknown quest
+    ids refuse — fake quests cannot enter."""
+    from .campaigns import CampaignRefusedError, campaign_detail, \
+        new_campaign, save_campaign
+    try:
+        campaign = new_campaign(body.title, body.quest_ids,
+                                description=body.description)
+    except CampaignRefusedError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    save_campaign(campaign)
+    logger.info("campaign_created campaign_id=%s quests=%s",
+                campaign.campaign_id, len(campaign.quest_ids))
+    return campaign_detail(campaign)
+
+
+@app.get("/api/v1/campaigns")
+def api_campaigns(limit: int = 50) -> dict:
+    from .campaigns import list_campaign_details
+    return {"campaigns": list_campaign_details(limit=limit)}
+
+
+@app.get("/api/v1/campaigns/{campaign_id}")
+def api_campaign_get(campaign_id: str) -> dict:
+    from .campaigns import campaign_detail, get_campaign
+    campaign = get_campaign(campaign_id)
+    if campaign is None:
+        raise HTTPException(404, "Campaign not found")
+    return campaign_detail(campaign)
+
+
+@app.post("/api/v1/campaigns/{campaign_id}/refresh")
+def api_campaign_refresh(campaign_id: str) -> dict:
+    """Re-derive campaign state now (read-only; audits so
+    refreshes stay traceable)."""
+    from .campaigns import campaign_detail, get_campaign
+    from .events import new_event as _bus_new, save_event as _bus_save
+    campaign = get_campaign(campaign_id)
+    if campaign is None:
+        raise HTTPException(404, "Campaign not found")
+    detail = campaign_detail(campaign)
+    try:
+        _bus_save(_bus_new(
+            "campaign.updated",
+            f"Campaign {campaign_id} refreshed: "
+            f"{detail['completed_count']}/"
+            f"{detail['total_count']} [{detail['state']}]",
+            payload={"campaign_id": campaign_id,
+                     "state": detail["state"]}))
+    except Exception:
+        pass
+    return detail
+
+
+@app.delete("/api/v1/campaigns/{campaign_id}")
+def api_campaign_delete(campaign_id: str) -> dict:
+    from .campaigns import delete_campaign
+    if not delete_campaign(campaign_id):
+        raise HTTPException(404, "Campaign not found")
+    return {"campaign_id": campaign_id, "deleted": True}
+
+
+@app.get("/api/v1/game/state")
+def api_game_state() -> dict:
+    """Read-only derived game state (BIG #43 living game layer):
+    world, campaigns, current quest, presence-as-stakes, craft,
+    symbiosis, nodes, energy, workshop, discoveries. A view —
+    no second database, no approvals, no execution."""
+    from .game import game_state
+    return game_state()
+
+
+@app.get("/campaigns", response_class=HTMLResponse)
+def campaigns_page() -> str:
+    """Quest campaigns: chains of real quests with live counts,
+    current quest, next action and evidence links. No XP."""
+    from . import ui as _ui
+    from .campaigns import list_campaign_details
+    try:
+        campaigns = list_campaign_details(limit=20)
+    except Exception:
+        campaigns = []
+    cards = []
+    for campaign in campaigns:
+        chain = []
+        for view in campaign.get("quests", []):
+            glyph = {"COMPLETED": "✓", "ACTIVE": "●",
+                     "BLOCKED": "!", "FAILED": "!"}.get(
+                view.get("state", ""), "○")
+            chain.append(
+                f"<div class=\"trail-stop trail-"
+                f"{_ui.esc(view.get('state', 'WAITING').lower())}\">"
+                f"<span class=\"trail-glyph\">{glyph}</span> "
+                f"<a href=\"{_ui.esc(view.get('href', '/quests'))}\">"
+                f"{_ui.esc(view.get('title', '')[:60])}</a> "
+                f"<span class=\"muted\">"
+                f"{_ui.esc(view.get('progress', '0/0'))}</span>"
+                f"</div>")
+        trail = ("<div class=\"trail\">" +
+                 "<div class=\"trail-link\">↓</div>".join(chain) +
+                 "</div>") if chain else ""
+        nxt = campaign.get("next_action", {}) or {}
+        next_line = (
+            f"<p><b>Next:</b> {_ui.esc(nxt.get('step', ''))} "
+            f"— <a href=\"{_ui.esc(nxt.get('href', '/quests'))}\">"
+            f"open</a> <span class=\"muted\">"
+            f"{_ui.esc(nxt.get('readiness_reason', ''))}</span></p>"
+            if nxt.get("step") else
+            "<p class=\"muted\">Nothing actionable — "
+            "chain complete or empty.</p>")
+        cards.append(
+            f"<div class=\"panel campaign\">"
+            f"<h3>🗺 {_ui.esc(campaign.get('title', ''))} "
+            f"[{_ui.esc(campaign.get('state', ''))}] "
+            f"{campaign.get('completed_count', 0)}/"
+            f"{campaign.get('total_count', 0)}</h3>"
+            + (f"<p class=\"muted\">"
+               f"{_ui.esc(campaign.get('description', '')[:200])}"
+               f"</p>" if campaign.get("description") else "")
+            + trail + next_line +
+            f"<p><a href=\"/api/v1/campaigns/"
+            f"{_ui.esc(campaign.get('campaign_id', ''))}\">"
+            f"campaign JSON</a> · "
+            f"<a href=\"/game\">game view</a></p></div>")
+    main = (f"<h1>Campaigns 🗺</h1>"
+            f"<p class=\"muted\">Chains of real quests — every "
+            f"step links to its record. No XP, no rewards, just "
+            f"the workshop growing.</p>"
+            + ("".join(cards) if cards else
+               "<p class=\"muted\">No campaigns yet. Create one "
+               "via POST /api/v1/campaigns with real quest "
+               "ids.</p>")
+            + "<p><a href=\"/quests\">Quests</a> · "
+            "<a href=\"/game\">Game view</a> · "
+            "<a href=\"/world\">World</a></p>")
+    return _ui.shell("Campaigns", "/campaigns", main, "",
+                     _ui.living_bg())
+
+
+@app.get("/game", response_class=HTMLResponse)
+def game_page() -> str:
+    """Living game view: world state, current campaign + quest
+    trail, craft progress, symbiosis strength, presence stakes,
+    nodes, energy, workshop, discoveries. Every line links to
+    its real record."""
+    from . import ui as _ui
+    from .game import game_state
+    try:
+        state = game_state()
+    except Exception:
+        state = {"sections": {}, "honesty": ""}
+    sections = state.get("sections", {})
+
+    def _section_data(key):
+        return (sections.get(key, {}) or {}).get("data", {})
+
+    world = _section_data("world")
+    world_html = (
+        f"<div class=\"panel\"><h2>🌱 World state</h2>"
+        f"<p>{_ui.esc(world.get('glyph', ''))} "
+        f"<b>{_ui.esc(world.get('line', 'quiet'))}</b></p></div>"
+        if world else "")
+    campaigns = _section_data("campaigns") or []
+    if isinstance(campaigns, dict):
+        campaigns = []
+    campaign_cards = []
+    for campaign in campaigns[:3]:
+        current = campaign.get("current_quest", {}) or {}
+        campaign_cards.append(
+            f"<div class=\"panel campaign\">"
+            f"<h3>🎯 {_ui.esc(campaign.get('title', ''))} "
+            f"{campaign.get('completed_count', 0)}/"
+            f"{campaign.get('total_count', 0)}</h3>"
+            f"<p>Current: <a href=\""
+            f"{_ui.esc(current.get('href', '/quests'))}\">"
+            f"{_ui.esc(current.get('title', '—'))}</a> "
+            f"({_ui.esc(current.get('progress', ''))})</p>"
+            f"<p><a href=\"/campaigns\">all campaigns →</a></p>"
+            f"</div>")
+    campaign_html = "".join(campaign_cards)
+    current_quest = _section_data("current_quest") or {}
+    quest_html = ""
+    if current_quest.get("quest_id"):
+        quest_html = (
+            f"<div class=\"panel\"><h2>🧭 Current quest</h2>"
+            f"<p><a href=\""
+            f"{_ui.esc(current_quest.get('href', '/quests'))}\">"
+            f"{_ui.esc(current_quest.get('title', ''))}</a> "
+            f"[{_ui.esc(current_quest.get('state', ''))}] "
+            f"{_ui.esc(current_quest.get('progress', ''))}</p>"
+            f"</div>")
+    craft = _section_data("craft") or []
+    craft_html = ""
+    if craft:
+        rows = []
+        for chain in craft[:3]:
+            stages = " ".join(
+                _ui.esc(stage.get("glyph", "○"))
+                for stage in chain.get("stages", []))
+            rows.append(
+                f"<li><a href=\""
+                f"{_ui.esc(chain.get('href', '/craft'))}\">"
+                f"{_ui.esc(chain.get('entity_id', ''))}</a> "
+                f"{stages} {chain.get('done', 0)}/"
+                f"{chain.get('total', 0)}</li>")
+        craft_html = (f"<div class=\"panel\"><h2>🌿 Craft</h2>"
+                      f"<ul>{''.join(rows)}</ul></div>")
+    symbiosis = _section_data("symbiosis") or {}
+    symb_html = ""
+    if (symbiosis.get("open")):
+        rows = "".join(
+            f"<li>🌱 <a href=\""
+            f"{_ui.esc(prop.get('href', '/symbiosis'))}\">"
+            f"{_ui.esc(prop.get('title', ''))}</a> "
+            f"<span class=\"muted\">seedling — uncertain until "
+            f"reviewed</span></li>"
+            for prop in symbiosis["open"][:5])
+        symb_html = (f"<div class=\"panel\"><h2>🔗 Symbiosis</h2>"
+                     f"<ul>{rows}</ul></div>")
+    presence = _section_data("presence") or {}
+    stakes_html = ""
+    bands = presence.get("bands", {}) or {}
+    if any(bands.get(band) for band in bands):
+        parts = []
+        for band in ("needs", "waiting", "available",
+                     "discovered", "offline"):
+            items = bands.get(band, []) or []
+            if not items:
+                continue
+            glyph = {"needs": "📌", "waiting": "⏳",
+                     "available": "🟢", "discovered": "🔵",
+                     "offline": "🌙"}.get(band, "•")
+            lines = "".join(
+                f"<li><a href=\""
+                f"{_ui.esc(item.get('href', '/presence'))}\">"
+                f"{_ui.esc(item.get('title', '')[:80])}</a></li>"
+                for item in items[:3])
+            parts.append(
+                f"<div class=\"sprout\"><b>{glyph} "
+                f"{_ui.esc(band)}</b><ul>{lines}</ul></div>")
+        stakes_html = (f"<div class=\"panel\"><h2>📌 Stakes</h2>"
+                       f"<div class=\"grove\">"
+                       f"{''.join(parts)}</div></div>")
+    nodes = _section_data("nodes") or []
+    nodes_html = ""
+    if nodes:
+        awake = sum(1 for node in nodes
+                    if node.get("reads_as") == "awake")
+        nodes_html = (
+            f"<div class=\"panel\"><h2>🌐 Node mesh</h2>"
+            f"<p>{awake}/{len(nodes)} awake — "
+            f"<a href=\"/nodes\">nodes →</a></p></div>")
+    energy = _section_data("energy") or {}
+    energy_html = ""
+    if energy.get("total"):
+        energy_html = (
+            f"<div class=\"panel\"><h2>⚡ Energy</h2>"
+            f"<p>{energy.get('total', 0)} record(s) — "
+            f"<a href=\"/energy\">energy →</a></p></div>")
+    main = (f"<h1>Living game 🌱</h1>"
+            f"<p class=\"muted\">"
+            f"{_ui.esc(state.get('honesty', ''))}</p>"
+            + world_html + campaign_html + quest_html
+            + craft_html + symb_html + stakes_html + nodes_html
+            + energy_html +
+            "<p><a href=\"/campaigns\">Campaigns</a> · "
+            "<a href=\"/quests\">Quests</a> · "
+            "<a href=\"/world\">World</a> · "
+            "<a href=\"/api/v1/game/state\">game JSON</a></p>")
+    return _ui.shell("Living game", "/game", main, "",
                      _ui.living_bg())

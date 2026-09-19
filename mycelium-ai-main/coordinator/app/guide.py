@@ -74,12 +74,33 @@ AFTER_TEXT = {
 
 
 def _item(kind: str, glyph: str, what: str, why: str,
-          label: str, href: str, after: str = "") -> dict:
+          label: str, href: str, after: str = "",
+          blocked_by: list | None = None,
+          unlocks: list | None = None,
+          evidence: list | None = None) -> dict:
     afterwards = (after or AFTER_TEXT.get(kind, "")[:240])
+
+    def _clean(entries) -> list:
+        cleaned = []
+        for entry in (entries or [])[:4]:
+            if not isinstance(entry, dict):
+                continue
+            label_text = str(entry.get("label", ""))[:60]
+            href_text = str(entry.get("href", ""))[:200]
+            if label_text and href_text:
+                cleaned.append({"label": label_text,
+                                "href": href_text})
+        return cleaned
+
     return {"kind": kind, "glyph": glyph, "what": what[:160],
             "why": why[:240], "next": {"label": label[:60],
                                        "href": href[:200]},
-            "after": afterwards}
+            "after": afterwards,
+            # BIG #43 companion layer: what blocks this, what it
+            # unlocks, and the real records behind it.
+            "blocked_by": _clean(blocked_by),
+            "unlocks": _clean(unlocks),
+            "evidence": _clean(evidence)}
 
 
 def guide_items(limit: int = 12) -> list[dict]:
@@ -599,7 +620,15 @@ def guide_items(limit: int = 12) -> list[dict]:
                         "Advertised is not a fact. A human link "
                         "with evidence promotes it to VERIFIED; "
                         "nothing else can.",
-                        "Verify hardware", "/hardware"))
+                        "Verify hardware", "/hardware",
+                        blocked_by=[],
+                        unlocks=[{
+                            "label": "VERIFIED device trust",
+                            "href": "/hardware"}],
+                        evidence=[{
+                            "label": f"{node_id} reality",
+                            "href": f"/api/v1/nodes/{node_id}/"
+                                    "reality"}]))
                     break
             if len(items) >= 20:
                 break
@@ -624,7 +653,16 @@ def guide_items(limit: int = 12) -> list[dict]:
                 "Money without power is a plan without a plug. "
                 "Record the source (or UNKNOWN) to unblock "
                 "energy-aware routing.",
-                "Open energy", "/energy"))
+                "Open energy", "/energy",
+                blocked_by=[{
+                    "label": "missing energy record",
+                    "href": "/energy"}],
+                unlocks=[{
+                    "label": "energy-aware routing",
+                    "href": "/energy"}],
+                evidence=[{
+                    "label": "finance records",
+                    "href": "/finance"}]))
         try:
             from .symbiosis import proposed as _sym_proposed
             waiting_links = [prop for prop in _sym_proposed(limit=60)
@@ -643,7 +681,16 @@ def guide_items(limit: int = 12) -> list[dict]:
                 f"{first.get('title', 'link')[:120]} links "
                 f"{', '.join(first.get('entities', [])[:2])}. "
                 "Confirm it in symbiosis review.",
-                "Review symbiosis", "/symbiosis"))
+                "Review symbiosis", "/symbiosis",
+                blocked_by=[{
+                    "label": "human review",
+                    "href": "/symbiosis"}],
+                unlocks=[{
+                    "label": "supported connection",
+                    "href": "/symbiosis"}],
+                evidence=[{
+                    "label": "open proposals",
+                    "href": "/symbiosis"}]))
     except Exception:
         pass
     try:
@@ -663,6 +710,11 @@ def guide_items(limit: int = 12) -> list[dict]:
         from .quests import list_quest_details as _quest_list42
         for quest in _quest_list42(limit=20):
             if quest.get("state") in ("BLOCKED", "FAILED"):
+                waiting_step = next(
+                    (step for step in quest.get("steps", [])
+                     if step.get("state") in
+                     ("BLOCKED", "FAILED", "WAITING",
+                      "MISSING")), {})
                 items.append(_item(
                     "quest", "🧭",
                     f"Quest '{quest.get('title', '')[:70]}' is "
@@ -672,7 +724,55 @@ def guide_items(limit: int = 12) -> list[dict]:
                     "A step's underlying record failed or is "
                     "blocked — open the quest to see which one "
                     "and unlock it there.",
-                    "Open quest", "/quests"))
+                    "Open quest", "/quests",
+                    blocked_by=[{
+                        "label": waiting_step.get(
+                            "label", "blocked step")[:60],
+                        "href": waiting_step.get(
+                            "href", "/quests")}] if waiting_step
+                    else [],
+                    unlocks=[{
+                        "label": "quest progress",
+                        "href": "/quests"}],
+                    evidence=[{
+                        "label": f"quest "
+                                 f"{quest.get('progress', '')}",
+                        "href": "/quests"}]))
+                break
+    except Exception:
+        pass
+    # BIG #43 companion: campaign context cards (WHAT/WHY/
+    # NEXT/BLOCKED BY/UNLOCKS/EVIDENCE over real records).
+    try:
+        from .campaigns import list_campaign_details as _camps43
+        for campaign in _camps43(limit=5):
+            if campaign.get("state") in ("COMPLETED",):
+                continue
+            nxt = campaign.get("next_action", {}) or {}
+            current = campaign.get("current_quest", {}) or {}
+            if not nxt.get("step"):
+                continue
+            items.append(_item(
+                "quest", "🗺",
+                f"{campaign.get('title', '')[:70]}: "
+                f"{nxt.get('step', '')[:70]}",
+                f"Campaign {campaign.get('completed_count', 0)}/"
+                f"{campaign.get('total_count', 0)} — current "
+                f"quest '{current.get('title', '')[:60]}'. "
+                f"{nxt.get('readiness_reason', '')[:120]}",
+                "Open campaign", "/campaigns",
+                blocked_by=[{
+                    "label": nxt.get("readiness", "see step"),
+                    "href": nxt.get("href", "/quests")}],
+                unlocks=[{
+                    "label": "campaign step",
+                    "href": "/campaigns"}],
+                evidence=[
+                    {"label": entry.get("label", "")[:60],
+                     "href": entry.get("href", "/quests")}
+                    for entry in
+                    campaign.get("evidence", [])[:3]]))
+            if len(items) >= 20:
                 break
     except Exception:
         pass

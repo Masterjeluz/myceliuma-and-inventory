@@ -89,6 +89,10 @@ VALID_EVENT_TYPES = frozenset({
     "quest.created",
     "quest.updated",
     "workflow.dispatched",
+    # BIG #43 living game layer: campaign audit facts only —
+    # none of these authorize anything.
+    "campaign.created",
+    "campaign.updated",
 })
 
 VALID_SEVERITIES = frozenset({"info", "approval_required",

@@ -651,6 +651,33 @@ def energy_panel(limit: int = 5) -> dict:
     }
 
 
+def campaign_panel(limit: int = 3) -> dict:
+    """Current campaign for the phone: title, progress, current
+    quest, next action with its unlock href. Read-only; all
+    consequential actions continue through existing gates."""
+    try:
+        from .campaigns import list_campaign_details
+        campaigns = list_campaign_details(limit=limit)
+    except Exception:
+        return {"campaigns": [], "href": "/campaigns"}
+    cards = []
+    for campaign in campaigns[:max(1, min(int(limit or 3), 5))]:
+        nxt = campaign.get("next_action", {}) or {}
+        current = campaign.get("current_quest", {}) or {}
+        cards.append({
+            "campaign_id": campaign.get("campaign_id", ""),
+            "title": _clip(campaign.get("title", ""), 100),
+            "state": campaign.get("state", ""),
+            "progress": f"{campaign.get('completed_count', 0)}/"
+                        f"{campaign.get('total_count', 0)}",
+            "current_quest": current.get("title", "")[:80],
+            "next_action": nxt.get("step", "")[:100],
+            "next_href": nxt.get("href", "/campaigns"),
+            "href": "/campaigns",
+        })
+    return {"campaigns": cards, "href": "/campaigns"}
+
+
 def mesh_receipts_panel(limit: int = 5) -> list[dict]:
     """Remote node task receipts for the phone: recent delegated
     tasks with their WHAT/WHERE/RESULT vocabulary."""
@@ -736,6 +763,7 @@ def dashboard(node: str = "") -> dict:
         "progress": progress_panel(),
         "intel": intel_panel(),
         "quests": quests_panel(),
+        "campaigns": campaign_panel(),
         "hardware": hardware_panel(),
         "finance": finance_panel(),
         "energy": energy_panel(),

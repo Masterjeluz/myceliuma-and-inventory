@@ -683,13 +683,26 @@ def _overlay_registry_nodes(nodes: dict, edges: list,
 MAX_HARDWARE_OVERLAY = 30
 
 def _overlay_hardware(nodes: dict, edges: list,
-                      registry: list[dict]) -> None:
+                       registry: list[dict]) -> None:
     """Node-reported hardware inventory as overlay nodes.
-    
+
     Each hardware item becomes a node linked to its host node.
     Only connected hardware is shown. Hardware never merges with
     INVENTory hardware entities - this is node-reported runtime state.
+
+    BIG #43 living game layer: a live VERIFIED human link for
+    the exact node + device marks the overlay node
+    verified=True (and its edge provenance human_verified=True)
+    so the graph can render verified connections stronger.
+    Nothing is derived — only the human-link store counts.
     """
+    try:
+        from .hardware_links import list_links as _hw_links
+        verified_refs = {(link.node_id, link.device_ref)
+                         for link in _hw_links(status="VERIFIED",
+                                                limit=200)}
+    except Exception:
+        verified_refs = set()
     for item in list(registry or [])[:MAX_REGISTRY_NODES]:
         if not isinstance(item, dict):
             continue
@@ -712,6 +725,7 @@ def _overlay_hardware(nodes: dict, edges: list,
                 continue
             kind = str(hw.get("kind", "other"))
             details = hw.get("details", {})
+            is_verified = (node_id, identifier) in verified_refs
             nodes[hw_node_id] = {
                 "id": hw_node_id,
                 "type": "hardware",
@@ -723,6 +737,7 @@ def _overlay_hardware(nodes: dict, edges: list,
                     "host_node": node_id,
                     "details": details if isinstance(details, dict) else {},
                     "connected_since": hw.get("connected_since"),
+                    "verified": is_verified,
                 },
             }
             # Edge from node to hardware
@@ -731,9 +746,11 @@ def _overlay_hardware(nodes: dict, edges: list,
                     "from": node_id,
                     "predicate": "HAS",
                     "to": hw_node_id,
-                    "provenance": {"source_type": "node-reported",
+                    "provenance": {"source_type": "human-verified"
+                                    if is_verified
+                                    else "node-reported",
                                    "creator_id": f"node:{node_id}",
-                                   "human_verified": False},
+                                   "human_verified": is_verified},
                 })
             if len(nodes) >= MAX_NODES:
                 return

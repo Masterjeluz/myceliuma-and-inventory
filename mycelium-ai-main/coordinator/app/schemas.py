@@ -218,6 +218,17 @@ class WorkflowDispatchBody(BaseModel):
                                         max_length=6)
 
 
+class CampaignCreateBody(BaseModel):
+    """Define a quest campaign (BIG #43). Quest ids must
+    reference real quests; all progress derives on read. No
+    XP, no rewards — a view over real work."""
+
+    title: str = Field(min_length=1, max_length=200)
+    description: str = Field(default="", max_length=1000)
+    quest_ids: list[str] = Field(default_factory=list,
+                                 max_length=12)
+
+
 class TaskCreate(BaseModel):
     kind: str = Field(min_length=2, max_length=80, pattern=r"^[a-zA-Z0-9._-]+$")
     payload: dict[str, Any] = Field(default_factory=dict)

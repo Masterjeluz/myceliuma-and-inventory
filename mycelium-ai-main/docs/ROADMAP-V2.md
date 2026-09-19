@@ -1,4 +1,4 @@
-# Mycelium V2 Roadmap — BIG #37 → BIG #42 (directional)
+# Mycelium V2 Roadmap — BIG #37 → BIG #43 (directional)
 
 Status after BIG #41: Mycelium V2 foundation — the BIG #1–40
 systems working as one ecosystem: targeted mesh delegation
@@ -115,11 +115,24 @@ PROJECTS/FINANCE only when real data exists; no packet-v3).
 22 tests + 49 smoke checks green. See
 `docs/BIG42-final-report.md`.
 
-## BIG #43 — Game Layer on Hardened Ground (NEXT)
+## BIG #43 — Game Layer on Hardened Ground (DONE 2026-09-20)
 
-Quests become campaigns, symbiosis becomes visible
-progression, presence becomes stakes — all derived from the
-BIG #42 stores (links, finance, energy, trails, workflows).
-World/morning/guide stay honest: progression names real
-records, never XP. Keep every new power behind the existing
-gates.
+Shipped: quest campaigns (defs + live counts/current/next/
+evidence, fake quests refuse, deleted quests mark MISSING),
+read-only game-state view (`GET /api/v1/game/state`, 10
+sections, POST 405) + `/game` page, symbiosis progression
+display (strong/growing/seedling, no silent promotion),
+craft game framing, living background with 5 real-state
+signals (research/discovery/verified/fab/offline, still
+reduced-motion safe), solarpunk-workshop accents, guide
+companion cards (BLOCKED BY/UNLOCKS/EVIDENCE), mobile
+campaign panel, morning CURRENT CAMPAIGN + game headers,
+worldgraph verified-hardware glow. 15 tests + 47 smoke
+checks green. See `docs/BIG43-final-report.md`.
+
+## BIG #44 — (NEXT, not started)
+
+Direction only: deeper campaign arcs (multi-project chains),
+craft-stage ↔ quest-step cross-links, energy-aware routing
+using the BIG #42 store, evening digest. Nothing designed
+yet — BIG #43 stops here.
