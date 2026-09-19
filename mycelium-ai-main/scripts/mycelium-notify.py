@@ -1,14 +1,16 @@
-"""Mycelium developer notifier (BIG #33).
+"""Mycelium developer notifier (BIG #33, extended BIG #36).
 
 Small stdlib-only helper so a long OpenCode/BIG run can signal
 Jelles without any external service or credential:
 
+- `start`: run opened (quiet bell + line).
 - `status`: one progress line on stdout, e.g.
   `BIG #33 [██████░░░░] Phase 4/10 — Implementing ecosystem`.
-- `need`: LOUD approval-required signal: terminal bell (BEL),
-  OSC 9 (Windows Terminal toast) + OSC 99 (WezTerm/iTerm
-  notification), then the message.
+- `need` / `waiting`: LOUD approval-required signal: terminal
+  bell (BEL), OSC 9 (Windows Terminal toast) + OSC 99
+  (WezTerm/iTerm notification), then the message.
 - `done`: completion signal (bell + both OSC sequences).
+- `failed`: failure signal (double bell + both OSC).
 
 How it works
 ------------
@@ -101,6 +103,29 @@ def cmd_need(args: argparse.Namespace) -> int:
     return _alert(f"🔔 APPROVAL REQUIRED — {args.message}", True)
 
 
+def cmd_start(args: argparse.Namespace) -> int:
+    _out(f"🌱 BIG #{args.big} started — "
+         f"{args.message or 'working'}")
+    try:
+        sys.stdout.write(BEL)
+    except UnicodeEncodeError:
+        pass
+    sys.stdout.flush()
+    return 0
+
+
+def cmd_failed(args: argparse.Namespace) -> int:
+    _out(f"✕ BIG #{args.big} FAILED — {args.message}")
+    try:
+        sys.stdout.write(BEL + BEL)
+        sys.stdout.write(_osc(9, f"BIG #{args.big} FAILED"))
+        sys.stdout.write(_osc(99, f"BIG #{args.big} FAILED"))
+    except UnicodeEncodeError:
+        pass
+    sys.stdout.flush()
+    return 0
+
+
 def cmd_done(args: argparse.Namespace) -> int:
     return _alert(f"🌱 BIG #{args.big} complete — "
                   f"{args.message or 'check the report'}", False)
@@ -120,6 +145,18 @@ def build_parser() -> argparse.ArgumentParser:
                           help="loud approval-required signal")
     need.add_argument("--message", required=True)
     need.set_defaults(func=cmd_need)
+    waiting = sub.add_parser("waiting",
+                             help="alias: waiting for approval")
+    waiting.add_argument("--message", required=True)
+    waiting.set_defaults(func=cmd_need)
+    start = sub.add_parser("start", help="run started signal")
+    start.add_argument("--big", type=int, required=True)
+    start.add_argument("--message", default="")
+    start.set_defaults(func=cmd_start)
+    failed = sub.add_parser("failed", help="failure signal")
+    failed.add_argument("--big", type=int, required=True)
+    failed.add_argument("--message", default="")
+    failed.set_defaults(func=cmd_failed)
     done = sub.add_parser("done", help="completion signal")
     done.add_argument("--big", type=int, required=True)
     done.add_argument("--message", default="")

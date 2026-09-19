@@ -1,13 +1,12 @@
-# Mycelium V2 Roadmap — BIG #35 → BIG #40 (directional)
+# Mycelium V2 Roadmap — BIG #36 → BIG #40 (directional)
 
-Status after BIG #35: 3D workshop ecosystem on the living
-world — model/material/fab-job registries, honest
-inspection, PROPOSED symbiosis links, 13-stage fab machine
-around the existing YES flow, camera two-half verification,
-presence checklists, continuation packets, real progress,
-activity-reactive ambient background, /3d workbench. 1199
-Mycelium tests green; INVENTory untouched (179 + 1
-pre-existing). See `docs/BIG35-final-report.md`.
+Status after BIG #36: mobile command surface on the living
+world — NOW/WAITING/ACTIVE/RECENT/GUIDE home, unified
+approval triage (same gates), deeplink notifications,
+camera flow, packet handoff, craft/symbiosis/nodes panels,
+quest progress, notifier lifecycle. 1215 Mycelium tests
+green; INVENTory untouched (179 + 1 pre-existing). See
+`docs/BIG36-final-report.md`.
 
 Principles for every step: reuse stores, explicit promotion,
 provenance always, honest REAL/TEST/SIMULATED/UNAVAILABLE/FUTURE,
@@ -38,12 +37,12 @@ machine, camera verification, presence, packet, progress,
 workbench. Real printer transport stays UNAVAILABLE;
 SIMULATED execution never becomes REAL.
 
-## BIG #36 — Mobile Mycelium
+## BIG #36 — Mobile Mycelium (DONE 2026-09-18)
 
-Phone as primary input surface: remember/queue/missed (done in
-#32) plus approval triage, packet handoff copy, notification
-deep-links per node recipient, camera-inbox guidance from the
-phone. No native app, no fake push.
+Shipped: command-surface home, triage cards, deeplinks,
+camera/packet/guide/craft/symbiosis/nodes/progress panels,
+notifier lifecycle. WEB_PUSH stays UNAVAILABLE; DEFER is an
+honest non-action.
 
 ## BIG #37 — Conversation Intelligence
 

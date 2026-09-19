@@ -8236,9 +8236,13 @@ def chat_page(id: str | None = None) -> str:
 @app.post("/web/chat")
 async def web_chat(request: Request) -> RedirectResponse:
     fields = await _form_fields(request)
-    body = ChatRequest(
-        conversation_id=fields.get("conversation_id", "").strip() or None,
-        message=fields.get("message", "").strip())
+    try:
+        body = ChatRequest(
+            conversation_id=fields.get("conversation_id", "").strip() or None,
+            message=fields.get("message", "").strip())
+    except ValueError:
+        # Oversized/malformed input refuses honestly, never 500s.
+        return RedirectResponse("/chat", status_code=303)
     if not body.message:
         return RedirectResponse("/chat", status_code=303)
     answer = await chat(body)
@@ -8814,38 +8818,35 @@ def _mobile_waiting_html() -> str:
     return f"<ul>{rows}</ul>"
 
 
+@app.get("/api/v1/mobile/dashboard")
+def api_mobile_dashboard(node: str = "") -> dict:
+    """One bounded snapshot behind /mobile. Read-only."""
+    from .mobile import dashboard
+    return dashboard(node[:80])
+
+
 @app.get("/mobile", response_class=HTMLResponse)
 def mobile_page(node: str = "") -> str:
-    """Deliberate mobile view: chat first, then approvals,
-    status, missions, notifications, nodes, events. Same
-    backend, priority order for small screens — not the
-    desktop page squeezed."""
+    """Mobile command surface: NOW, WAITING FOR YOU, ACTIVE,
+    INPUT, GUIDE ME, CAMERA, CONTINUE ELSEWHERE, CRAFT,
+    SYMBIOSIS, NODES, RECENT. Same backend and gates as
+    desktop — a surface, not a second app."""
     from . import ui as _ui
-    status = coordinator_status()
-    approvals = status["pending_approvals"]
-    nodes_html = "".join(
-        f"<li>{_ui.status_dot(record['derived_status'])}<b>{_ui.esc(record['node_id'])}</b> — "
-        f"{_ui.esc(record['derived_status'])} · "
-        f"{len(record['capabilities'])} caps</li>"
-        for record in list_nodes()[:20])
-    events_html = "".join(
-        f"<li><small>{_ui.esc(event.created_at)}</small> "
-        f"<b>{_ui.esc(event.event_type)}</b> — "
-        f"{_ui.esc(event.summary[:120])}</li>"
-        for event in bus_events(limit=10))
-    notifications_html = ""
-    if node:
-        try:
-            items = list_notifications(node, limit=10)
-        except ValueError:
-            items = []
-        notifications_html = "".join(
-            f"<li><b>{_ui.esc(item.title)}</b> "
-            f"[{_ui.esc(item.type)}] — "
-            f"{_ui.esc(item.body[:120])}</li>"
-            for item in items) or "<li>No notifications</li>"
+    from .mobile import dashboard
+    try:
+        dash = dashboard(node[:80])
+    except Exception:
+        dash = {"waiting_count": 0, "cards": [], "guide": [],
+                "camera": {}, "craft": [], "symbiosis": [],
+                "nodes": {"nodes": [], "path": []},
+                "progress": {"quests": []}, "notifications": [],
+                "packet": {}, "living": {}}
+    living = dash.get("living", {})
     main = f"""<h1>Mycelium</h1>
-    <div class="panel"><h2>Wat wil je doen?</h2>
+    {_mobile_now_html(dash)}
+    {_mobile_waiting_html_v2(dash)}
+    {_mobile_active_html(dash)}
+    <div class="panel" id="input"><h2>Wat wil je doen?</h2>
     <form method="post" action="/web/chat">
     <textarea name="message" placeholder="Onderzoek dit / maak hier een project van / wat staat er open?…" aria-label="Message"></textarea><br><br>
     <button type="submit">Send</button></form>
@@ -8862,21 +8863,15 @@ def mobile_page(node: str = "") -> str:
     <a href="/missions">📋<small>Wat staat open?</small></a>
     </div>
     <p class="muted">PROCESSING: Mycelium verwerkt dit (INPUT → PROCESSING → NODE → RESULT). RESULT verschijnt hieronder bij events en in <a href="/activity">Activity</a>. NEEDS YOU: alles met een YES-button wacht op jou — <a href="/guide">Guide</a> wijst de weg.</p></div>
-    {_mobile_guide_panel()}
+    {_mobile_guide_panel_v2(dash)}
     <div class="panel"><h2>Hoe gebruik ik Mycelium?</h2>
     <p class="muted">1. Typ wat je wilt. 2. Mycelium bepaalt wat nodig is. 3. Een node kan het uitvoeren. 4. Je ziet wat er gebeurt. 5. Toestemming blijft expliciet. 6. Resultaat komt terug op je telefoon. Jij blijft degene die acties goedkeurt.</p></div>
-    <div class="panel"><h2>Approvals</h2>
-    <p>Desktop {approvals['desktop_actions']} · writes {approvals['write_proposals']} · missions {approvals['missions']}</p>
-    <p><a href="/agents">Review desktop actions</a> · <a href="/missions">Review missions</a> · <a href="/writes">Review writes</a></p>
-    {_mobile_waiting_html()}</div>
-    <div class="panel"><b>Status:</b> nodes {status['nodes']['online']} online /
-    {status['nodes']['stale']} stale · tasks {_ui.esc(str(status['tasks']))}</div>
-    <div class="panel"><h2>Missions</h2>
-    <p><a href="/missions">View plans</a> · <a href="/morning">Morning report</a></p></div>
-    <div class="panel"><h2>Observe & add</h2>
-    <p><a href="/cameras">Camera ingest</a> · <a href="/writes">Propose object/link</a> · <a href="/conversations">Import conversation</a></p>
-    {_mobile_camera_html()}
-    <p><a href="/api/v1/context/packet.md">Copy context (Markdown)</a> <span class="muted">— neem mee naar een ander model</span></p></div>
+    {_mobile_camera_v2_html(dash)}
+    {_mobile_packet_html(dash)}
+    {_mobile_craft_html(dash)}
+    {_mobile_symbiosis_html(dash)}
+    {_mobile_nodes_html(dash)}
+    {_mobile_recent_html(dash, node)}
     <div class="panel"><h2>Remember this</h2>
     <form method="post" action="/web/candidates">
     <input type="text" name="title" placeholder="Onthoud dit…" style="width:70%" aria-label="Remember" autocomplete="off">
@@ -8889,12 +8884,9 @@ def mobile_page(node: str = "") -> str:
     <button type="submit">Queue research</button></form>
     <p><a href="/api/v1/discoveries">What did we miss?</a></p></div>
     {_mobile_workshop_html()}
-    <div class="panel"><h2>Notifications{_ui.esc(' for ' + node) if node else ''}</h2>
-    <p class="muted">IN_APP is live (polling); WEB PUSH is UNAVAILABLE — <a href="/api/v1/notifications/capability">capability (JSON)</a>.</p>
-    <ul>{notifications_html or "<li>link ?node=&lt;node_id&gt; for notifications</li>"}</ul></div>
-    <div class="panel"><h2>Nodes</h2><ul>{nodes_html or "<li>No nodes</li>"}</ul></div>
-    <div class="panel"><h2>Events</h2><ul>{events_html or "<li>No events</li>"}</ul></div>"""
-    return _ui.shell("Mobile", "/mobile", main, "",
+    <div class="panel"><h2>Status</h2>
+    <p class="muted">IN_APP is live (polling); WEB PUSH is UNAVAILABLE — <a href="/api/v1/notifications/capability">capability (JSON)</a>. Nodes online: {_ui.esc(str(living.get('nodes_online', '?')))}.</p></div>"""
+    return _ui.shell("Mobile", "/mobile", _ui.living_bg() + main, "",
                      _ui.command_bar())
 
 
@@ -8969,6 +8961,256 @@ def _mobile_workshop_html() -> str:
         f"<a href=\"/craft\">What can I build?</a> · "
         f"<a href=\"/fabrication\">Continue fabrication</a> · "
         f"<a href=\"/cameras\">Verify this print</a></p></div>")
+
+
+def _mobile_now_html(dash: dict) -> str:
+    """NOW: one honest line about the living state."""
+    from . import ui as _ui
+    living = dash.get("living", {})
+    pending = living.get("pending_approvals", {})
+    total_waiting = 0
+    try:
+        total_waiting = sum(int(pending.get(key, 0)) for key in
+                            ("desktop_actions", "write_proposals",
+                             "missions"))
+    except Exception:
+        total_waiting = 0
+    line = (f"{dash.get('waiting_count', 0)} approval card(s) · "
+            f"nodes online: "
+            f"{_ui.esc(str(living.get('nodes_online', '?')))}")
+    if total_waiting:
+        line += f" · {total_waiting} raw approval(s) in stores"
+    return (f"<div class=\"panel living\" id=\"now\"><h2>Now</h2>"
+            f"<p>{_ui.esc('Mycelium is ' + ('waiting for you.' if dash.get('waiting_count') else 'quiet — nothing waits.'))}</p>"
+            f"<p class=\"muted\">{line} · "
+            f"<a href=\"/api/v1/mobile/dashboard\">dashboard "
+            f"(JSON)</a></p></div>")
+
+
+def _triage_card_html(card: dict) -> str:
+    """One approval card: WHAT/WHY/SOURCE/SCOPE + what YES
+    does and does NOT do. YES/NO post to existing gates;
+    DEFER is an honest non-action (open later)."""
+    from . import ui as _ui
+    kind = str(card.get("kind", ""))
+    ident = str(card.get("id", ""))
+    yes_action = str(card.get("yes_action", ""))
+    no_action = str(card.get("no_action", ""))
+    open_href = str(card.get("open_href", "/"))
+    yes_label = "YES, doorgaan" if kind == "mission" else "YES"
+    yes_field = ("<input type=\"hidden\" name=\"response\" "
+                 "value=\"YES\">" if kind != "mission" else "")
+    no_field = ("<input type=\"hidden\" name=\"response\" "
+                "value=\"NO\">" if kind != "mission" else "")
+    no_label = "NO" if kind != "mission" else "Cancel plan"
+    no_form = (f"<form method=\"post\" action=\"{_ui.esc(no_action)}\" "
+               f"style=\"display:inline\">{no_field}"
+               f"<button type=\"submit\">{_ui.esc(no_label)}</button>"
+               f"</form>" if no_action else "")
+    return (
+        f"<div class=\"sprout\"><b>{_ui.esc(card.get('what', ''))}</b> "
+        f"{_ui.chip(kind)}{_ui.chip(str(card.get('state', '')))}<br>"
+        f"<small><b>WHY:</b> {_ui.esc(card.get('why', ''))}</small><br>"
+        f"<small><b>SOURCE:</b> {_ui.esc(card.get('source', ''))} · "
+        f"<b>SCOPE:</b> {_ui.esc(card.get('scope', ''))}</small><br>"
+        f"<small><b>YES:</b> {_ui.esc(card.get('will_happen', ''))}"
+        f"</small><br>"
+        f"<small><b>NOT:</b> {_ui.esc(card.get('will_not_happen', ''))}"
+        f"</small><br>"
+        f"<form method=\"post\" action=\"{_ui.esc(yes_action)}\" "
+        f"style=\"display:inline\">{yes_field}"
+        f"<button type=\"submit\">{_ui.esc(yes_label)}</button></form> "
+        f"{no_form} "
+        f"<a href=\"{_ui.esc(open_href)}\">OPEN</a> · "
+        f"<a href=\"{_ui.esc(open_href)}\" title=\"Nothing changes; "
+        f"decide later\">DEFER</a></div>")
+
+
+def _mobile_waiting_html_v2(dash: dict) -> str:
+    """WAITING FOR YOU: triage cards over the same gates."""
+    from . import ui as _ui
+    cards = dash.get("cards", [])
+    body = "".join(_triage_card_html(card) for card in cards[:6]) \
+        or _ui.empty("Nothing waiting — quiet. 🌱")
+    return (
+        f"<div class=\"panel\" id=\"waiting\"><h2>Waiting for you</h2>"
+        f"<p class=\"muted\">Every YES runs the existing gate; "
+        f"DEFER changes nothing. "
+        f"<a href=\"/agents\">Agents</a> · "
+        f"<a href=\"/missions\">Review missions</a> · "
+        f"<a href=\"/writes\">Review writes</a></p>"
+        f"<div class=\"grove\">{body}</div></div>")
+
+
+def _mobile_active_html(dash: dict) -> str:
+    """ACTIVE: quest progress from real backend states."""
+    from . import ui as _ui
+    quests = dash.get("progress", {}).get("quests", [])
+    rows = []
+    for quest in quests[:6]:
+        done = quest.get("done", -1)
+        total = quest.get("total", -1)
+        if isinstance(done, int) and isinstance(total, int) \
+                and done >= 0 and total > 0:
+            detail = f"{done}/{total}"
+        else:
+            detail = str(quest.get("status", ""))
+        rows.append(
+            f"<li><a href=\"{_ui.esc(quest.get('href', '/missions'))}\">"
+            f"{_ui.esc(quest.get('title', ''))}</a> "
+            f"<span class=\"muted\">[{_ui.esc(detail)}]</span></li>")
+    return (
+        f"<div class=\"panel\" id=\"active\"><h2>Active</h2>"
+        f"<ul>{''.join(rows) or '<li>No active quests.</li>'}</ul>"
+        f"<p><a href=\"/missions\">View plans</a> · "
+        f"<a href=\"/morning\">Morning report</a></p></div>")
+
+
+def _mobile_guide_panel_v2(dash: dict) -> str:
+    """GUIDE ME: real next actions, WHAT/WHY/NEXT."""
+    from . import ui as _ui
+    cards = "".join(_ui.guide_card(item)
+                    for item in dash.get("guide", [])[:4]) or \
+        _ui.empty("Nothing to point at — the world is quiet. 🌱")
+    return (
+        f"<div class=\"panel\" id=\"guide-me\"><h2>Guide me</h2>"
+        f"<div class=\"grove\">{cards}</div>"
+        f"<p><a href=\"/guide\">All guide items →</a></p></div>")
+
+
+def _mobile_camera_v2_html(dash: dict) -> str:
+    """CAMERA: inbox → sessions → observations → candidates."""
+    from . import ui as _ui
+    panel = dash.get("camera", {})
+    return (
+        f"<div class=\"panel\" id=\"camera\"><h2>Camera</h2>"
+        f"<p>{panel.get('inbox', 0)} file(s) in inbox · "
+        f"{panel.get('sessions', 0)} session(s) · "
+        f"{panel.get('observations', 0)} observation(s) · "
+        f"{panel.get('candidates_waiting', 0)} candidate(s) "
+        f"waiting.</p>"
+        f"<p class=\"muted\">FILE → SESSION → OBSERVATION → "
+        f"DESCRIBE → REVIEW → CANDIDATE → LINK → YES. "
+        f"Insta360 live transport: UNAVAILABLE; the inbox in "
+        f"<a href=\"/cameras\">Camera Lab</a> is the honest path."
+        f"</p>"
+        f"<p><a href=\"/cameras\">Open Camera Lab</a></p></div>")
+
+
+def _mobile_packet_html(dash: dict) -> str:
+    """CONTINUE ELSEWHERE: the existing packet-v2, one tap away."""
+    from . import ui as _ui
+    preview = dash.get("packet", {})
+    return (
+        f"<div class=\"panel\" id=\"packet\"><h2>Continue elsewhere</h2>"
+        f"<p class=\"muted\">goal: "
+        f"{_ui.esc(str(preview.get('goal', ''))[:100] or '—')} · "
+        f"{preview.get('missions', 0)} mission(s) · "
+        f"{preview.get('entities', 0)} entit(ies) · "
+        f"{preview.get('memories', 0)} memor(ies) · "
+        f"{preview.get('open_questions', 0)} open question(s)</p>"
+        f"<p><a class=\"btn\" href=\"/api/v1/context/packet.md\">"
+        f"Copy context</a> "
+        f"<a href=\"/api/v1/context/packet\">packet (JSON)</a> · "
+        f"<a href=\"/api/v1/context/continue\">continuation "
+        f"(JSON)</a> · "
+        f"<a href=\"/api/v1/workshop/packet\">3D packet</a></p>"
+        f"<p class=\"muted\">Take it to ChatGPT, Claude, Gemini, "
+        f"Codex, OpenCode or Ollama — models work, Mycelium keeps "
+        f"state. No secrets inside.</p></div>")
+
+
+def _mobile_craft_html(dash: dict) -> str:
+    """CRAFT: checklists with ✓/●/○ from real presence."""
+    from . import ui as _ui
+    blocks = []
+    for entry in dash.get("craft", [])[:4]:
+        rows = "".join(
+            f"<li>{'✓' if present else '○'} {_ui.esc(label)}</li>"
+            for label, present in entry.get("checklist", []))
+        blocks.append(
+            f"<div class=\"sprout\"><b>{_ui.esc(entry.get('entity_id', ''))}</b> "
+            f"<span class=\"muted\">{entry.get('done', 0)}/"
+            f"{entry.get('total', 0)}</span><ul>{rows}</ul>"
+            f"<a href=\"{_ui.esc(entry.get('href', '/craft'))}\">"
+            f"Open craft tree →</a></div>")
+    return (
+        f"<div class=\"panel\" id=\"craft\"><h2>Craft</h2>"
+        f"<div class=\"grove\">{''.join(blocks) or _ui.empty('No craft chains linked yet.')}</div></div>")
+
+
+def _mobile_symbiosis_html(dash: dict) -> str:
+    """SYMBIOSIS: proposed connections with WHY/SOURCE/STATUS."""
+    from . import ui as _ui
+    rows = "".join(
+        f"<div class=\"sprout\"><b>{_ui.esc(item.get('title', ''))}</b> "
+        f"{_ui.symbiosis_chip('PROPOSED')}<br>"
+        f"<small><b>WHY:</b> {_ui.esc(item.get('why', ''))}</small><br>"
+        f"<small class=\"muted\">{_ui.esc(', '.join(item.get('entities', [])))}</small><br>"
+        f"<a href=\"{_ui.esc(item.get('href', '/knowledge'))}\">YES via Knowledge →</a></div>"
+        for item in dash.get("symbiosis", [])[:5])
+    return (
+        f"<div class=\"panel\" id=\"symbiosis\"><h2>Symbiosis</h2>"
+        f"<p class=\"muted\">POSSIBLE links only — YES runs the "
+        f"guarded relationship flow.</p>"
+        f"<div class=\"grove\">{rows or _ui.empty('No open proposals.')}</div></div>")
+
+
+def _mobile_nodes_html(dash: dict) -> str:
+    """NODES: status + WHAT IT CAN DO + the mesh path."""
+    from . import ui as _ui
+    panel = dash.get("nodes", {})
+    rows = "".join(
+        f"<li>{_ui.status_dot(node.get('status', ''))}"
+        f"<b>{_ui.esc(node.get('node_id', ''))}</b> — "
+        f"{_ui.esc(node.get('status', ''))} · "
+        f"{_ui.esc(', '.join(node.get('roles', [])))}<br>"
+        f"<small>WHAT IT CAN DO: "
+        f"{_ui.esc(', '.join(node.get('capabilities', [])))}</small></li>"
+        for node in panel.get("nodes", [])[:12]) or \
+        "<li>No nodes</li>"
+    path = "".join(
+        f"<li><small>{_ui.esc(step)}</small></li>"
+        for step in panel.get("path", []))
+    return (
+        f"<div class=\"panel\" id=\"nodes\"><h2>Nodes</h2>"
+        f"<ul>{rows}</ul>"
+        f"<h3>Mesh path</h3><ul>{path}</ul>"
+        f"<p class=\"muted\">PHONE → COORDINATOR → NODE(S). "
+        f"Coordinator stays authoritative; no shell, no wildcard. "
+        f"<a href=\"/nodes\">Open nodes</a></p></div>")
+
+
+def _mobile_recent_html(dash: dict, node: str) -> str:
+    """RECENT: notifications with deeplinks + latest events."""
+    from . import ui as _ui
+    notes = "".join(
+        f"<li><a href=\"{_ui.esc(item.get('href', '/activity'))}\">"
+        f"{_ui.esc(item.get('title', ''))}</a> "
+        f"<span class=\"muted\">[{_ui.esc(item.get('type', ''))}"
+        f"{_ui.esc(' · ' + item.get('at', '')) if item.get('at') else ''}]</span></li>"
+        for item in dash.get("notifications", [])[:8])
+    try:
+        events = bus_events(limit=8)
+        event_rows = "".join(
+            f"<li><small>{_ui.esc(event.created_at[:16])}</small> "
+            f"<b>{_ui.esc(event.event_type)}</b> — "
+            f"{_ui.esc(event.summary[:100])}</li>"
+            for event in events)
+    except Exception:
+        event_rows = ""
+    title = f"Notifications{_ui.esc(' for ' + node) if node else ''}"
+    if not node:
+        notes = notes or \
+            "<li>link ?node=&lt;node_id&gt; for per-node notifications</li>"
+    return (
+        f"<div class=\"panel\" id=\"recent\"><h2>{title}</h2>"
+        f"<p class=\"muted\">IN_APP is live (polling); WEB PUSH is "
+        f"UNAVAILABLE — <a href=\"/api/v1/notifications/capability\">"
+        f"capability (JSON)</a>. Tapping opens the real object.</p>"
+        f"<ul>{notes or '<li>Quiet.</li>'}</ul>"
+        f"<h3>Recent events</h3>"
+        f"<ul>{event_rows or '<li>No events</li>'}</ul></div>")
 
 
 @app.post("/web/desktop/{action_id}/decision")
