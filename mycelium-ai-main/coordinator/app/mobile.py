@@ -545,6 +545,147 @@ def intel_panel(limit: int = 6) -> dict:
             "research": research}
 
 
+def quests_panel(limit: int = 5) -> list[dict]:
+    """Quest trails for the phone: title, state, done/total,
+    first waiting step with its unlock href. Read-only; all
+    consequential actions continue through existing gates."""
+    try:
+        from .quests import list_quest_details
+        quests = list_quest_details(limit=limit)
+    except Exception:
+        return []
+    cards = []
+    for quest in quests[:max(1, min(int(limit or 5), 10))]:
+        waiting = next((step for step in quest.get("steps", [])
+                        if step.get("state") in
+                        ("WAITING", "MISSING", "BLOCKED",
+                         "FAILED")), {})
+        cards.append({
+            "quest_id": quest.get("quest_id", ""),
+            "title": _clip(quest.get("title", ""), 120),
+            "state": quest.get("state", ""),
+            "progress": quest.get("progress", "0/0"),
+            "waiting_step": waiting.get("label", ""),
+            "waiting_href": waiting.get("href", "/quests"),
+            "href": "/quests",
+        })
+    return cards
+
+
+def hardware_panel(limit: int = 5) -> dict:
+    """Hardware verification for the phone: proposed vs verified
+    links with verify/revoke hrefs (operator key still required
+    at the endpoint)."""
+    try:
+        from .hardware_links import list_links
+        links = list_links(limit=50)
+    except Exception:
+        return {"proposed": 0, "verified": 0, "links": []}
+    proposed = [link for link in links
+                if link.status == "PROPOSED"][:limit]
+    verified = sum(1 for link in links
+                   if link.status == "VERIFIED")
+    return {
+        "proposed": len([link for link in links
+                         if link.status == "PROPOSED"]),
+        "verified": verified,
+        "links": [{
+            "link_id": link.link_id,
+            "node_id": link.node_id,
+            "device_ref": _clip(link.device_ref, 60),
+            "status": link.status,
+            "href": "/hardware",
+        } for link in proposed],
+        "href": "/hardware",
+    }
+
+
+def finance_panel(limit: int = 5) -> dict:
+    """Finance/project links for the phone: counts only, never
+    amounts — amounts stay on the scoped /finance page."""
+    try:
+        from .finance import list_records, summarize
+        summary = summarize()
+        records = list_records(limit=limit)
+    except Exception:
+        return {"total": 0, "records": [], "href": "/finance"}
+    return {
+        "total": summary.get("total", 0),
+        "unknown_amounts": summary.get("unknown_amounts", 0),
+        "records": [{
+            "record_id": record.record_id,
+            "kind": record.kind,
+            "title": _clip(record.title, 80),
+            "status": record.status,
+            "project_ref": record.project_ref,
+            "amount": ("UNKNOWN" if record.amount_minor is None
+                       else "stated"),
+            "href": "/finance",
+        } for record in records[:max(1, min(int(limit or 5), 10))]],
+        "href": "/finance",
+    }
+
+
+def energy_panel(limit: int = 5) -> dict:
+    """Energy/project links for the phone: sources + current
+    state, UNKNOWN honestly shown."""
+    try:
+        from .energy import current_state, list_records, summarize
+        summary = summarize()
+        records = list_records(limit=limit)
+    except Exception:
+        return {"total": 0, "records": [], "href": "/energy"}
+    return {
+        "total": summary.get("total", 0),
+        "unknown_values": summary.get("unknown_values", 0),
+        "records": [{
+            "record_id": record.record_id,
+            "source": record.source,
+            "kind": record.kind,
+            "value": ("UNKNOWN" if record.value is None
+                      else f"{record.value} {record.unit}"),
+            "project_ref": record.project_ref,
+            "href": "/energy",
+        } for record in records[:max(1, min(int(limit or 5), 10))]],
+        "href": "/energy",
+    }
+
+
+def mesh_receipts_panel(limit: int = 5) -> list[dict]:
+    """Remote node task receipts for the phone: recent delegated
+    tasks with their WHAT/WHERE/RESULT vocabulary."""
+    try:
+        from . import main as _main
+        tasks = _main.list_tasks(limit=50) if hasattr(
+            _main, "list_tasks") else []
+    except Exception:
+        tasks = []
+    receipts = []
+    try:
+        from .events import list_events
+        events = list_events(limit=50)
+    except Exception:
+        events = []
+    for event in events:
+        try:
+            data = event.model_dump(mode="json")
+        except Exception:
+            continue
+        if data.get("event_type") != "task.delegated":
+            continue
+        receipts.append({
+            "summary": _clip(data.get("summary", ""), 140),
+            "task_id": data.get("task_id", ""),
+            "node_id": data.get("node_id", ""),
+            "at": data.get("created_at", ""),
+            "href": f"/api/v1/tasks/by-id/"
+                    f"{data.get('task_id', '')}",
+        })
+        if len(receipts) >= max(1, min(int(limit or 5), 10)):
+            break
+    return receipts
+
+
 def dashboard(node: str = "") -> dict:
     """One bounded snapshot for /mobile + the JSON endpoint."""
     from . import main as _main
@@ -594,6 +735,11 @@ def dashboard(node: str = "") -> dict:
         "nodes": nodes_panel(),
         "progress": progress_panel(),
         "intel": intel_panel(),
+        "quests": quests_panel(),
+        "hardware": hardware_panel(),
+        "finance": finance_panel(),
+        "energy": energy_panel(),
+        "mesh_receipts": mesh_receipts_panel(),
         "notifications": notification_cards(node, limit=8),
         "packet": packet_preview(),
         "living": {

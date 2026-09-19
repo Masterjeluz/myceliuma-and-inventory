@@ -333,7 +333,7 @@ from .routing import (
     requirements_from_payload,
     route_task,
 )
-from .schemas import AdviseRequest, AdviseResponse, AdvancedOpBody, CadDocumentBody, CadOpBody, CadPartBody, CampaignBody, CameraRegisterBody, CaptureCloseBody, CaptureOpenBody, ChatMissionBody, ChatRequest, ChatResponse, ClaimedTask, DecideApprovalBody, DesktopActionBody, DesktopClaimBody, DesktopDecisionBody, DesktopDispatchBody, DesktopResultBody,     DistEnvelopeBody, DroneCreateBody, DroneMissionApproveBody, DroneMissionBody,     FabGenerateBody, FabSliceBody, FamiliarCreateBody, FoodCreateBody, GarminImportBody, GitCommitBody, HealthMeasureBody, Heartbeat, InstagramImportBody,     InterfaceChatBody, IntegrationEnvelopeBody, IntegrationKeyBody, IntegrationTriggerBody, InventoryWriteBody, JobRunBody, LiveContextBody, LiveProposeBody, LiveSessionBody, MealCreateBody, MealItemBody, MemoryConsolidateBody, MemoryCreateBody, MemoryRetrieveBody, MemoryVerifyBody,     MissionApproveBody, MissionCreateBody, MissionRunBody, MissionStepBody, NodeRegistration, NodeRotateBody,     NotifyBody, OperatorBody, OutboxAckBody, OutboxEnqueueBody, PhoneCameraBody,     PlanBody, PlanToProposalBody, PipelinePlanBody, PrintCancelBody, PrintProposeBody, PrinterRegisterBody, PrinterSelectBody, PromptEditBody, ResearchAdvanceBody, ResearchClaimBody, ResearchRecordBody, ResearchSourceBody, RobotActionBody, RobotApproveBody, RobotCreateBody, RobotSafetyBody, RobotTelemetryBody, SessionOpenBody,     StreamStartBody, SuggestStepsBody, SkillAcceptBody, SkillAdvanceBody, SkillCreateBody, SkillDiscoverBody, SkillEvidenceBody, SpoolCreateBody, SyncApplyBody, TaskAssignBody, TaskCreate, TaskFromProposalBody, TaskResult, TaskRouteBody,     TemplateMissionBody, TransformBody, TwinLinkBody, VisionAnalyzeBody, VisionProposeBody, VoiceApprovalRequestBody, VoiceApproveBody, VoiceChatBody,     VoiceSynthesizeBody, VoiceTranscribeBody, WriteDecisionBody, CommandBody, RecoverBody, AgendaImportBody, BootstrapBody, ResearchRunBody, ResearchExecuteBody, PresenceTriageBody, PresenceNotifyBody, MeshDelegateBody, MeshPreviewBody
+from .schemas import AdviseRequest, AdviseResponse, AdvancedOpBody, CadDocumentBody, CadOpBody, CadPartBody, CampaignBody, CameraRegisterBody, CaptureCloseBody, CaptureOpenBody, ChatMissionBody, ChatRequest, ChatResponse, ClaimedTask, DecideApprovalBody, DesktopActionBody, DesktopClaimBody, DesktopDecisionBody, DesktopDispatchBody, DesktopResultBody,     DistEnvelopeBody, DroneCreateBody, DroneMissionApproveBody, DroneMissionBody,     FabGenerateBody, FabSliceBody, FamiliarCreateBody, FoodCreateBody, GarminImportBody, GitCommitBody, HealthMeasureBody, Heartbeat, InstagramImportBody,     InterfaceChatBody, IntegrationEnvelopeBody, IntegrationKeyBody, IntegrationTriggerBody, InventoryWriteBody, JobRunBody, LiveContextBody, LiveProposeBody, LiveSessionBody, MealCreateBody, MealItemBody, MemoryConsolidateBody, MemoryCreateBody, MemoryRetrieveBody, MemoryVerifyBody,     MissionApproveBody, MissionCreateBody, MissionRunBody, MissionStepBody, NodeRegistration, NodeRotateBody,     NotifyBody, OperatorBody, OutboxAckBody, OutboxEnqueueBody, PhoneCameraBody,     PlanBody, PlanToProposalBody, PipelinePlanBody, PrintCancelBody, PrintProposeBody, PrinterRegisterBody, PrinterSelectBody, PromptEditBody, ResearchAdvanceBody, ResearchClaimBody, ResearchRecordBody, ResearchSourceBody, RobotActionBody, RobotApproveBody, RobotCreateBody, RobotSafetyBody, RobotTelemetryBody, SessionOpenBody,     StreamStartBody, SuggestStepsBody, SkillAcceptBody, SkillAdvanceBody, SkillCreateBody, SkillDiscoverBody, SkillEvidenceBody, SpoolCreateBody, SyncApplyBody, TaskAssignBody, TaskCreate, TaskFromProposalBody, TaskResult, TaskRouteBody,     TemplateMissionBody, TransformBody, TwinLinkBody, VisionAnalyzeBody, VisionProposeBody, VoiceApprovalRequestBody, VoiceApproveBody, VoiceChatBody,     VoiceSynthesizeBody, VoiceTranscribeBody, WriteDecisionBody, CommandBody, RecoverBody, AgendaImportBody, BootstrapBody, ResearchRunBody, ResearchExecuteBody, PresenceTriageBody, PresenceNotifyBody, MeshDelegateBody, MeshPreviewBody, HardwareLinkBody, HardwareVerifyBody, HardwareRevokeBody, FinanceRecordBody, FinanceStatusBody, EnergyRecordBody, QuestCreateBody, WorkflowDispatchBody
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 logger = logging.getLogger("mycelium.coordinator")
@@ -771,11 +771,28 @@ def node_reality(node_id: str) -> dict:
     except (ValueError, TypeError):
         heartbeat_age_s = -1
     hardware = []
+    try:
+        from .hardware_links import trust_for as _human_trust
+    except Exception:
+        _human_trust = None
     for item in record.get("hardware", []) or []:
         if not isinstance(item, dict):
             continue
         trust, why = hardware_trust(
             item, record.get("telemetry_timestamp", ""))
+        # BIG #42 human-link overlay: a live VERIFIED link for this
+        # exact node + device ref upgrades trust to VERIFIED.
+        # Nothing else may — hardware_trust() itself can never
+        # return VERIFIED.
+        if _human_trust is not None:
+            try:
+                verified, verified_why = _human_trust(
+                    record.get("node_id", ""),
+                    str(item.get("identifier", "")))
+            except Exception:
+                verified, verified_why = ("", "")
+            if verified == "VERIFIED":
+                trust, why = verified, verified_why
         hardware.append({
             "kind": str(item.get("kind", "")),
             "identifier": str(item.get("identifier", "")),
@@ -5390,6 +5407,72 @@ def report_morning() -> dict:
             sections[key] = lines[:8]
     except Exception:
         pass
+    # BIG #42 ecosystem sections — only when real data exists,
+    # never filler.
+    try:
+        from .hardware_links import list_links as _hw_all
+        _hw_links = _hw_all(limit=200)
+        if _hw_links:
+            _verified = sum(1 for link in _hw_links
+                            if link.status == "VERIFIED")
+            _proposed = sum(1 for link in _hw_links
+                            if link.status == "PROPOSED")
+            sections["hardware"] = [
+                f"{len(_hw_links)} link(s): {_verified} verified, "
+                f"{_proposed} proposed",
+                *[f"{link.link_id} {link.node_id}/"
+                  f"{link.device_ref[:40]} [{link.status}]"
+                  for link in _hw_links[:6]]]
+    except Exception:
+        pass
+    try:
+        from .quests import list_quest_details as _quest_all
+        _quests = _quest_all(limit=20)
+        if _quests:
+            sections["quests"] = [
+                f"{quest.get('title', '')[:90]} "
+                f"{quest.get('done', 0)}/{quest.get('total', 0)} "
+                f"[{quest.get('state', '')}]"
+                for quest in _quests[:8]]
+    except Exception:
+        pass
+    try:
+        from .energy import summarize as _energy_sum
+        _esum = _energy_sum()
+        if _esum.get("total"):
+            sections["energy"] = [
+                f"{_esum['total']} record(s), "
+                f"{_esum.get('unknown_values', 0)} unknown "
+                "value(s)",
+                *[f"{source}: {bucket['count']} record(s)"
+                  for source, bucket in
+                  list(_esum.get("by_source", {}).items())[:6]]]
+    except Exception:
+        pass
+    try:
+        from .finance import summarize as _finance_sum
+        _fsum = _finance_sum()
+        if _fsum.get("total"):
+            sections["finance"] = [
+                f"{_fsum['total']} record(s), "
+                f"{_fsum.get('unknown_amounts', 0)} unknown "
+                "amount(s)"]
+    except Exception:
+        pass
+    try:
+        from .energy import list_records as _e_list42
+        from .finance import list_records as _f_list42
+        _proj_refs = sorted({
+            record.project_ref for record in
+            _f_list42(limit=200)} | {
+            record.project_ref for record in
+            _e_list42(limit=200)} - {""})[:8]
+        if _proj_refs:
+            sections["projects"] = [
+                f"{ref[:100]} (finance/energy linked)"
+                for ref in _proj_refs]
+    except Exception:
+        pass
     try:
         report = morning_report(sections)
     except ReportRefusedError as error:
@@ -7772,12 +7855,49 @@ def _world_state_strip() -> str:
             f"{_ui.esc(item['title'][:80])}</a></li>"
             for item in snapshot.get("bands", {}).get(
                 "needs", [])[:3])
+        # BIG #42 ecosystem line: quests, hardware trust,
+        # finance/energy — progressive disclosure (only when
+        # real data exists), same ambient strip.
+        extra = ""
+        try:
+            from .quests import list_quest_details as _strip_q
+            _qs = _strip_q(limit=10)
+            _open_q = sum(1 for _q in _qs if _q.get("state")
+                          not in ("COMPLETED",))
+            if _qs:
+                extra += (f" · 🌱 <a href=\"/quests\">"
+                          f"{_open_q} open quest(s)</a>")
+        except Exception:
+            pass
+        try:
+            from .hardware_links import list_links as _strip_hw
+            _hw = _strip_hw(limit=200)
+            _ver = sum(1 for _l in _hw
+                       if _l.status == "VERIFIED")
+            if _hw:
+                extra += (f" · 🔗 <a href=\"/hardware\">"
+                          f"{_ver}/{len(_hw)} verified</a>")
+        except Exception:
+            pass
+        try:
+            from .energy import summarize as _strip_en
+            from .finance import summarize as _strip_fin
+            _fen = _strip_fin().get("total", 0)
+            _een = _strip_en().get("total", 0)
+            if _fen:
+                extra += (f" · 💰 <a href=\"/finance\">"
+                          f"{_fen} finance</a>")
+            if _een:
+                extra += (f" · ⚡ <a href=\"/energy\">"
+                          f"{_een} energy</a>")
+        except Exception:
+            pass
         return (
             f"<p>{_ui.esc(state.get('glyph', ''))} "
             f"<b>{_ui.esc(state.get('line', ''))}</b> · "
             f"{counts.get('needs', 0)} waiting · "
             f"{counts.get('discovered', 0)} discoveries · "
-            f"{counts.get('offline', 0)} offline — "
+            f"{counts.get('offline', 0)} offline{extra} — "
             f"<a href=\"/presence\">attention →</a> · "
             f"<a href=\"/api/v1/ecosystem/overview\">"
             f"overview (JSON)</a></p>"
@@ -7827,7 +7947,7 @@ async def world_page(entity_id: str = "", depth: int = 1,
     <input type="text" name="message" placeholder="Onderzoek mijn projecten en kijk wat er vandaag logisch is…" style="width:70%" aria-label="Command" autocomplete="off">
     <button type="submit">Ask Mycelium</button></form></div>
     <div class="panel"><h2>Ecosystem — alive at a glance</h2>
-    <p><a href="/nodes">Nodes</a> · <a href="/conversations">Conversations</a> · <a href="/research">Research</a> · <a href="/missions">Missions</a> · <a href="/memory">Memory</a> · <a href="/cameras">Cameras</a> · <a href="/workshop/3d">3D</a> · <a href="/mobile">Mobile input</a> · <a href="/activity">Activity</a> · <a href="/search">Search</a></p>
+    <p><a href="/nodes">Nodes</a> · <a href="/conversations">Conversations</a> · <a href="/research">Research</a> · <a href="/missions">Missions</a> · <a href="/memory">Memory</a> · <a href="/cameras">Cameras</a> · <a href="/workshop/3d">3D</a> · <a href="/mobile">Mobile input</a> · <a href="/activity">Activity</a> · <a href="/search">Search</a> · <a href="/quests">Quests</a> · <a href="/hardware">Hardware</a> · <a href="/finance">Finance</a> · <a href="/energy">Energy</a></p>
     <p class="muted">Jelles ↔ chat ↔ mobile ↔ brain ↔ missions ↔ research ↔ memory ↔ INVENTory ↔ cameras ↔ 3D ↔ projects ↔ files ↔ nodes ↔ fabrication ↔ verification — one workshop, no loose pages. Statuses stay honest: REAL / TEST / SIMULATED / UNAVAILABLE.</p>
     {_world_state_strip()}</div>
     {_last_flow_panel()}
@@ -13109,3 +13229,623 @@ async def web_workshop_link(request: Request) -> Response:
     except WorkshopRefusedError:
         pass
     return RedirectResponse("/3d", status_code=303)
+
+
+# =============================================================================
+# BIG #42 — ECOSYSTEM HARDENING + FIRST V2 WORKFLOWS.
+# Human hardware links, finance/energy stores, quest trails,
+# bounded mesh workflows. Thin glue over existing gates: every
+# consequential action keeps its existing approval/operator gate,
+# VERIFIED is never derived, amounts/measurements stay UNKNOWN
+# unless explicitly recorded.
+# =============================================================================
+
+
+def _require_operator(operator_key: str) -> None:
+    from .nodes import NodeAuthError, check_operator_key
+    try:
+        check_operator_key(operator_key)
+    except NodeAuthError:
+        raise HTTPException(status_code=403,
+                            detail="operator authorization rejected")
+
+
+@app.post("/api/v1/hardware/links", status_code=201)
+def api_hardware_link_propose(body: HardwareLinkBody) -> dict:
+    """Propose a human hardware link. Always starts PROPOSED —
+    proposing never verifies, and a node token is never enough
+    to verify later."""
+    from .hardware_links import HardwareLinkRefusedError, audit_propose, \
+        new_link, save_link
+    try:
+        link = new_link(human_ref=body.human_ref,
+                        node_id=body.node_id,
+                        device_ref=body.device_ref,
+                        device_kind=body.device_kind,
+                        capability=body.capability,
+                        evidence=body.evidence)
+    except HardwareLinkRefusedError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    with connection() as db:
+        row = db.execute(
+            "SELECT node_id FROM nodes WHERE node_id=?",
+            (link.node_id,)).fetchone()
+    if row is None:
+        raise HTTPException(404, "Node is not registered")
+    save_link(link)
+    audit_propose(link)
+    logger.info("hardware_link_proposed link_id=%s node=%s",
+                link.link_id, link.node_id)
+    return link.model_dump(mode="json")
+
+
+@app.get("/api/v1/hardware/links")
+def api_hardware_links(node_id: str = "", status: str = "",
+                       limit: int = 100) -> dict:
+    from .hardware_links import HardwareLinkRefusedError, list_links
+    try:
+        links = list_links(node_id=node_id, status=status,
+                           limit=limit)
+    except HardwareLinkRefusedError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    return {"links": [link.model_dump(mode="json")
+                      for link in links]}
+
+
+@app.get("/api/v1/hardware/links/{link_id}")
+def api_hardware_link_get(link_id: str) -> dict:
+    from .hardware_links import get_link
+    link = get_link(link_id)
+    if link is None:
+        raise HTTPException(404, "Hardware link not found")
+    return link.model_dump(mode="json")
+
+
+@app.post("/api/v1/hardware/links/{link_id}/verify")
+def api_hardware_link_verify(link_id: str,
+                             body: HardwareVerifyBody) -> dict:
+    """Verify a PROPOSED link. Operator key required — node
+    credentials are never accepted here, so a device cannot
+    self-verify. REVOKED links stay revoked."""
+    from .hardware_links import HardwareLinkRefusedError, get_link, \
+        verify_link
+    _require_operator(body.operator_key)
+    try:
+        link = verify_link(link_id, verified_by=body.verified_by)
+    except HardwareLinkRefusedError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    if link is None:
+        raise HTTPException(404, "Hardware link not found")
+    logger.info("hardware_link_verified link_id=%s by=%s",
+                link.link_id, link.verified_by)
+    return link.model_dump(mode="json")
+
+
+@app.post("/api/v1/hardware/links/{link_id}/revoke")
+def api_hardware_link_revoke(link_id: str,
+                             body: HardwareRevokeBody) -> dict:
+    from .hardware_links import HardwareLinkRefusedError, revoke_link
+    _require_operator(body.operator_key)
+    try:
+        link = revoke_link(link_id, revoked_by=body.revoked_by,
+                           reason=body.reason)
+    except HardwareLinkRefusedError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    if link is None:
+        raise HTTPException(404, "Hardware link not found")
+    logger.info("hardware_link_revoked link_id=%s", link.link_id)
+    return link.model_dump(mode="json")
+
+
+@app.post("/api/v1/finance/records", status_code=201)
+def api_finance_create(body: FinanceRecordBody) -> dict:
+    """Record one finance fact. Explicit figures only; an omitted
+    amount stays UNKNOWN (never zero, never invented)."""
+    from .finance import FinanceRefusedError, new_record, save_record
+    try:
+        record = new_record(kind=body.kind, title=body.title,
+                            amount_minor=body.amount_minor,
+                            currency=body.currency,
+                            project_ref=body.project_ref,
+                            note=body.note,
+                            recorded_by=body.recorded_by)
+    except FinanceRefusedError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    save_record(record)
+    logger.info("finance_recorded record_id=%s kind=%s",
+                record.record_id, record.kind)
+    return record.model_dump(mode="json")
+
+
+@app.get("/api/v1/finance/records")
+def api_finance_list(project_ref: str = "", kind: str = "",
+                     status: str = "", limit: int = 100) -> dict:
+    from .finance import FinanceRefusedError, list_records
+    try:
+        records = list_records(project_ref=project_ref, kind=kind,
+                               status=status, limit=limit)
+    except FinanceRefusedError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    return {"records": [record.model_dump(mode="json")
+                        for record in records]}
+
+
+@app.get("/api/v1/finance/records/{record_id}")
+def api_finance_get(record_id: str) -> dict:
+    from .finance import get_record
+    record = get_record(record_id)
+    if record is None:
+        raise HTTPException(404, "Finance record not found")
+    return record.model_dump(mode="json")
+
+
+@app.post("/api/v1/finance/records/{record_id}/status")
+def api_finance_status(record_id: str,
+                       body: FinanceStatusBody) -> dict:
+    from .finance import FinanceRefusedError, set_status
+    try:
+        record = set_status(record_id, body.status)
+    except FinanceRefusedError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    if record is None:
+        raise HTTPException(404, "Finance record not found")
+    return record.model_dump(mode="json")
+
+
+@app.get("/api/v1/finance/summary")
+def api_finance_summary(project_ref: str = "") -> dict:
+    from .finance import summarize
+    return {"project_ref": project_ref,
+            "summary": summarize(project_ref=project_ref)}
+
+
+@app.post("/api/v1/energy/records", status_code=201)
+def api_energy_create(body: EnergyRecordBody) -> dict:
+    """Record one energy observation. An omitted value stays
+    UNKNOWN — measurements are never invented."""
+    from .energy import EnergyRefusedError, new_record, save_record
+    try:
+        record = new_record(source=body.source, kind=body.kind,
+                            value=body.value, unit=body.unit,
+                            project_ref=body.project_ref,
+                            device_ref=body.device_ref,
+                            note=body.note,
+                            recorded_by=body.recorded_by)
+    except EnergyRefusedError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    save_record(record)
+    logger.info("energy_recorded record_id=%s source=%s",
+                record.record_id, record.source)
+    return record.model_dump(mode="json")
+
+
+@app.get("/api/v1/energy/records")
+def api_energy_list(project_ref: str = "", device_ref: str = "",
+                    source: str = "", kind: str = "",
+                    limit: int = 100) -> dict:
+    from .energy import EnergyRefusedError, list_records
+    try:
+        records = list_records(project_ref=project_ref,
+                               device_ref=device_ref,
+                               source=source, kind=kind,
+                               limit=limit)
+    except EnergyRefusedError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    return {"records": [record.model_dump(mode="json")
+                        for record in records]}
+
+
+@app.get("/api/v1/energy/records/{record_id}")
+def api_energy_get(record_id: str) -> dict:
+    from .energy import get_record
+    record = get_record(record_id)
+    if record is None:
+        raise HTTPException(404, "Energy record not found")
+    return record.model_dump(mode="json")
+
+
+@app.get("/api/v1/energy/state")
+def api_energy_state(project_ref: str = "",
+                     device_ref: str = "") -> dict:
+    from .energy import current_state
+    return {"project_ref": project_ref, "device_ref": device_ref,
+            **current_state(project_ref=project_ref,
+                            device_ref=device_ref)}
+
+
+@app.get("/api/v1/energy/summary")
+def api_energy_summary(project_ref: str = "") -> dict:
+    from .energy import summarize
+    return {"project_ref": project_ref,
+            "summary": summarize(project_ref=project_ref)}
+
+
+@app.post("/api/v1/quests", status_code=201)
+def api_quest_create(body: QuestCreateBody) -> dict:
+    """Define a quest trail over real records. State always
+    derives on read — the def stores refs only."""
+    from .quests import QuestRefusedError, new_quest, quest_detail, \
+        save_quest
+    try:
+        quest = new_quest(body.title, body.steps)
+    except QuestRefusedError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    save_quest(quest)
+    logger.info("quest_created quest_id=%s", quest.quest_id)
+    return quest_detail(quest)
+
+
+@app.get("/api/v1/quests")
+def api_quests(limit: int = 50) -> dict:
+    from .quests import list_quest_details
+    return {"quests": list_quest_details(limit=limit)}
+
+
+@app.get("/api/v1/quests/{quest_id}")
+def api_quest_get(quest_id: str) -> dict:
+    from .quests import get_quest, quest_detail
+    quest = get_quest(quest_id)
+    if quest is None:
+        raise HTTPException(404, "Quest not found")
+    return quest_detail(quest)
+
+
+@app.post("/api/v1/quests/{quest_id}/refresh")
+def api_quest_refresh(quest_id: str) -> dict:
+    """Re-derive quest state now (read-only; emits an audit event
+    so refreshes stay traceable)."""
+    from .events import new_event as _bus_new, save_event as _bus_save
+    from .quests import get_quest, quest_detail
+    quest = get_quest(quest_id)
+    if quest is None:
+        raise HTTPException(404, "Quest not found")
+    detail = quest_detail(quest)
+    try:
+        _bus_save(_bus_new(
+            "quest.updated",
+            f"Quest {quest_id} refreshed: "
+            f"{detail['done']}/{detail['total']} "
+            f"[{detail['state']}]",
+            payload={"quest_id": quest_id,
+                     "state": detail["state"]}))
+    except Exception:
+        pass
+    return detail
+
+
+@app.delete("/api/v1/quests/{quest_id}")
+def api_quest_delete(quest_id: str) -> dict:
+    from .quests import delete_quest
+    if not delete_quest(quest_id):
+        raise HTTPException(404, "Quest not found")
+    return {"quest_id": quest_id, "deleted": True}
+
+
+@app.post("/api/v1/workflows/dispatch", status_code=201)
+def api_workflow_dispatch(body: WorkflowDispatchBody) -> dict:
+    """Dispatch a bounded multi-node workflow (BIG #42 remote mesh
+    workflows): research on Node A, camera work on Node B, compute
+    on Node C — each step one pinned mesh delegation through the
+    existing task queue.
+
+    The coordinator stays authoritative (capability validation,
+    target validation, leases, retries, task state, provenance);
+    nodes stay pull-based. Steps dispatch in order; a failed step
+    stops the workflow and rolls back nothing already queued
+    (queued tasks keep their own lease/claim lifecycle and stay
+    visible — never silently dropped). Max 6 steps, no
+    wildcards, no shell, no secret forwarding (same closed
+    contracts as /mesh/delegate)."""
+    from .nodemesh import validate_delegation
+    from .routing import check_requirements
+    _mesh_authenticate(body.requesting_node, body.node_token)
+    if not isinstance(body.steps, list) or not body.steps:
+        raise HTTPException(status_code=422,
+                            detail="workflow needs at least one step")
+    if len(body.steps) > 6:
+        raise HTTPException(status_code=422,
+                            detail="workflow has at most 6 steps")
+    mission_id = str(body.mission_id or "").strip()[:80]
+    receipts: list = []
+    created_ids: list = []
+    for index, raw in enumerate(body.steps):
+        if not isinstance(raw, dict):
+            raise HTTPException(
+                status_code=422,
+                detail=f"step {index} must be an object")
+        task_kind = str(raw.get("task_kind", ""))
+        capability = str(raw.get("capability", ""))
+        target = str(raw.get("target_node", ""))
+        if not target:
+            raise HTTPException(
+                status_code=422,
+                detail=f"step {index} pins an explicit target_node")
+        try:
+            timeout = int(raw.get("timeout_seconds", 60))
+        except (TypeError, ValueError):
+            raise HTTPException(
+                status_code=422,
+                detail=f"step {index} timeout must be an integer")
+        reason = str(raw.get("reason", ""))[:2000]
+        try:
+            priority = int(raw.get("priority", 0))
+        except (TypeError, ValueError):
+            raise HTTPException(
+                status_code=422,
+                detail=f"step {index} priority must be an integer")
+        if priority < -10 or priority > 10:
+            raise HTTPException(
+                status_code=422,
+                detail=f"step {index} priority is -10..10")
+        try:
+            checked = validate_delegation(
+                body.requesting_node, task_kind, capability,
+                raw.get("payload") if isinstance(
+                    raw.get("payload"), dict) else {},
+                target_node=target, timeout_seconds=timeout,
+                reason=reason)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=
+                                f"step {index} refused: {exc}")
+        try:
+            requirements = check_requirements(
+                {"required_capabilities": [checked["capability"]]})
+            decision = _decision_for(0, requirements, {},
+                                     only_node=checked["target_node"])
+        except (HTTPException, ValueError) as exc:
+            raise HTTPException(
+                status_code=409,
+                detail=f"step {index} target not currently "
+                       f"eligible; workflow stopped ({exc})")
+        if decision.selected_node_id != checked["target_node"]:
+            raise HTTPException(
+                status_code=409,
+                detail=f"step {index} target not currently "
+                       "eligible; workflow stopped")
+        created = create_task(TaskCreate(
+            kind=checked["task_kind"],
+            payload=dict(checked["payload"]),
+            required_capabilities=[checked["capability"]],
+            priority=priority,
+            requirements={"required_capabilities":
+                          [checked["capability"]]}))
+        task_id = int(created["id"])
+        try:
+            assign_task(task_id, TaskAssignBody(
+                node_id=checked["target_node"], policy={}))
+        except HTTPException as exc:
+            with connection() as db:
+                db.execute("DELETE FROM tasks WHERE id=? AND "
+                           "status='queued'", (task_id,))
+            raise HTTPException(
+                status_code=409,
+                detail=f"step {index} target refused at assign; "
+                       f"workflow stopped ({exc.detail})")
+        created_ids.append(task_id)
+        receipts.append({"step": index,
+                         **_mesh_receipt(task_id, checked)})
+    try:
+        from .events import new_event as _bus_new, \
+            save_event as _bus_save
+        _bus_save(_bus_new(
+            "workflow.dispatched",
+            f"Workflow from {body.requesting_node}: "
+            f"{len(receipts)} step(s)"
+            + (f" for mission {mission_id}" if mission_id else ""),
+            mission_id=mission_id,
+            node_id=body.requesting_node,
+            payload={"steps": len(receipts),
+                     "task_ids": [str(task_id)
+                                  for task_id in created_ids][:6]}))
+    except Exception:
+        pass
+    logger.info("workflow_dispatched from=%s steps=%s tasks=%s",
+                body.requesting_node, len(receipts), created_ids)
+    return {"mission_id": mission_id,
+            "requesting_node": body.requesting_node,
+            "task_ids": created_ids, "receipts": receipts,
+            "steps_dispatched": len(receipts)}
+
+
+@app.post("/api/v1/workflows/preview")
+def api_workflow_preview(body: WorkflowDispatchBody) -> dict:
+    """Dry-run a workflow: validate every step, create nothing."""
+    from .nodemesh import validate_delegation
+    _mesh_authenticate(body.requesting_node, body.node_token)
+    if not isinstance(body.steps, list) or not body.steps:
+        raise HTTPException(status_code=422,
+                            detail="workflow needs at least one step")
+    if len(body.steps) > 6:
+        raise HTTPException(status_code=422,
+                            detail="workflow has at most 6 steps")
+    checked_steps: list = []
+    for index, raw in enumerate(body.steps):
+        if not isinstance(raw, dict):
+            raise HTTPException(
+                status_code=422,
+                detail=f"step {index} must be an object")
+        try:
+            checked = validate_delegation(
+                body.requesting_node,
+                str(raw.get("task_kind", "")),
+                str(raw.get("capability", "")),
+                raw.get("payload") if isinstance(
+                    raw.get("payload"), dict) else {},
+                target_node=str(raw.get("target_node", "")) or None,
+                timeout_seconds=int(raw.get("timeout_seconds", 60)),
+                reason=str(raw.get("reason", ""))[:2000])
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=
+                                f"step {index} refused: {exc}")
+        if not checked.get("target_node"):
+            raise HTTPException(
+                status_code=422,
+                detail=f"step {index} pins an explicit target_node")
+        checked_steps.append({"step": index, **checked})
+    return {"valid": True, "steps": checked_steps, "created": False}
+
+
+@app.get("/hardware", response_class=HTMLResponse)
+def hardware_page(node_id: str = "") -> str:
+    """Human hardware links: proposed → verified (operator) →
+    revoked. VERIFIED never derives automatically."""
+    from . import ui as _ui
+    from .hardware_links import list_links
+    try:
+        links = list_links(
+            node_id=node_id.strip()[:80] if node_id else "",
+            limit=100)
+    except Exception:
+        links = []
+    rows = []
+    for link in links:
+        data = link.model_dump(mode="json")
+        rows.append(
+            f"<div class=\"panel\"><h3>{_ui.esc(data['link_id'])} "
+            f"[{_ui.esc(data['status'])}]</h3>"
+            f"<p>Node <a href=\"/nodes\">{_ui.esc(data['node_id'])}</a> · "
+            f"device {_ui.esc(data['device_ref'])} "
+            f"({_ui.esc(data['device_kind'] or 'unknown kind')})</p>"
+            f"<p class=\"muted\">proposed by "
+            f"{_ui.esc(data['human_ref'])}"
+            + (f" · verified by {_ui.esc(data['verified_by'])}"
+               if data["verified_by"] else "")
+            + (f" · evidence: {_ui.esc(data['evidence'][:160])}"
+               if data["evidence"] else "")
+            + "</p></div>")
+    main = (f"<h1>Hardware verification 🔗</h1>"
+            f"<p class=\"muted\">ADVERTISED (node said so) → "
+            f"OBSERVED (connected + fresh) → VERIFIED (human link "
+            f"only). Propose below; verification needs the operator "
+            f"key and never happens automatically.</p>"
+            + ("".join(rows) if rows else
+               "<p class=\"muted\">No links yet. Propose the first "
+               "one via POST /api/v1/hardware/links.</p>")
+            + "<p><a href=\"/nodes\">Nodes</a> · "
+            "<a href=\"/guide\">Guide</a></p>")
+    return _ui.shell("Hardware verification", "/hardware", main,
+                     "", _ui.living_bg())
+
+
+@app.get("/finance", response_class=HTMLResponse)
+def finance_page(project_ref: str = "") -> str:
+    """Finance records: counts + statuses. Amounts render only
+    from this scoped page, never from generic telemetry."""
+    from . import ui as _ui
+    from .finance import list_records, summarize
+    try:
+        records = list_records(
+            project_ref=project_ref.strip()[:120]
+            if project_ref else "", limit=100)
+        summary = summarize(
+            project_ref=project_ref.strip()[:120]
+            if project_ref else "")
+    except Exception:
+        records = []
+        summary = {"total": 0, "by_kind": {},
+                   "unknown_amounts": 0}
+    rows = []
+    for record in records:
+        data = record.model_dump(mode="json")
+        amount = ("UNKNOWN" if data["amount_minor"] is None
+                  else f"{data['amount_minor']} "
+                       f"{_ui.esc(data['currency'])}")
+        rows.append(
+            f"<div class=\"panel\"><h3>{_ui.esc(data['title'])} "
+            f"[{_ui.esc(data['kind'])} · {_ui.esc(data['status'])}]"
+            f"</h3><p>{amount}"
+            + (f" · project {_ui.esc(data['project_ref'])}"
+               if data["project_ref"] else "")
+            + "</p></div>")
+    main = (f"<h1>Finance 💰</h1>"
+            f"<p class=\"muted\">{summary['total']} records "
+            f"({summary.get('unknown_amounts', 0)} unknown amounts). "
+            f"Minimal records — not accounting software.</p>"
+            + ("".join(rows) if rows else
+               "<p class=\"muted\">No finance records yet.</p>")
+            + "<p><a href=\"/symbiosis\">Symbiosis</a> · "
+            "<a href=\"/guide\">Guide</a></p>")
+    return _ui.shell("Finance", "/finance", main, "",
+                     _ui.living_bg())
+
+
+@app.get("/energy", response_class=HTMLResponse)
+def energy_page(project_ref: str = "") -> str:
+    """Energy records + current state. Unknown values stay
+    UNKNOWN — never invented."""
+    from . import ui as _ui
+    from .energy import current_state, list_records
+    ref = project_ref.strip()[:120] if project_ref else ""
+    try:
+        records = list_records(project_ref=ref, limit=100)
+        state = current_state(project_ref=ref)
+    except Exception:
+        records = []
+        state = {"states": [], "state": "UNKNOWN", "count": 0}
+    rows = []
+    for record in records:
+        data = record.model_dump(mode="json")
+        value = ("UNKNOWN" if data["value"] is None
+                 else f"{data['value']} {_ui.esc(data['unit'])}")
+        rows.append(
+            f"<div class=\"panel\"><h3>"
+            f"{_ui.esc(data['source'])}/{_ui.esc(data['kind'])}"
+            f"</h3><p>{value}"
+            + (f" · project {_ui.esc(data['project_ref'])}"
+               if data["project_ref"] else "")
+            + "</p></div>")
+    main = (f"<h1>Energy ⚡</h1>"
+            f"<p class=\"muted\">Current state: "
+            f"{_ui.esc(str(state.get('state', 'UNKNOWN')))} "
+            f"({state.get('count', 0)} state records). "
+            f"Unknown stays unknown.</p>"
+            + ("".join(rows) if rows else
+               "<p class=\"muted\">No energy records yet.</p>")
+            + "<p><a href=\"/symbiosis\">Symbiosis</a> · "
+            "<a href=\"/guide\">Guide</a></p>")
+    return _ui.shell("Energy", "/energy", main, "",
+                     _ui.living_bg())
+
+
+@app.get("/quests", response_class=HTMLResponse)
+def quests_page() -> str:
+    """Quest trails: real progress (done/total) over real records.
+    Clicking a step opens the underlying entity/task/mission."""
+    from . import ui as _ui
+    from .quests import list_quest_details
+    try:
+        quests = list_quest_details(limit=30)
+    except Exception:
+        quests = []
+    cards = []
+    for quest in quests:
+        steps = []
+        for step in quest.get("steps", []):
+            steps.append(
+                f"<li>{_ui.esc(step.get('glyph', '○'))} "
+                f"<a href=\"{_ui.esc(step.get('href', '/quests'))}\">"
+                f"{_ui.esc(step.get('label', ''))}</a> "
+                f"<span class=\"muted\">"
+                f"{_ui.esc(step.get('detail', ''))} · "
+                f"{_ui.esc(step.get('readiness', ''))}: "
+                f"{_ui.esc(step.get('readiness_reason', ''))}"
+                f"</span></li>")
+        cards.append(
+            f"<div class=\"panel\"><h3>"
+            f"{_ui.esc(quest.get('title', ''))} "
+            f"[{_ui.esc(quest.get('state', ''))}] "
+            f"{quest.get('done', 0)}/{quest.get('total', 0)}"
+            f"</h3><ul>{''.join(steps)}</ul>"
+            f"<p><a href=\"/api/v1/quests/{_ui.esc(quest.get('quest_id', ''))}\">"
+            f"quest JSON</a></p></div>")
+    main = (f"<h1>Quest trails 🌱</h1>"
+            f"<p class=\"muted\">Real work, real progress — no XP. "
+            f"Every step links to its underlying record.</p>"
+            + ("".join(cards) if cards else
+               "<p class=\"muted\">No quests yet. Create one via "
+               "POST /api/v1/quests.</p>")
+            + "<p><a href=\"/missions\">Missions</a> · "
+            "<a href=\"/guide\">Guide</a> · "
+            "<a href=\"/world\">World</a></p>")
+    return _ui.shell("Quest trails", "/quests", main, "",
+                     _ui.living_bg())

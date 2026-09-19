@@ -1,6 +1,6 @@
 # NEXT-AI-CONTEXT — continue Mycelium development here
 
-Date: 2026-09-19. HEAD: `BIG #41 - build Mycelium V2 foundation`
+Date: 2026-09-20. HEAD: `BIG #42 - ecosystem hardening + first V2 workflows`
 (main, pushed to origin/main). Start with `git log --oneline -5`
 and `git status` (a pre-existing `Mycelium/agent/agent_ui.py`
 modification is NOT ours — leave it; `scripts/b38_screenshots.py`
@@ -15,77 +15,94 @@ loopback bridge (`inventory_read.py`), written only via gated
 proposals (`inventory_writes.py` + exact YES + verification);
 Ollama/external models are advisors (never authority); desktop
 agent is the only hands (pull-only, outbound). V2
-(`docs/v2-ecosystem.md`, BIG #41) unifies BIG #1–40 systems:
-mesh delegation pins targets through the existing task queue
-(validate → auth → precheck → create → assign → rollback;
-target must still claim); routing explains verdicts
-(waiting/blocked/unavailable) + workload ordering; node
-reality exposes trust (ADVERTISED/OBSERVED, VERIFIED reserved
-for human links) + current task; presence/attention derives
-live (only SEEN/DEFERRED stored); priority is deterministic
-rules (never an LLM). Provenance always; health scoped; no
-shell/RCE; no background threads (explicit triggers only).
-Tests: `pytest -v` per project with tmp DB env vars
-(`MYCELIUM_DATABASE_PATH`, `MYCELIUM_CHAT_DATABASE_PATH`
-before TestClient; `MYCELIUM_FABRICATION_DIR` for fab tests).
-Testing discipline: targeted tests during dev, module tests
-for changed areas, smoke for the BIG, FULL Mycelium suite
-ONCE + FULL INVENTory suite ONCE near the end, bounded
-batches (single run exceeds 10-min timeout). Counts: 1380
-Mycelium green; INVENTory 179 + 1 pre-existing byte-size
-failure (do not touch that test).
+(`docs/v2-ecosystem.md`, BIG #41) unifies BIG #1–40 systems;
+BIG #42 hardens it: human hardware links unlock VERIFIED
+(operator key only, revoke sticks, selfie-verification
+impossible), finance/energy stores make money and power
+first-class entities (UNKNOWN stays unknown, finance amounts
+scoped to project packets), quest trails derive done/total
+from live records with hardware-aware readiness, bounded mesh
+workflows (max 6 pinned delegations) chain research/camera/
+compute across nodes through the existing task queue. Provenance
+always; health scoped; no shell/RCE; no background threads
+(explicit triggers only). Tests: `pytest -v` per project with
+tmp DB env vars (`MYCELIUM_DATABASE_PATH`,
+`MYCELIUM_CHAT_DATABASE_PATH` before TestClient;
+`MYCELIUM_FABRICATION_DIR` for fab tests; `MYCELIUM_OPERATOR_KEY`
+for hardware verify tests). Testing discipline: targeted tests
+during dev, module tests for changed areas, smoke for the BIG,
+FULL Mycelium suite ONCE + FULL INVENTory suite ONCE near the
+end, bounded batches (single run exceeds 10-min timeout;
+camera device enumeration may log access-violation noise on
+Windows — pre-existing, unrelated). Counts: 1354 passed across
+4 bounded batches (107 files) + missions/loop/routing/templates
+green in the touched-module run — every file green at least
+once, 22 new in test_big42_ecosystem.py; INVENTory 179 + 1
+pre-existing byte-size failure (do not touch that test).
 
-## What BIG #41 added (where)
+## What BIG #42 added (where)
 
-- `routing.py` — rejection verdicts, `prefer_idle`, `explain_decision`
-- `nodemesh.py` — targeted delegation (exact-cap pin, timeout,
-  clipped reason); `main.py` — `/mesh/preview`, `/mesh/delegate`
-  (auth→validate→precheck→create→assign→rollback), route `why`,
-  `current_task`, `/nodes/{id}/reality`, `/ecosystem/overview`,
-  world strip, craft states
-- `schemas.py` — `MeshDelegateBody`, `MeshPreviewBody`
-- `events.py` — additive `task.delegated` audit type
-- `worldgraph.py` — attention counts (boundary-matched)
-- `ecosystem.py` — `ecosystem_overview` (8 answers, sources)
-- `craft.py` — `stage_states` (✓/●/○/!)
-- `symbiosis.py` — V2 prefixes + closed predicates
-- `guide.py` — research unlock + blocked items (shared
-  readiness; fixed wolf-crying inline check)
-- `presence.py` — craft gaps in morning discoveries
-- `mobile.py`/`ui.py` — current-task lines, node-tempo
-  background (capped, reduced-motion safe)
-- `notify_center.py` — public `severity_for`
-- `scripts/mycelium-notify.py` — `blocked`, waiting guidance,
-  `checklist`
-- Tests: `tests/test_big41_v2.py` (24).
-- Scripts: `scripts/b41_smoke.py` (54 checks, fresh tmp DBs),
-  `scripts/b41_shots.py` + `scripts/b41_screenshots.py`.
-- Docs: `docs/v2-ecosystem.md`, `docs/BIG41-final-report.md`.
-- Lessons: candidate ACTIVE_STATES; severity bucket ≠ kind;
-  pydantic bounds fire before engine clipping (reason ≤2000,
-  engine clips to 200); smoke reruns need fresh DBs; raw
-  registry rows lack fresh/auth flags (reuse readiness);
-  cp1252 consoles need encoding-safe prints.
+- `hardware_links.py` (new) — PROPOSED→VERIFIED→REVOKED store,
+  operator-gated verify/revoke, audit events; `main.py` —
+  `/api/v1/hardware/links*` + `/hardware` page + VERIFIED
+  overlay in `/nodes/{id}/reality`
+- `finance.py` (new) — income/expense/budget, DRAFT/CONFIRMED/
+  ARCHIVED, NULL amounts; `main.py` — `/api/v1/finance/*` +
+  `/finance` page + morning FINANCE (only when data exists)
+- `energy.py` (new) — solar/battery/grid/machine/other ×
+  production/consumption/storage/state, NULL values; `main.py`
+  — `/api/v1/energy/*` + `/energy` page + morning ENERGY
+- `quests.py` (new) — quest defs + live derivation + hardware
+  readiness; `main.py` — `/api/v1/quests*` + `/quests` page +
+  morning QUESTS
+- `main.py` — `/api/v1/workflows/preview|dispatch` (bounded
+  multi-node delegation, coordinator authoritative)
+- `mission_templates.py` — `idea_to_verification` (9 steps),
+  `project_finance_energy` (5 steps), existing kinds only
+- `symbiosis.py` — `fin_/enr_/hv_/qst_` prefixes + funds/
+  funded_by/powers/powered_by/allocated_to (closed)
+- `guide.py` — hardware/finance/energy/quest kinds + WHAT/WHY/
+  NEXT ecosystem items; `presence.py` — hardware_unverified/
+  quest_blocked/finance_pending/energy_unknown types +
+  `_collect_ecosystem`; `reports.py` — hardware/quests/energy/
+  finance morning keys (additive)
+- `mobile.py` — quests/hardware/finance/energy/mesh_receipts
+  panels; `ecosystem.py` — hardware/finance/energy/quests
+  overview sections + hardware_verified per node;
+  `context_packet.py` — packet-v2 `ecosystem` block (finance
+  amounts project-scoped); world strip quest/trust/money/
+  energy line + nav links
+- `events.py` — hardware.linked/verified/revoked,
+  finance.recorded, energy.recorded, quest.created/updated,
+  workflow.dispatched (audit only)
+- Tests: `tests/test_big42_ecosystem.py` (22).
+- Scripts: `scripts/b42_smoke.py` (49 checks, fresh tmp DBs),
+  `scripts/b42_shots.py` + `scripts/b42_screenshots.py`.
+- Docs: `docs/hardware-verification.md`,
+  `docs/finance-ecosystem.md`, `docs/energy-ecosystem.md`,
+  `docs/mission-templates.md`, `docs/quest-trails.md`,
+  `docs/BIG42-final-report.md`.
+- Lessons: inline `[{...} for ...]` + slice needs TWO closing
+  brackets (`records[:n]]`); report_morning is sync — no async
+  inventory reads there (derive projects from finance/energy
+  refs); mobile dashboard SyntaxError surfaced only at request
+  time (import mobile in tests!); template-count pins need
+  updating when the BIG explicitly adds templates (safety
+  iterator tests cover the new ones automatically).
 
 ## Docs to read first
 
 `docs/ARCHITECTURE_STATUS.md` (truth),
 `docs/v2-ecosystem.md` (V2 contracts), `docs/ROADMAP.md` +
-`docs/ROADMAP-V2.md` (BIG #42), `docs/presence-ecosystem.md`,
-`docs/hardware-reality-layer.md`, `docs/living-automation.md`,
-`docs/automation-security.md`,
-`docs/conversation-intelligence.md`, `docs/mobile-mycelium.md`,
-`docs/3d-workshop.md`, `docs/camera-ecosystem.md`,
-`docs/living-ecosystem.md`, `docs/knowledge-lifecycle.md`,
-`docs/research-routing.md`, `docs/context-packets.md`,
-`docs/mycelium-ui-personality.md`, `docs/BIG41-final-report.md`
-(§2 = commit/push record).
+`docs/ROADMAP-V2.md` (BIG #43), `docs/hardware-verification.md`,
+`docs/finance-ecosystem.md`, `docs/energy-ecosystem.md`,
+`docs/mission-templates.md`, `docs/quest-trails.md`,
+`docs/presence-ecosystem.md`, `docs/hardware-reality-layer.md`,
+`docs/context-packets.md`, `docs/mobile-mycelium.md`,
+`docs/BIG42-final-report.md` (§21 = commit/push record).
 
-## Next BIG (from BIG41 report §23 / ROADMAP-V2)
+## Next BIG (from BIG42 report §23 / ROADMAP-V2)
 
-BIG #42: Ecosystem hardening + first V2 workflows — human
-link store for hardware verification (unlock VERIFIED),
-finance/energy entity stores (complete the symbiosis map),
-mission templates chaining mesh delegation into craft chains,
-unified quest trails. Screenshots in `docs/r42-shots/`, one
-commit `BIG #42 - ...`, push to `origin/main`.
+BIG #43: game layer on the hardened ecosystem — quests become
+campaigns, symbiosis becomes progression, presence becomes
+stakes. Keep every new power behind the existing gates.

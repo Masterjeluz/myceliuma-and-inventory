@@ -22,6 +22,9 @@ GUIDE_KINDS = (
     "approval", "candidate", "conversation", "research",
     "camera", "fabrication", "node", "project", "mission",
     "workshop",
+    # BIG #42 ecosystem workflows: hardware verification,
+    # finance/energy links, quest trails.
+    "hardware", "finance", "energy", "quest",
 )
 
 
@@ -56,6 +59,17 @@ AFTER_TEXT = {
               "steps stop for YES again.",
     "workshop": "Linking material and project starts a real "
                "craft chain you can verify step by step.",
+    "hardware": "Verifying names a human, a device and evidence; "
+                "only the operator key completes it. Revoking "
+                "returns the claim to ADVERTISED.",
+    "finance": "Confirming keeps the figure as stated; unknown "
+               "amounts stay UNKNOWN. Finance never enters "
+               "generic telemetry.",
+    "energy": "Recording a reading stores exactly what was "
+              "observed; unknown stays UNKNOWN and can still "
+              "block routing honestly.",
+    "quest": "Opening the quest shows each step's live record; "
+             "progress is done/total over real work, never XP.",
 }
 
 
@@ -547,6 +561,118 @@ def guide_items(limit: int = 12) -> list[dict]:
                     "beyond the plan.",
                     "Review run", f"/automation/{run.run_id}"))
             if len(items) >= 20:
+                break
+    except Exception:
+        pass
+    # BIG #42 ecosystem workflows: every suggestion explains
+    # WHAT / WHY / NEXT / unlock path, derived from live stores.
+    try:
+        from . import main as _main42
+        nodes = _main42.list_nodes()
+        try:
+            from .hardware_links import list_links as _hw_links
+            verified_refs: set = set()
+            for _link in _hw_links(status="VERIFIED", limit=200):
+                verified_refs.add(
+                    (_link.node_id, _link.device_ref))
+        except Exception:
+            verified_refs = set()
+        for node in nodes:
+            node_id = str(node.get("node_id", ""))
+            for hw in (node.get("hardware", []) or []):
+                if not isinstance(hw, dict):
+                    continue
+                ident = str(hw.get("identifier", ""))
+                kind = str(hw.get("kind", ""))
+                if not ident:
+                    continue
+                if (node_id, ident) in verified_refs:
+                    continue
+                if kind.lower() in ("gpu", "camera", "printer_3d",
+                                    "tpu") or str(
+                        hw.get("status", "")).lower() == \
+                        "connected":
+                    items.append(_item(
+                        "hardware", "🔗",
+                        f"{node_id} advertises {kind or 'hardware'} "
+                        f"'{ident[:40]}' — not human-verified.",
+                        "Advertised is not a fact. A human link "
+                        "with evidence promotes it to VERIFIED; "
+                        "nothing else can.",
+                        "Verify hardware", "/hardware"))
+                    break
+            if len(items) >= 20:
+                break
+    except Exception:
+        pass
+    try:
+        from .energy import list_records as _energy_list
+        from .finance import list_records as _finance_list
+        finance_records = _finance_list(limit=200)
+        energy_records = _energy_list(limit=200)
+        finance_projects = {record.project_ref for record in
+                            finance_records if record.project_ref}
+        energy_projects = {record.project_ref for record in
+                           energy_records if record.project_ref}
+        lonely = sorted(project for project in finance_projects
+                        if project not in energy_projects)[:3]
+        for project in lonely:
+            items.append(_item(
+                "energy", "⚡",
+                f"Project '{project[:60]}' has a finance record "
+                "but no energy source.",
+                "Money without power is a plan without a plug. "
+                "Record the source (or UNKNOWN) to unblock "
+                "energy-aware routing.",
+                "Open energy", "/energy"))
+        try:
+            from .symbiosis import proposed as _sym_proposed
+            waiting_links = [prop for prop in _sym_proposed(limit=60)
+                             if any(str(entity).startswith(
+                                 ("enr_", "fin_"))
+                                 for entity in
+                                 prop.get("entities", []))]
+        except Exception:
+            waiting_links = []
+        if waiting_links:
+            first = waiting_links[0]
+            items.append(_item(
+                "finance", "🤝",
+                "An energy/finance relationship waits for "
+                "confirmation.",
+                f"{first.get('title', 'link')[:120]} links "
+                f"{', '.join(first.get('entities', [])[:2])}. "
+                "Confirm it in symbiosis review.",
+                "Review symbiosis", "/symbiosis"))
+    except Exception:
+        pass
+    try:
+        from .presence import research_readiness as _readiness42
+        readiness = _readiness42()
+        eligible = readiness.get("eligible", []) or []
+        if eligible:
+            items.append(_item(
+                "research", "🔓",
+                f"Research can run on {eligible[0]}: online with "
+                "the required capability.",
+                str(readiness.get("text", ""))[:200],
+                "Queue research", "/research"))
+    except Exception:
+        pass
+    try:
+        from .quests import list_quest_details as _quest_list42
+        for quest in _quest_list42(limit=20):
+            if quest.get("state") in ("BLOCKED", "FAILED"):
+                items.append(_item(
+                    "quest", "🧭",
+                    f"Quest '{quest.get('title', '')[:70]}' is "
+                    f"{quest.get('state', '')} at "
+                    f"{quest.get('done', 0)}/"
+                    f"{quest.get('total', 0)}.",
+                    "A step's underlying record failed or is "
+                    "blocked — open the quest to see which one "
+                    "and unlock it there.",
+                    "Open quest", "/quests"))
                 break
     except Exception:
         pass

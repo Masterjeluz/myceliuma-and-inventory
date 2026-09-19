@@ -119,6 +119,84 @@ TEMPLATES = [
                                        "research.fetch"]},
         ],
     },
+    {
+        "template_id": "idea_to_verification",
+        "title": "Idee tot verificatie (V2 keten)",
+        "description": "V2 quest-keten: idee → research → kandidaat "
+                       "→ steun → project → materiaal → node → "
+                       "fabricage → camera-observatie → verificatie. "
+                       "Elke gevolgstap behoudt zijn eigen gate; "
+                       "fabricage en observatie starten pas na "
+                       "expliciete missie-approval.",
+        "max_steps": 10,
+        "required_capabilities": [],
+        "steps": [
+            {"kind": "readout",
+             "description": "Lees idee-context voor {goal}",
+             "parameters": {"source": "inventory", "q": "{goal}"}},
+            {"kind": "research",
+             "description": "Onderzoek: {goal}",
+             "parameters": {"question": "{goal}",
+                            "max_sources": "6"},
+             "required_capabilities": ["research.search",
+                                       "research.fetch"]},
+            {"kind": "analysis",
+             "description": "Beoordeel kandidaat-aanpak voor {goal}",
+             "parameters": {}},
+            {"kind": "proposal",
+             "description": "Stel project-voorstel op: {goal}",
+             "parameters": {"proposal": "{goal}"}},
+            {"kind": "readout",
+             "description": "Controleer materiaal-beschikbaarheid "
+                            "voor {goal}",
+             "parameters": {"source": "inventory", "q": "{goal}"}},
+            {"kind": "analysis",
+             "description": "Kies uitvoerende node voor {goal}",
+             "parameters": {}},
+            {"kind": "fabricate",
+             "description": "Fabriceer na approval: {goal}",
+             "parameters": {}},
+            {"kind": "camera_observe",
+             "description": "Observeer resultaat met camera: {goal}",
+             "parameters": {}},
+            {"kind": "analysis",
+             "description": "Verifieer observatie tegen {goal}",
+             "parameters": {}},
+        ],
+    },
+    {
+        "template_id": "project_finance_energy",
+        "title": "Project met finance + energie (V2)",
+        "description": "PROJECT → FINANCE → ENERGY → RESEARCH → "
+                       "ACTIE. Koppelt een project aan zijn "
+                       "finance- en energy-records, onderzoekt wat "
+                       "ontbreekt en eindigt met een VOORSTEL. Geen "
+                       "automatische boekingen of metingen.",
+        "max_steps": 5,
+        "required_capabilities": [],
+        "steps": [
+            {"kind": "readout",
+             "description": "Lees projectcontext: {goal}",
+             "parameters": {"source": "project"}},
+            {"kind": "analysis",
+             "description": "Beoordeel finance-status van {goal} "
+                            "(records, budget, onbekend=ONBEKEND)",
+             "parameters": {}},
+            {"kind": "analysis",
+             "description": "Beoordeel energy-status van {goal} "
+                            "(bron, opslag, onbekend=ONBEKEND)",
+             "parameters": {}},
+            {"kind": "research",
+             "description": "Onderzoek ontbrekende schakel: {goal}",
+             "parameters": {"question": "{goal}",
+                            "max_sources": "4"},
+             "required_capabilities": ["research.search",
+                                       "research.fetch"]},
+            {"kind": "proposal",
+             "description": "Stel volgende actie voor: {goal}",
+             "parameters": {"proposal": "{goal}"}},
+        ],
+    },
 ]
 
 

@@ -72,6 +72,10 @@ ITEM_TYPES = frozenset({
     "research_waiting", "candidate_new", "contradiction",
     "observation_inbox", "discovery", "symbiosis_proposed",
     "craft_gap", "task_failed",
+    # BIG #42 ecosystem hardening: unverified hardware,
+    # blocked quest trails, pending finance, unknown energy.
+    "hardware_unverified", "quest_blocked", "finance_pending",
+    "energy_unknown",
 })
 
 TYPE_BAND = {
@@ -100,6 +104,10 @@ TYPE_BAND = {
     "symbiosis_proposed": "discovered",
     "craft_gap": "waiting",
     "task_failed": "needs",
+    "hardware_unverified": "waiting",
+    "quest_blocked": "needs",
+    "finance_pending": "waiting",
+    "energy_unknown": "waiting",
 }
 
 #: Deterministic base scores. Higher = more urgent.
@@ -129,6 +137,10 @@ BASE_SCORE = {
     "symbiosis_proposed": 25,
     "hardware_available": 20,
     "capability_available": 20,
+    "hardware_unverified": 48,
+    "finance_pending": 40,
+    "energy_unknown": 40,
+    "quest_blocked": 88,
 }
 
 BASE_WHY = {
@@ -157,6 +169,10 @@ BASE_WHY = {
     "symbiosis_proposed": "symbiosis proposed",
     "hardware_available": "hardware available",
     "capability_available": "capability available",
+    "hardware_unverified": "hardware advertised but not verified",
+    "finance_pending": "finance record waits for confirmation",
+    "energy_unknown": "energy state unknown",
+    "quest_blocked": "quest trail blocked",
 }
 
 MAX_ITEMS = 120
@@ -936,6 +952,117 @@ def _collect_craft(items: list) -> None:
             continue
 
 
+def _collect_ecosystem(items: list) -> None:
+    """BIG #42 ecosystem hardening: unverified hardware, blocked
+    quests, pending finance, unknown energy. All best-effort,
+    all link to their real record."""
+    try:
+        from . import main as _main
+        nodes = _main.list_nodes()
+    except Exception:
+        nodes = []
+    try:
+        from .hardware_links import list_links as _hw_links
+        verified_refs = {(link.node_id, link.device_ref)
+                         for link in _hw_links(status="VERIFIED",
+                                                limit=200)}
+        proposed_count = len(_hw_links(status="PROPOSED",
+                                       limit=200))
+    except Exception:
+        verified_refs = set()
+        proposed_count = 0
+    unverified = []
+    for node in nodes:
+        node_id = str(node.get("node_id", ""))
+        for hw in (node.get("hardware", []) or []):
+            if not isinstance(hw, dict):
+                continue
+            ident = str(hw.get("identifier", ""))
+            if ident and (node_id, ident) not in verified_refs:
+                unverified.append((node_id, ident,
+                                   str(hw.get("kind", ""))))
+    for node_id, ident, kind in unverified[:3]:
+        items.append(_item(
+            f"att_hardware_unverified_{node_id}_{ident}"[:150],
+            "hardware_unverified",
+            f"{node_id} advertises {kind or 'hardware'} "
+            f"'{ident[:40]}' — not human-verified.",
+            "Advertised is not a fact; only a human link "
+            "verifies it.",
+            "node registry",
+            action=_open_defer("/hardware"),
+            open_href="/hardware",
+            created_at=node.get("last_seen", "") if isinstance(
+                node, dict) else "",
+            updated_at=""))
+    if proposed_count and not unverified:
+        items.append(_item(
+            "att_hardware_unverified_proposed",
+            "hardware_unverified",
+            f"{proposed_count} hardware link(s) wait for "
+            "operator verification.",
+            "Proposed links verify nothing until a human with "
+            "the operator key confirms them.",
+            "hardware links",
+            action=_open_defer("/hardware"),
+            open_href="/hardware"))
+    try:
+        from .quests import list_quest_details as _quests
+        for quest in _quests(limit=20):
+            if quest.get("state") in ("BLOCKED", "FAILED"):
+                items.append(_item(
+                    f"att_quest_blocked_{quest.get('quest_id', '')}"
+                    [:150],
+                    "quest_blocked",
+                    f"Quest '{quest.get('title', '')[:70]}' is "
+                    f"{quest.get('state', '')} at "
+                    f"{quest.get('done', 0)}/"
+                    f"{quest.get('total', 0)}.",
+                    "A step's underlying record failed or is "
+                    "blocked.",
+                    "quest trails",
+                    action=_open_defer("/quests"),
+                    open_href="/quests"))
+                break
+    except Exception:
+        pass
+    try:
+        from .finance import list_records as _finance
+        drafts = [record for record in _finance(limit=100)
+                  if record.status == "DRAFT"][:3]
+        for record in drafts:
+            items.append(_item(
+                f"att_finance_pending_{record.record_id}"[:150],
+                "finance_pending",
+                f"Finance {record.kind} '{record.title[:60]}' "
+                "waits for confirmation.",
+                "Draft figures confirm nothing until reviewed.",
+                "finance records",
+                action=_open_defer("/finance"),
+                open_href="/finance"))
+            break
+    except Exception:
+        pass
+    try:
+        from .energy import list_records as _energy
+        unknowns = [record for record in _energy(limit=100)
+                    if record.value is None][:2]
+        for record in unknowns:
+            items.append(_item(
+                f"att_energy_unknown_{record.record_id}"[:150],
+                "energy_unknown",
+                f"Energy {record.source}/{record.kind} has no "
+                "measurement (UNKNOWN).",
+                "Unknown energy honestly blocks energy-aware "
+                "decisions until observed.",
+                "energy records",
+                action=_open_defer("/energy"),
+                open_href="/energy"))
+            break
+    except Exception:
+        pass
+
+
 def _collect_failures(items: list) -> None:
     """Failed tasks/missions from the last 24h bus (honest,
     bounded, no new queries)."""
@@ -1114,7 +1241,8 @@ def attention_items(limit: int = MAX_ITEMS) -> list[dict]:
                       _collect_fabrication, _collect_research,
                       _collect_knowledge, _collect_intel,
                       _collect_camera, _collect_symbiosis,
-                      _collect_craft, _collect_failures):
+                      _collect_craft, _collect_failures,
+                      _collect_ecosystem):
         try:
             collector(items)
         except Exception:

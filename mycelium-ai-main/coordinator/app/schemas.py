@@ -131,6 +131,93 @@ class MeshPreviewBody(BaseModel):
     reason: str = Field(default="", max_length=2000)
 
 
+class HardwareLinkBody(BaseModel):
+    """Propose a human hardware link (BIG #42). Anyone may
+    propose; the row always starts as PROPOSED. Verification
+    is a separate operator-key call."""
+
+    human_ref: str = Field(min_length=1, max_length=120)
+    node_id: str = Field(min_length=1, max_length=80)
+    device_ref: str = Field(min_length=1, max_length=120)
+    device_kind: str = Field(default="", max_length=60)
+    capability: str = Field(default="", max_length=120)
+    evidence: str = Field(default="", max_length=2000)
+
+
+class HardwareVerifyBody(BaseModel):
+    """Verify a PROPOSED link (BIG #42). Operator key required:
+    a node token can never verify, so devices cannot
+    self-verify."""
+
+    verified_by: str = Field(min_length=1, max_length=120)
+    operator_key: str = Field(default="", max_length=256)
+
+
+class HardwareRevokeBody(BaseModel):
+    """Revoke a link (BIG #42). Operator key required; REVOKED
+    sticks and never counts as verified."""
+
+    revoked_by: str = Field(min_length=1, max_length=120)
+    reason: str = Field(default="", max_length=500)
+    operator_key: str = Field(default="", max_length=256)
+
+
+class FinanceRecordBody(BaseModel):
+    """Create a finance record (BIG #42). Explicit figures only;
+    omit amount_minor to keep the amount UNKNOWN."""
+
+    kind: str = Field(min_length=1, max_length=16)
+    title: str = Field(min_length=1, max_length=200)
+    amount_minor: int | None = Field(default=None)
+    currency: str = Field(default="EUR", max_length=3)
+    project_ref: str = Field(default="", max_length=120)
+    note: str = Field(default="", max_length=1000)
+    recorded_by: str = Field(default="operator", max_length=120)
+
+
+class FinanceStatusBody(BaseModel):
+    """Move a finance record between DRAFT/CONFIRMED/ARCHIVED."""
+
+    status: str = Field(min_length=1, max_length=16)
+
+
+class EnergyRecordBody(BaseModel):
+    """Record one energy observation (BIG #42). Omit value to
+    keep the measurement UNKNOWN — never invented."""
+
+    source: str = Field(min_length=1, max_length=16)
+    kind: str = Field(min_length=1, max_length=16)
+    value: float | None = Field(default=None)
+    unit: str = Field(default="", max_length=24)
+    project_ref: str = Field(default="", max_length=120)
+    device_ref: str = Field(default="", max_length=120)
+    note: str = Field(default="", max_length=1000)
+    recorded_by: str = Field(default="operator", max_length=120)
+
+
+class QuestCreateBody(BaseModel):
+    """Define a quest trail (BIG #42). Steps reference real
+    records only; all state derives on read."""
+
+    title: str = Field(min_length=1, max_length=200)
+    steps: list[dict[str, Any]] = Field(default_factory=list,
+                                        max_length=24)
+
+
+class WorkflowDispatchBody(BaseModel):
+    """Dispatch a bounded multi-node workflow (BIG #42). Each
+    step is one pinned mesh delegation through the existing
+    task queue; the coordinator stays authoritative, nodes
+    stay pull-based."""
+
+    requesting_node: str = Field(min_length=1, max_length=80)
+    node_token: str | None = Field(default=None, min_length=8,
+                                   max_length=256)
+    mission_id: str = Field(default="", max_length=80)
+    steps: list[dict[str, Any]] = Field(default_factory=list,
+                                        max_length=6)
+
+
 class TaskCreate(BaseModel):
     kind: str = Field(min_length=2, max_length=80, pattern=r"^[a-zA-Z0-9._-]+$")
     payload: dict[str, Any] = Field(default_factory=dict)

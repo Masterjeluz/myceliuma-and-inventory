@@ -78,6 +78,17 @@ VALID_EVENT_TYPES = frozenset({
     "node.hardware_changed",
     "node.compute_changed",
     "node.telemetry_received",
+    # BIG #42 ecosystem hardening: human links, finance, energy,
+    # quests, bounded workflows. Audit facts only — none of these
+    # authorize anything.
+    "hardware.linked",
+    "hardware.verified",
+    "hardware.revoked",
+    "finance.recorded",
+    "energy.recorded",
+    "quest.created",
+    "quest.updated",
+    "workflow.dispatched",
 })
 
 VALID_SEVERITIES = frozenset({"info", "approval_required",

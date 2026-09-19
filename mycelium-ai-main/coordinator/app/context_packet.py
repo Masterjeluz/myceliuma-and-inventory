@@ -520,6 +520,8 @@ def build_packet_v2(*, task: str = "", intent: str = "",
         "research": composed["sections"].get("research", [])[:max_items],
         "knowledge": knowledge,
         "automation": _automation_section(max_items),
+        "ecosystem": _ecosystem_section(project_id,
+                                        max_items),
         "decisions": decisions,
         "unresolved_questions": unresolved[:12],
         "constraints": [
@@ -559,6 +561,98 @@ def build_packet_v2(*, task: str = "", intent: str = "",
             "OBSERVATION/CANDIDATE — never fact — until verified."),
     }
     return packet
+
+
+def _ecosystem_section(project_id: str = "",
+                     max_items: int = 8) -> dict:
+    """BIG #42 scoped ecosystem state for packet-v2 (no packet-v3).
+
+    Always: quest states, relevant symbioses, hardware trust,
+    energy state. Finance: counts always, amounts ONLY when the
+    packet's project_id matches the record's project_ref — a
+    generic packet must never leak private finance figures.
+    """
+    section: dict = {"quests": [], "symbioses": [],
+                     "hardware": [], "energy": [],
+                     "finance": {"count": 0, "records": []}}
+    count = max(1, min(int(max_items or 8), 12))
+    try:
+        from .quests import list_quest_details
+        for quest in list_quest_details(limit=count):
+            section["quests"].append({
+                "quest_id": quest.get("quest_id", ""),
+                "title": quest.get("title", "")[:120],
+                "state": quest.get("state", ""),
+                "progress": quest.get("progress", "0/0")})
+    except Exception:
+        pass
+    try:
+        from .symbiosis import proposed
+        for prop in proposed(limit=count):
+            section["symbioses"].append({
+                "title": str(prop.get("title", ""))[:120],
+                "entities": prop.get("entities", [])[:4],
+                "state": "PROPOSED"})
+    except Exception:
+        pass
+    try:
+        from . import main as _main
+        for record in _main.list_nodes():
+            if record.get("derived_status") not in ("online",
+                                                    "busy"):
+                continue
+            verified = 0
+            try:
+                from .hardware_links import verified_device_refs
+                verified = len(verified_device_refs(
+                    str(record.get("node_id", ""))))
+            except Exception:
+                verified = 0
+            section["hardware"].append({
+                "node_id": str(record.get("node_id", "")),
+                "health": str(record.get("health_status",
+                                         "UNKNOWN")),
+                "verified_hardware": verified})
+            if len(section["hardware"]) >= count:
+                break
+    except Exception:
+        pass
+    try:
+        from .energy import list_records as _energy_list
+        for record in _energy_list(
+                project_ref=str(project_id or "")[:120]
+                if project_id else "", limit=count):
+            section["energy"].append({
+                "record_id": record.record_id,
+                "source": record.source,
+                "kind": record.kind,
+                "value": ("UNKNOWN" if record.value is None
+                          else record.value),
+                "unit": record.unit})
+    except Exception:
+        pass
+    try:
+        from .finance import list_records as _finance_list
+        scoped = str(project_id or "")[:120]
+        records = _finance_list(project_ref=scoped if scoped
+                                else "", limit=200)
+        section["finance"]["count"] = len(records)
+        for record in records[:count]:
+            entry: dict = {"record_id": record.record_id,
+                           "kind": record.kind,
+                           "status": record.status,
+                           "project_ref": record.project_ref}
+            # Amounts only when the packet is scoped to the same
+            # project — never in a generic packet.
+            if scoped and record.project_ref == scoped:
+                entry["amount_minor"] = record.amount_minor
+                entry["currency"] = record.currency
+            else:
+                entry["amount_minor"] = "SCOPED"
+            section["finance"]["records"].append(entry)
+    except Exception:
+        pass
+    return section
 
 
 def render_packet_v2_markdown(packet: dict) -> str:
@@ -617,6 +711,33 @@ def render_packet_v2_markdown(packet: dict) -> str:
             f"[{item.get('state', '')}]{waiting}")
     if not packet.get("automation"):
         lines.append("- (no active automation runs)")
+    lines.append("")
+    lines.append("## ECOSYSTEM (V2)")
+    ecosystem = packet.get("ecosystem", {})
+    for quest in ecosystem.get("quests", [])[:5]:
+        lines.append(
+            f"- QUEST [{quest.get('state', '')}]: "
+            f"{quest.get('title', '')} "
+            f"({quest.get('progress', '0/0')})")
+    for link in ecosystem.get("symbioses", [])[:5]:
+        lines.append(f"- SYMBIOSIS [PROPOSED]: "
+                     f"{link.get('title', '')}")
+    for node in ecosystem.get("hardware", [])[:5]:
+        lines.append(
+            f"- HARDWARE: {node.get('node_id', '')} "
+            f"[{node.get('health', '')}] "
+            f"{node.get('verified_hardware', 0)} verified")
+    for record in ecosystem.get("energy", [])[:5]:
+        lines.append(
+            f"- ENERGY: {record.get('source', '')}/"
+            f"{record.get('kind', '')} = "
+            f"{record.get('value', 'UNKNOWN')}")
+    finance = ecosystem.get("finance", {})
+    lines.append(f"- FINANCE: {finance.get('count', 0)} "
+                 "record(s) (amounts scoped to project packets)")
+    if not ecosystem.get("quests") and not ecosystem.get(
+            "symbioses"):
+        lines.append("- (no quest/symbiosis activity)")
     lines.append("")
     lines.append("## UNRESOLVED QUESTIONS")
     lines.extend(f"- {item}" for item in packet.get(

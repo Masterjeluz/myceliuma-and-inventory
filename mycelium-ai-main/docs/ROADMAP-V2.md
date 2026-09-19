@@ -99,10 +99,27 @@ prefixes + closed predicates, guide unlocks, node-tempo
 background, notifier blocked/checklist/waiting guidance.
 24 tests + 54 smoke checks green.
 
-## BIG #42 — Ecosystem Hardening + First V2 Workflows (NEXT)
+## BIG #42 — Ecosystem Hardening + First V2 Workflows (DONE 2026-09-20)
 
-Human link store for hardware verification (unlock VERIFIED
-honestly), finance/energy entity stores (complete the
-symbiosis map), mission templates chaining mesh delegation
-into craft chains, unified quest trails with done/total.
-Keep every new power behind the existing gates.
+Shipped: human hardware-link store (PROPOSED→VERIFIED operator-
+only, revoke sticks, reality overlay, no self-verify),
+finance/energy stores (explicit records, UNKNOWN stays unknown,
+finance amounts project-scoped), symbiosis map completed
+(fin_/enr_/hv_/qst_ + funds/funded_by/powers/powered_by/
+allocated_to, still closed), two V2 mission templates chaining
+mesh delegation into craft chains, quest trails with live
+done/total + hardware-aware readiness, bounded mesh workflows
+(max 6 pinned steps, preview dry-runs), guide/world/mobile/
+morning/packet integration (morning HARDWARE/QUESTS/ENERGY/
+PROJECTS/FINANCE only when real data exists; no packet-v3).
+22 tests + 49 smoke checks green. See
+`docs/BIG42-final-report.md`.
+
+## BIG #43 — Game Layer on Hardened Ground (NEXT)
+
+Quests become campaigns, symbiosis becomes visible
+progression, presence becomes stakes — all derived from the
+BIG #42 stores (links, finance, energy, trails, workflows).
+World/morning/guide stay honest: progression names real
+records, never XP. Keep every new power behind the existing
+gates.

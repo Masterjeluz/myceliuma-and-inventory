@@ -92,9 +92,10 @@ def assemble_report(blocks: list[tuple[str, Any]]) -> Report:
 
 def morning_report(sections: dict) -> Report:
     """Morning-report template over named bounded sources.
-    Seventeen independent sections (V1 adds waiting + agenda);
-    each loads on its own, none dumps context. Unknown keys
-    refuse (no silent scope creep)."""
+    V1 adds waiting + agenda; BIG #42 adds hardware, quests,
+    energy, finance (projects already existed). Each loads on
+    its own, none dumps context. Unknown keys refuse (no
+    silent scope creep)."""
     allowed = ("today", "health", "recovery", "projects",
                "tasks", "missions", "waiting", "agenda", "skills",
                "inventory", "workshop", "research", "fabrication",
@@ -102,7 +103,8 @@ def morning_report(sections: dict) -> Report:
                "automation", "presence_needs",
                "presence_overnight", "presence_discoveries",
                "presence_resources", "presence_blocked",
-               "presence_offline", "presence_next")
+               "presence_offline", "presence_next",
+               "hardware", "quests", "energy", "finance")
     if not isinstance(sections, dict):
         raise ReportRefusedError("Morning report needs an object")
     unknown = set(sections) - set(allowed)
@@ -125,7 +127,11 @@ def morning_report(sections: dict) -> Report:
                 "presence_resources": "Available resources",
                 "presence_blocked": "Blocked work",
                 "presence_offline": "Offline and stale hardware",
-                "presence_next": "Suggested next actions"}
+                "presence_next": "Suggested next actions",
+                "hardware": "Hardware verification",
+                "quests": "Quest trails",
+                "energy": "Energy",
+                "finance": "Finance"}
     return assemble_report([(titles[key], sections[key])
                             for key in allowed
                             if key in sections])

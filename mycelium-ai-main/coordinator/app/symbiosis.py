@@ -37,22 +37,30 @@ KNOWN_PREFIXES = (
     # BIG #41 V2 symbiosis: nodes (machine↔node, device↔node),
     # research runs + dossiers (research↔project), automation
     # runs (run↔project), foods + meals (health↔food,
-    # food↔project). Finance/energy entity stores do not exist
-    # yet — no prefixes invented for them.
+    # food↔project).
+    # BIG #42 ecosystem hardening: finance records (project↔
+    # finance, finance↔mission), energy records (project↔energy,
+    # energy↔machine/node), hardware links (device↔node
+    # verification), quest trails (quest↔mission/project).
     "node_", "node-", "res_", "dos_", "auto_", "food_",
-    "meal_",
+    "meal_", "fin_", "enr_", "hv_", "qst_",
 )
 
 #: Closed symbiosis predicates (BIG #41): the union of the two
 #: existing closed sets (INVENTory relationships + camera
-#: links). Real INVENTory edges always use relationship verbs;
-#: proposals use link verbs. Unknown verbs never gain meaning:
-#: proposal-time input is refused, display maps to "related".
+#: links). BIG #42 adds five ecosystem verbs for the new real
+#: domains (finance/energy allocation). Real INVENTory edges
+#: always use relationship verbs; proposals use link verbs.
+#: Unknown verbs never gain meaning: proposal-time input is
+#: refused, display maps to "related".
 SYMBIOSIS_PREDICATES = frozenset({
     "used_in", "uses", "related_to", "part_of", "contains",
     "became", "led_to", "depends_on", "produced_by",
     "stored_in", "component_of", "stored_at", "supports",
     "evidence_for",
+    # BIG #42 ecosystem verbs (closed, strict-checked).
+    "funds", "funded_by", "powers", "powered_by",
+    "allocated_to",
 })
 
 

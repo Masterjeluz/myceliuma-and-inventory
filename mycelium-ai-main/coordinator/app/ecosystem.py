@@ -372,10 +372,22 @@ def ecosystem_overview() -> dict:
     nodes_can_do: list[dict] = []
     try:
         from . import main as _main2
+        try:
+            from .hardware_links import verified_device_refs as \
+                _verified_refs42
+        except Exception:
+            _verified_refs42 = None
         for record in _main2.list_nodes():
             if record.get("derived_status") not in ("online",
                                                     "busy"):
                 continue
+            _verified = 0
+            if _verified_refs42 is not None:
+                try:
+                    _verified = len(_verified_refs42(
+                        str(record.get("node_id", ""))))
+                except Exception:
+                    _verified = 0
             nodes_can_do.append({
                 "node_id": str(record.get("node_id", "")),
                 "health": str(record.get("health_status",
@@ -388,13 +400,15 @@ def ecosystem_overview() -> dict:
                     if isinstance(item, dict)
                     and str(item.get("status", "")) == "connected"
                 })[:8],
+                "hardware_verified": _verified,
                 "current_task": record.get("current_task")})
             if len(nodes_can_do) >= 15:
                 break
     except Exception:
         out["warnings"].append("node registry unavailable")
     _put("nodes_can_do", nodes_can_do,
-         "node registry (advertised, online only)")
+         "node registry (advertised, online only; "
+         "hardware_verified counts human links)")
     # WHAT IS BLOCKED — needs-band items of blocking types.
     blocked: list[dict] = []
     try:
@@ -428,6 +442,54 @@ def ecosystem_overview() -> dict:
              "presence progression (no XP, real counts)")
     except Exception:
         _put("growing", {}, "progression unavailable")
+    # BIG #42 ecosystem hardening: hardware trust, finance,
+    # energy, quest trails. Additive sections; each names its
+    # source and degrades to explicit empty.
+    try:
+        from .hardware_links import list_links as _hw_links42
+        _all_hw = _hw_links42(limit=200)
+        _put("hardware",
+             {"links": len(_all_hw),
+              "verified": sum(1 for link in _all_hw
+                              if link.status == "VERIFIED"),
+              "proposed": sum(1 for link in _all_hw
+                              if link.status == "PROPOSED"),
+              "revoked": sum(1 for link in _all_hw
+                             if link.status == "REVOKED")},
+             "hardware links store (human-verified only)")
+    except Exception:
+        _put("hardware", {}, "hardware links unavailable")
+    try:
+        from .finance import summarize as _fin_sum42
+        _put("finance", _fin_sum42(),
+             "finance records (counts; amounts scoped)")
+    except Exception:
+        _put("finance", {}, "finance records unavailable")
+    try:
+        from .energy import summarize as _en_sum42
+        _put("energy", _en_sum42(),
+             "energy records (UNKNOWN stays unknown)")
+    except Exception:
+        _put("energy", {}, "energy records unavailable")
+    try:
+        from .quests import list_quest_details as _quests42
+        _quests = _quests42(limit=50)
+        _put("quests",
+             {"open": sum(1 for quest in _quests
+                          if quest.get("state") not in
+                          ("COMPLETED",)),
+              "completed": sum(1 for quest in _quests
+                               if quest.get("state") ==
+                               "COMPLETED"),
+              "trails": [{"quest_id": quest.get("quest_id", ""),
+                          "title": quest.get("title", "")[:80],
+                          "state": quest.get("state", ""),
+                          "progress": quest.get("progress",
+                                                "0/0")}
+                         for quest in _quests[:10]]},
+             "quest trails (derived from live records)")
+    except Exception:
+        _put("quests", {}, "quest trails unavailable")
     from datetime import datetime, timezone
     out["generated_at"] = datetime.now(timezone.utc).isoformat()
     out["provenance"] = {"source_type": "derived",
