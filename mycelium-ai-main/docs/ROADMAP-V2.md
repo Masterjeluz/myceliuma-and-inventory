@@ -1,4 +1,4 @@
-# Mycelium V2 Roadmap — BIG #37 → BIG #44 (directional)
+# Mycelium V2 Roadmap — BIG #37 → BIG #45 (directional)
 
 Status after BIG #41: Mycelium V2 foundation — the BIG #1–40
 systems working as one ecosystem: targeted mesh delegation
@@ -143,6 +143,23 @@ guide node-dimm evidence (heartbeat/task/restore path),
 mobile world panel sharing desktop vocabulary. 13 tests +
 41 smoke checks green. See `docs/BIG44-final-report.md`.
 
-## BIG #45 — (NEXT, not started)
+## BIG #45 — Living Ecosystem Connections (DONE 2026-09-20)
 
-Nothing designed yet — BIG #44 stops here.
+Shipped: read-only connections view (`connections.py`) —
+unified entity connections (symbiosis + proposals +
+finance/energy/hardware/quest/campaign/research/node,
+amounts never leak), cross-project network over shared
+records, campaign ecosystem context, Guide-vocabulary
+detail (`/connections` page), POSSIBLE discovery with gate
+hrefs. Validation: prefixes pass (empty means absent),
+bare names need node registry or live-link device_ref
+(ghost ids 422). Surfaces: world Ecosystem connections
+panel (focused groups + unfocused clusters), guide
+possible-connection card, mobile connected panel, morning
+section, presence `campaign_blocked`, background proposed
+pulse. 16 tests + 43 smoke checks green. See
+`docs/BIG45-final-report.md`.
+
+## BIG #46 — (NEXT, not started)
+
+Nothing designed yet — BIG #45 stops here.

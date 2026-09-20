@@ -104,9 +104,11 @@ def morning_report(sections: dict) -> Report:
                "presence_overnight", "presence_discoveries",
                "presence_resources", "presence_blocked",
                "presence_offline", "presence_next",
-               "hardware", "quests", "energy", "finance",
-               # BIG #43 living game layer (additive).
-               "campaigns")
+                "hardware", "quests", "energy", "finance",
+                # BIG #43 living game layer (additive).
+                "campaigns",
+                # BIG #45 living connections (additive).
+                "connections")
     if not isinstance(sections, dict):
         raise ReportRefusedError("Morning report needs an object")
     unknown = set(sections) - set(allowed)
@@ -134,7 +136,8 @@ def morning_report(sections: dict) -> Report:
                 "quests": "Quest trails",
                 "energy": "Energy",
                 "finance": "Finance",
-                "campaigns": "Current campaign"}
+                "campaigns": "Current campaign",
+                "connections": "Ecosystem connections"}
     return assemble_report([(titles[key], sections[key])
                             for key in allowed
                             if key in sections])

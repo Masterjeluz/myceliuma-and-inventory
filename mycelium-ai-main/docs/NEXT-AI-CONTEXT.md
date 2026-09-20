@@ -1,6 +1,6 @@
 # NEXT-AI-CONTEXT — continue Mycelium development here
 
-Date: 2026-09-20. HEAD: `BIG #44 - build the living solarpunk world`
+Date: 2026-09-20. HEAD: `BIG #45 - finish living ecosystem connections`
 (main, pushed to origin/main). Start with `git log --oneline -5`
 and `git status` (a pre-existing `Mycelium/agent/agent_ui.py`
 modification is NOT ours — leave it; `scripts/b38_screenshots.py`
@@ -18,19 +18,22 @@ agent is the only hands (pull-only, outbound). V2
 (`docs/v2-ecosystem.md`, BIG #41) unifies BIG #1–40 systems;
 BIG #42 hardened it (links, finance/energy, quests,
 workflows); BIG #43 added the game layer (campaigns, game
-state view, companion guide); BIG #44 makes /world the
-primary experience: HUD + world objects + symbiosis network
-+ craft world + campaign + energy + attention panels (all
-best-effort, empty means absent), background gains solar +
-needs signals (one loop, reduced-motion safe), graph draws
-verified hardware with glow, guide explains dim nodes
-(heartbeat/task/restore path), mobile shares the world
-vocabulary. Presentation over real state only — no XP, no
-scores, no second truth. Provenance always; health scoped;
-no shell/RCE; no background threads (explicit triggers
-only). Tests: `pytest -v` per project with tmp DB env vars
-(`MYCELIUM_DATABASE_PATH`, `MYCELIUM_CHAT_DATABASE_PATH`
-before TestClient; `MYCELIUM_FABRICATION_DIR` for fab tests;
+state view, companion guide); BIG #44 made /world the
+primary experience (HUD + objects + symbiosis + craft +
+campaign + energy + attention); BIG #45 adds the living
+connections view over it all (`connections.py`: unified
+entity connections, cross-project network over shared
+records, campaign ecosystem, Guide-vocabulary detail,
+POSSIBLE discovery — read-only over symbiosis, finance
+(amounts never leak), energy, hardware, quests, campaigns,
+research, registry nodes + claimed tasks; bare names must
+exist in a registry or refuse 422). Presentation over real
+state only — no XP, no scores, no second truth. Provenance
+always; health scoped; no shell/RCE; no background threads
+(explicit triggers only). Tests: `pytest -v` per project with
+tmp DB env vars (`MYCELIUM_DATABASE_PATH`,
+`MYCELIUM_CHAT_DATABASE_PATH` before TestClient;
+`MYCELIUM_FABRICATION_DIR` for fab tests;
 `MYCELIUM_OPERATOR_KEY` for hardware verify tests). Testing
 discipline (BIG #43+): targeted tests during dev,
 touched-module regression, smoke for the BIG, FULL Mycelium
@@ -39,38 +42,39 @@ bounded batches (single run exceeds 10-min timeout; camera
 device enumeration may log access-violation noise on
 Windows — pre-existing, unrelated).
 
-## What BIG #44 added (where)
+## What BIG #45 added (where)
 
-- `world.py` (new) — world objects (10 closed kinds, href +
-  text per object), `world_hud()`, `symbiosis_network()` +
-  `symbiosis_seedlings()`, energy/discovery/research/node/
-  campaign/craft collectors
-- `main.py` — `_world_hud_html`, `_world_objects_html`,
-  `_world_symbiosis_html`, `_world_craft_html`,
-  `_world_campaign_html`, `_world_energy_html`,
-  `_world_presence_html` wired into `world_page`;
-  `_mobile_world_html` in the mobile page
-- `ui.py` — data-energy/data-needs signals + JS (same loop);
-  world CSS (hud, wobject kinds, symtree, energyflow,
-  pixel/solar); GRAPH_JS verified glow + ring;
-  `.verified-glow` style
-- `worldgraph.py` — unchanged (verified flag already there
-  from BIG #43; renderer now uses it)
-- `mobile.py` — `world_panel()` + dashboard key
-- `guide.py` — quiet/offline node cards gain heartbeat,
-  last task, restore path, reality evidence links
-- Tests: `tests/test_big44_world.py` (13).
-- Scripts: `scripts/b44_smoke.py` (41 checks, fresh tmp DBs),
-  `scripts/b44_shots.py` + `scripts/b44_screenshots.py`.
-- Docs: `docs/living-solarpunk-world.md`,
-  `docs/BIG44-final-report.md`.
-- Lessons: page-embedded `<style>` contains UI comments —
-  assert panel markup (`<h2>…</h2>`), not bare words;
-  presence honestly derives items on empty DBs (no eligible
-  node, inbox files) — mirror it, don't fight it; quest
-  `note` steps skip ref validation (use entity kind to test
-  malformed refs); never write def+docstring edits — always
-  re-verify imports after touching mobile/main.
+- `connections.py` (new) — `entity_connections()`,
+  `project_network()` (shared-record cross-links only),
+  `campaign_ecosystem()`, `connection_detail()`,
+  `possible_connections()`; `_check_entity` (prefixes pass,
+  bare names need node registry or live-link device_ref),
+  `_known_device_ref`, device-side hardware lookup
+- `main.py` — `GET /api/v1/connections*` (entity, network,
+  detail, campaign, possible), `/connections` detail page,
+  `_world_connections_html` (focused groups + unfocused
+  clusters) in `world_page`, morning `connections` builder
+- `guide.py` — possible-connection card (WHY PROPOSED /
+  gate / blocked_by / unlocks / evidence) + node
+  research-readiness card
+- `mobile.py` — `connected_panel()` (CONNECTED / WAITING /
+  DISCOVERED) + dashboard key
+- `presence.py` — additive `campaign_blocked` type (needs,
+  88, "campaign chain blocked")
+- `reports.py` — `connections` morning key (additive)
+- `ui.py` — `conn-cluster` CSS, `data-proposed` signal +
+  JS (same loop, reduced-motion safe)
+- Tests: `tests/test_big45_connections.py` (16).
+- Scripts: `scripts/b45_smoke.py` (43 checks, fresh tmp DBs;
+  claims via the real pull endpoint before asserting
+  WORKING — delegation only pins), `scripts/b45_shots.py`
+  (+ `shots_ids.json`) + `scripts/b45_screenshots.py`.
+- Docs: `docs/BIG45-final-report.md`.
+- Lessons: delegation leaves tasks queued+pinned — claim
+  before asserting WORKING; `_assigned_tasks_map` emits
+  `task_id` (older readers expect `id` — accept both at
+  the consumer); the hardware store has no device filter —
+  scan live links for device-side lookups.
 
 ## Docs to read first
 
@@ -81,8 +85,8 @@ Windows — pre-existing, unrelated).
 `docs/hardware-verification.md`, `docs/presence-ecosystem.md`,
 `docs/hardware-reality-layer.md`, `docs/context-packets.md`,
 `docs/mobile-mycelium.md`,
-`docs/BIG44-final-report.md` (§2 = commit/push record).
+`docs/BIG45-final-report.md` (§2 = commit/push record).
 
 ## Next BIG (not started)
 
-BIG #45: nothing designed yet.
+BIG #46: nothing designed yet.

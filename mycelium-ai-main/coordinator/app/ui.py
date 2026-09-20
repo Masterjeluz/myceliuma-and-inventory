@@ -228,6 +228,10 @@ ul.symtree li{position:relative;padding:.25rem 0}
 ul.symtree li::before{content:"";position:absolute;left:-1.1rem;top:1em;width:1rem;height:2px;background:var(--fern)}
 ul.energyflow{list-style:none;margin:.4rem 0;padding:0}
 ul.energyflow li{padding:.3rem .6rem;border-left:3px solid var(--spore);margin:.25rem 0;background:var(--surface)}
+details.conn-cluster{border:1px solid var(--line);border-radius:var(--r-sm);margin:.4rem 0;background:var(--surface)}
+details.conn-cluster summary{cursor:pointer;padding:.45rem .6rem;font-weight:bold}
+details.conn-cluster summary:focus-visible{outline:2px solid var(--amber)}
+details.conn-cluster ul{margin:.2rem 0 .6rem 0}
 .solar-note{color:var(--amber)}
 .verified-glow{filter:drop-shadow(0 0 3px var(--moss-bright))}
 @media (prefers-reduced-motion:reduce){.living-canvas{display:none}}
@@ -463,6 +467,7 @@ var fab = clampInt('data-fab', 0, 0, 12);
 var offline = clampInt('data-offline', 0, 0, 30);
 var energy = clampInt('data-energy', 0, 0, 24);
 var needs = clampInt('data-needs', 0, 0, 40);
+var proposed = clampInt('data-proposed', 0, 0, 24);
 var tempo = 1 + Math.min(onlineNodes, 6) * 0.08 + Math.min(research, 4) * 0.04;
 var dim = 1 - Math.min(offline, 6) * 0.05;
 var spores = [];
@@ -499,6 +504,7 @@ else if (research > 0 && (i % 7 === 0)) col = '150,200,160';
 else if (fab > 0 && (i % 6 === 0)) col = '217,140,90';
 else if (energy > 0 && (i % 8 === 0)) col = '255,214,120';
 if (discovery > 0 && (i % 9 === 0)) o = Math.min(0.6, o * 1.5);
+if (proposed > 0 && (i % 10 === 0)) o = Math.min(0.55, o * 1.4);
 if (energy > 0 && (i % 8 === 0)) { py -= 6; o = Math.min(0.65, o * 1.6); }
 if (needs > 0 && (i % 11 === 0)) { col = '217,164,65'; o = Math.min(0.6, o * 1.4); }
 x.beginPath();
@@ -526,9 +532,10 @@ def living_bg() -> str:
     fabrication warms spores, offline nodes dim the field.
     BIG #44 living solarpunk world: solar production lifts
     bright energy spores, presence NEEDS tint a few spores
-    amber as subtle world emphasis. Every signal derives from
-    real stores, clamped, ambient only — motion never claims
-    specific events happened."""
+    amber as subtle world emphasis. BIG #45 living
+    connections: open proposals pulse like seedlings.
+    Every signal derives from real stores, clamped, ambient
+    only — motion never claims specific events happened."""
     spores = 26
     waiting = False
     online_nodes = 0
@@ -539,6 +546,7 @@ def living_bg() -> str:
     offline = 0
     energy = 0
     needs = 0
+    proposed = 0
     try:
         from .living_state import current_state
         state = current_state()
@@ -602,6 +610,11 @@ def living_bg() -> str:
         needs = max(0, min(40, int(counts.get("needs", 0))))
     except Exception:
         pass
+    try:
+        from .symbiosis import proposed as _proposed
+        proposed = max(0, min(24, len(_proposed(limit=60))))
+    except Exception:
+        pass
     return ('<div class="living-bg" aria-hidden="true"></div>'
             '<canvas id="living-canvas" class="living-canvas" '
             f'data-spores="{spores}" '
@@ -614,6 +627,7 @@ def living_bg() -> str:
             f'data-offline="{offline}" '
             f'data-energy="{energy}" '
             f'data-needs="{needs}" '
+            f'data-proposed="{proposed}" '
             'aria-hidden="true"></canvas>'
             f'<script>{LIVING_BG_JS}</script>')
 

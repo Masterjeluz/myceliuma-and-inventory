@@ -812,4 +812,60 @@ def guide_items(limit: int = 12) -> list[dict]:
                 break
     except Exception:
         pass
+    # BIG #45 relationship-aware cards: why entities are
+    # connected, why a link is only PROPOSED, what blocks it,
+    # what would verify it, which node can help. Evidence
+    # only — no duplicated relationship logic.
+    try:
+        from .symbiosis import proposed as _props45
+        proposals = _props45(limit=10)
+        if proposals:
+            first = proposals[0]
+            entities = first.get("entities", [])[:2]
+            pair = " ↔ ".join(entities) if entities else \
+                "entities"
+            items.append(_item(
+                "finance" if any(str(entity).startswith(
+                    "fin_") for entity in entities)
+                else "energy" if any(str(entity).startswith(
+                    "enr_") for entity in entities)
+                else "candidate", "🔗",
+                f"Possible connection: {pair[:90]}.",
+                f"'{first.get('title', '')[:100]}' is "
+                "PROPOSED because a candidate names both "
+                "sides and nobody reviewed it yet. "
+                "Verification needs the gate of its kind: "
+                "knowledge review, operator key, or "
+                "confirmation.",
+                "Review connection", "/symbiosis",
+                blocked_by=[{
+                    "label": "human review",
+                    "href": "/symbiosis"}],
+                unlocks=[{
+                    "label": "supported connection",
+                    "href": "/symbiosis"}],
+                evidence=[{
+                    "label": "open proposals",
+                    "href": "/symbiosis"}]))
+    except Exception:
+        pass
+    try:
+        from .presence import research_readiness as _ready45
+        readiness = _ready45()
+        eligible = readiness.get("eligible", []) or []
+        if eligible:
+            items.append(_item(
+                "research", "🔧",
+                f"Node {eligible[0]} can help with open "
+                "research-linked work.",
+                str(readiness.get("text", ""))[:200],
+                "Queue research", "/research",
+                unlocks=[{
+                    "label": "research findings",
+                    "href": "/research"}],
+                evidence=[{
+                    "label": f"{eligible[0]} nodes",
+                    "href": "/nodes"}]))
+    except Exception:
+        pass
     return items[: max(1, min(int(limit or 12), 20))]

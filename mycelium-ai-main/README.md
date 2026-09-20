@@ -301,8 +301,8 @@ coordinator/app/conversation_bridge.py, context_packet.py,
 coordinator/app/context_engine.py, living_state.py,
                  knowledge.py, node_client/bootstrap.py (one-command)
 coordinator/app/campaigns.py, game.py, quests.py,
-                 hardware_links.py, finance.py, energy.py,
-                 world.py
+                  hardware_links.py, finance.py, energy.py,
+                  world.py, connections.py
 desktop_agent/   standalone lokale agent (poll, claim, voer uit, rapporteer)
 node_client/     lichte client voor seed/worker/core nodes (pull-only, token-optie)
 docs/            architectuurstatus, roadmap, principes, oorsprong

@@ -76,6 +76,8 @@ ITEM_TYPES = frozenset({
     # blocked quest trails, pending finance, unknown energy.
     "hardware_unverified", "quest_blocked", "finance_pending",
     "energy_unknown",
+    # BIG #45 living connections: blocked campaign chains.
+    "campaign_blocked",
 })
 
 TYPE_BAND = {
@@ -108,6 +110,7 @@ TYPE_BAND = {
     "quest_blocked": "needs",
     "finance_pending": "waiting",
     "energy_unknown": "waiting",
+    "campaign_blocked": "needs",
 }
 
 #: Deterministic base scores. Higher = more urgent.
@@ -141,6 +144,7 @@ BASE_SCORE = {
     "finance_pending": 40,
     "energy_unknown": 40,
     "quest_blocked": 88,
+    "campaign_blocked": 88,
 }
 
 BASE_WHY = {
@@ -173,6 +177,7 @@ BASE_WHY = {
     "finance_pending": "finance record waits for confirmation",
     "energy_unknown": "energy state unknown",
     "quest_blocked": "quest trail blocked",
+    "campaign_blocked": "campaign chain blocked",
 }
 
 MAX_ITEMS = 120
@@ -1023,6 +1028,27 @@ def _collect_ecosystem(items: list) -> None:
                     "quest trails",
                     action=_open_defer("/quests"),
                     open_href="/quests"))
+                break
+    except Exception:
+        pass
+    try:
+        from .campaigns import list_campaign_details as _camps
+        for campaign in _camps(limit=10):
+            if campaign.get("state") in ("BLOCKED", "FAILED"):
+                items.append(_item(
+                    f"att_campaign_blocked_"
+                    f"{campaign.get('campaign_id', '')}"[:150],
+                    "campaign_blocked",
+                    f"Campaign "
+                    f"'{campaign.get('title', '')[:70]}' is "
+                    f"{campaign.get('state', '')} at "
+                    f"{campaign.get('completed_count', 0)}/"
+                    f"{campaign.get('total_count', 0)}.",
+                    "A quest in the chain failed or is "
+                    "blocked.",
+                    "quest campaigns",
+                    action=_open_defer("/campaigns"),
+                    open_href="/campaigns"))
                 break
     except Exception:
         pass

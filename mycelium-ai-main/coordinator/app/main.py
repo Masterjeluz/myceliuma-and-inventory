@@ -5473,6 +5473,48 @@ def report_morning() -> dict:
                 for campaign in _camps[:5]]
     except Exception:
         pass
+    # BIG #45 living connections: ecosystem section — only
+    # when real connections exist, never filler.
+    try:
+        from .symbiosis import proposed as _props45
+        from .hardware_links import list_links as _hw45
+        _open_props = _props45(limit=60)
+        _verified_hw = [link for link in _hw45(limit=200)
+                        if link.status == "VERIFIED"]
+        _conn_lines = []
+        if _open_props:
+            _conn_lines.append(
+                f"{len(_open_props)} open proposal(s) "
+                f"(seedlings awaiting review)")
+            for prop in _open_props[:4]:
+                _conn_lines.append(
+                    f"{str(prop.get('title', ''))[:90]}: "
+                    f"{', '.join(prop.get('entities', [])[:2])}")
+        if _verified_hw:
+            _conn_lines.append(
+                f"{len(_verified_hw)} verified hardware "
+                f"link(s) (established)")
+        try:
+            from .connections import project_refs as _refs45
+            from .finance import list_records as _fin45
+            _confirmed = sum(
+                1 for record in _fin45(limit=200)
+                if record.status == "CONFIRMED")
+            if _confirmed:
+                _conn_lines.append(
+                    f"{_confirmed} confirmed finance "
+                    f"record(s)")
+            _refs = _refs45(limit=10)
+            if len(_refs) >= 2:
+                _conn_lines.append(
+                    f"{len(_refs)} linked projects: "
+                    f"{', '.join(_refs[:4])}")
+        except Exception:
+            pass
+        if _conn_lines:
+            sections["connections"] = _conn_lines[:8]
+    except Exception:
+        pass
     try:
         from .energy import list_records as _e_list42
         from .finance import list_records as _f_list42
@@ -8255,6 +8297,12 @@ async def world_page(entity_id: str = "", depth: int = 1,
             entity_id.strip()[:100] if entity_id else "")
     except Exception:
         _craft_panel = ""
+    # BIG #45 ecosystem connections (best-effort).
+    try:
+        _connections_panel = await _world_connections_html(
+            entity_id.strip()[:100] if entity_id else "")
+    except Exception:
+        _connections_panel = ""
     truth_options = "".join(
         f"<option value='{name}'"
         + (" selected" if name == filters["truth"] else "")
@@ -8297,6 +8345,7 @@ async def world_page(entity_id: str = "", depth: int = 1,
     {_world_campaign_html()}
     {_world_objects_html()}
     {_symbiosis_panel}
+    {_connections_panel}
     {_craft_panel}
     {_world_energy_html()}
     {_world_presence_html()}
@@ -9625,6 +9674,7 @@ def mobile_page(node: str = "") -> str:
     {_mobile_craft_html(dash)}
     {_mobile_symbiosis_html(dash)}
     {_mobile_nodes_html(dash)}
+    {_mobile_connected_html(dash)}
     {_mobile_world_html(dash)}
     {_mobile_recent_html(dash, node)}
     <div class="panel"><h2>Remember this</h2>
@@ -10097,6 +10147,30 @@ def _mobile_world_html(dash: dict) -> str:
         f"<ul>{''.join(rows)}</ul>"
         f"<p><a href=\"/world\">Open living world →</a> · "
         f"<a href=\"/game\">Game view →</a></p></div>")
+
+
+def _mobile_connected_html(dash: dict) -> str:
+    """Connected ecosystem for the phone (BIG #45): CONNECTED
+    / WAITING / DISCOVERED counts + seedlings. No graph on
+    the phone — counts and links only."""
+    from . import ui as _ui
+    panel = dash.get("connected", {}) if isinstance(
+        dash.get("connected"), dict) else {}
+    if not panel:
+        return ""
+    seedlings = "".join(
+        f"<li>🌱 <a href=\""
+        f"{_ui.esc(item.get('href', '/symbiosis'))}\">"
+        f"{_ui.esc(item.get('title', '')[:70])}</a></li>"
+        for item in panel.get("discovered", [])[:4])
+    return (
+        f"<div class=\"panel\" id=\"connected\">"
+        f"<h2>Connected ecosystem</h2>"
+        f"<p>{panel.get('connected', 0)} connected · "
+        f"{panel.get('waiting', 0)} waiting · "
+        f"<a href=\"/world\">world →</a></p>"
+        + (f"<ul>{seedlings}</ul>" if seedlings else "") +
+        f"</div>")
 
 
 def _mobile_recent_html(dash: dict, node: str) -> str:
@@ -14551,4 +14625,247 @@ def game_page() -> str:
             "<a href=\"/world\">World</a> · "
             "<a href=\"/api/v1/game/state\">game JSON</a></p>")
     return _ui.shell("Living game", "/game", main, "",
+                     _ui.living_bg())
+
+
+# =============================================================================
+# BIG #45 — LIVING ECOSYSTEM CONNECTIONS. Read-only aggregation
+# over existing relationship systems. No parallel graph, no
+# invented relations, no silent merges. All routes GET-only:
+# the world layer has zero execution authority.
+# =============================================================================
+
+
+@app.get("/api/v1/connections")
+async def api_connections(entity_id: str,
+                          depth: int = 1) -> dict:
+    """Unified connections for one entity: symbiosis edges +
+    proposals + finance/energy/hardware/quest/campaign/
+    research/node links. Read-only."""
+    from .connections import entity_connections
+    try:
+        return await entity_connections(entity_id, depth)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+
+@app.get("/api/v1/connections/network")
+async def api_connection_network(projects: str = "",
+                                 limit: int = 8) -> dict:
+    """Cross-project network over shared real records.
+    `projects` is a comma-separated list (max 6), each a
+    known entity id or registered node name."""
+    from .connections import project_network
+    try:
+        count = max(1, min(int(limit or 8), 12))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=422,
+                            detail="limit must be an integer")
+    try:
+        return await project_network(
+            [part for part in
+             str(projects or "").split(",") if part.strip()],
+            limit_per_project=count)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+
+@app.get("/api/v1/connections/detail")
+async def api_connection_detail(a: str, b: str) -> dict:
+    """One relationship in Guide vocabulary: WHAT / WHY /
+    SOURCE / STATUS / EVIDENCE / NEXT. Fabricates nothing."""
+    from .connections import connection_detail
+    try:
+        return await connection_detail(a, b)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+
+@app.get("/api/v1/connections/campaign/{campaign_id}")
+def api_campaign_ecosystem(campaign_id: str) -> dict:
+    """A campaign's ecosystem context: quest chain + grouped
+    real records. Only what the chain names."""
+    from .connections import campaign_ecosystem
+    try:
+        return campaign_ecosystem(campaign_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+
+@app.get("/api/v1/connections/possible")
+async def api_possible_connections(entity_id: str = "",
+                                   limit: int = 8) -> dict:
+    """Possible connections (discovery, not relationship):
+    proposals, craft gaps, unlinked quest steps — each with
+    its gate href."""
+    from .connections import possible_connections
+    try:
+        count = max(1, min(int(limit or 8), 16))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=422,
+                            detail="limit must be an integer")
+    cleaned = str(entity_id or "").strip()[:100]
+    if cleaned:
+        from .connections import _check_entity
+        try:
+            _check_entity(cleaned)
+        except ValueError as exc:
+            raise HTTPException(status_code=422,
+                                detail=str(exc))
+    return {"entity_id": cleaned,
+            "possible": await possible_connections(
+                cleaned, limit=count)}
+
+
+def _connection_row_html(entry: dict) -> str:
+    """One connection row: groups, predicate, state, origin,
+    evidence + detail link. Escaped at the boundary."""
+    from . import ui as _ui
+    state = str(entry.get("state", ""))
+    strength = ("established" if state == "VERIFIED" else
+                "growing" if state == "SUPPORTED" else
+                "seedling" if state in ("PROPOSED",
+                                        "POSSIBLE") else "")
+    bar = (f"<span class=\"strength {strength}\"></span> "
+           if strength else "")
+    detail_href = (
+        f"/connections?a={_ui.esc(entry.get('source_id', ''))}"
+        f"&b={_ui.esc(entry.get('target_id', ''))}")
+    return (
+        f"<li>{bar}<b>"
+        f"{_ui.esc(entry.get('source_kind', ''))} → "
+        f"{_ui.esc(entry.get('target_kind', ''))}</b> "
+        f"<span class=\"muted\">"
+        f"{_ui.esc(entry.get('predicate', ''))} · "
+        f"{_ui.esc(state)} · "
+        f"{_ui.esc(entry.get('origin', ''))}</span><br>"
+        f"<small>{_ui.esc(entry.get('detail', ''))}</small> "
+        f"<a href=\"{detail_href}\">Why? →</a> "
+        f"<a href=\"{_ui.esc(entry.get('href', '/world'))}\">"
+        f"Open →</a></li>")
+
+
+async def _world_connections_html(entity_id: str) -> str:
+    """Ecosystem connections panel (BIG #45): focused entity
+    gets grouped connections; otherwise cross-project
+    clusters with expand/collapse + shared-record links.
+    Best-effort, empty means absent."""
+    from . import ui as _ui
+    cleaned = str(entity_id or "").strip()[:100]
+    if cleaned:
+        try:
+            from .connections import entity_connections
+            result = await entity_connections(cleaned, depth=1)
+        except ValueError:
+            return ("<div class=\"panel\"><p>Unknown entity — "
+                    "use a prefix_id like proj_….</p></div>")
+        except Exception:
+            return ""
+        entries = result.get("connections", [])
+        if not entries:
+            return ""
+        groups: dict = {}
+        for entry in entries:
+            key = (f"{entry.get('source_kind', '')} → "
+                   f"{entry.get('target_kind', '')}")
+            groups.setdefault(key, []).append(entry)
+        parts = []
+        for key in sorted(groups):
+            rows = "".join(
+                _connection_row_html(entry)
+                for entry in groups[key][:10])
+            parts.append(
+                f"<details class=\"conn-cluster\"><summary>"
+                f"<b>{_ui.esc(key)}</b> "
+                f"({len(groups[key])})</summary>"
+                f"<ul>{rows}</ul></details>")
+        counts = result.get("counts", {})
+        return (
+            f"<div class=\"panel\"><h2>Ecosystem connections"
+            f"</h2><p class=\"muted\">"
+            f"{counts.get('verified', 0)} established · "
+            f"{counts.get('supported', 0)} growing · "
+            f"{counts.get('proposed', 0)} seedlings · "
+            f"DISCOVERY ≠ RELATIONSHIP.</p>"
+            + "".join(parts) + "</div>")
+    try:
+        from .connections import project_network, project_refs
+        refs = project_refs(limit=4)
+    except Exception:
+        return ""
+    if len(refs) < 1:
+        return ""
+    try:
+        network = await project_network(refs, limit_per_project=8)
+    except Exception:
+        return ""
+    clusters = []
+    for cluster in network.get("clusters", []):
+        rows = "".join(
+            f"<li><span class=\"strength "
+            f"{'established' if child.get('state') == 'VERIFIED' else 'growing' if child.get('state') in ('SUPPORTED', 'LINKED', 'WORKING', 'AVAILABLE') else 'seedling'}\"></span> "
+            f"<b>{_ui.esc(child.get('group', ''))}</b> "
+            f"<a href=\"{_ui.esc(child.get('href', '/world'))}\">"
+            f"{_ui.esc(child.get('entity_id', '')[:60])}</a> "
+            f"<span class=\"muted\">"
+            f"{_ui.esc(child.get('predicate', ''))} · "
+            f"{_ui.esc(child.get('state', ''))}</span></li>"
+            for child in cluster.get("children", [])[:8])
+        clusters.append(
+            f"<details class=\"conn-cluster\" open><summary>"
+            f"<b>🌿 {_ui.esc(cluster.get('project', ''))}</b> "
+            f"({len(cluster.get('children', []))} links)"
+            f"</summary>"
+            f"<ul>{rows or '<li class=\"muted\">No recorded links yet.</li>'}</ul>"
+            f"<p><a href=\"/world?entity_id="
+            f"{_ui.esc(cluster.get('project', ''))}\">Focus →</a></p>"
+            f"</details>")
+    cross = "".join(
+        f"<li><a href=\"{_ui.esc(link.get('href', '/world'))}\">"
+        f"{_ui.esc(link.get('record', '')[:60])}</a> "
+        f"<span class=\"muted\">shared by "
+        f"{_ui.esc(', '.join(link.get('projects', []))[:80])}"
+        f"</span></li>"
+        for link in network.get("cross_links", [])[:8])
+    return (
+        f"<div class=\"panel\"><h2>Ecosystem connections</h2>"
+        f"<p class=\"muted\">Project clusters from store "
+        f"links; cross-links only where projects share the "
+        f"same record.</p>" + "".join(clusters) +
+        (f"<h3>Shared records</h3><ul>{cross}</ul>"
+         if cross else "") + "</div>")
+
+
+@app.get("/connections", response_class=HTMLResponse)
+async def connection_page(a: str = "", b: str = "") -> str:
+    """One relationship explained: WHAT / WHY / SOURCE /
+    STATUS / EVIDENCE / NEXT in Guide vocabulary."""
+    from . import ui as _ui
+    from .connections import connection_detail
+    try:
+        detail = await connection_detail(a, b)
+    except ValueError as exc:
+        main = (f"<h1>Connection 🔗</h1>"
+                f"<p>{_ui.esc(str(exc))}</p>"
+                f"<p><a href=\"/world\">Back to world</a></p>")
+        return _ui.shell("Connection", "/connections", main,
+                         "", _ui.living_bg())
+    main = (
+        f"<h1>Connection 🔗</h1>"
+        f"<div class=\"panel\"><h2>"
+        f"{_ui.esc(detail['what'][:140])}</h2>"
+        f"<p><b>WHY:</b> {_ui.esc(detail['why'])}</p>"
+        f"<p><b>SOURCE:</b> {_ui.esc(detail['source'])} · "
+        f"<b>STATUS:</b> {_ui.esc(detail['status'])}</p>"
+        f"<p><b>EVIDENCE:</b> "
+        f"{_ui.esc(detail.get('evidence', '') or '—')}</p>"
+        f"<p><b>NEXT:</b> <a href=\""
+        f"{_ui.esc(detail['next']['href'])}\">"
+        f"{_ui.esc(detail['next']['label'])} →</a> · "
+        f"<a href=\"{_ui.esc(detail.get('href', '/world'))}\">"
+        f"Open record →</a></p></div>"
+        f"<p><a href=\"/world\">World</a> · "
+        f"<a href=\"/symbiosis\">Symbiosis</a> · "
+        f"<a href=\"/guide\">Guide</a></p>")
+    return _ui.shell("Connection", "/connections", main, "",
                      _ui.living_bg())

@@ -678,6 +678,65 @@ def campaign_panel(limit: int = 3) -> dict:
     return {"campaigns": cards, "href": "/campaigns"}
 
 
+def connected_panel(limit: int = 6) -> dict:
+    """Connected ecosystem for the phone (BIG #45): CONNECTED
+    (verified + supported + linked counts), WAITING (open
+    proposals, drafts, unknowns), DISCOVERED (seedlings).
+    Counts from live stores; no graph on the phone."""
+    connected = 0
+    waiting = 0
+    seedlings: list[dict] = []
+    try:
+        from .hardware_links import list_links
+        verified = sum(
+            1 for link in list_links(status="VERIFIED",
+                                     limit=200))
+        connected += verified
+    except Exception:
+        pass
+    try:
+        from .finance import list_records as _fin
+        confirmed = sum(
+            1 for record in _fin(limit=200)
+            if record.status == "CONFIRMED")
+        drafts = sum(
+            1 for record in _fin(limit=200)
+            if record.status == "DRAFT")
+        connected += confirmed
+        waiting += drafts
+    except Exception:
+        pass
+    try:
+        from .energy import list_records as _enr
+        known = 0
+        unknown = 0
+        for record in _enr(limit=200):
+            if record.value is None:
+                unknown += 1
+            else:
+                known += 1
+        connected += known
+        waiting += unknown
+    except Exception:
+        pass
+    try:
+        from .symbiosis import proposed
+        open_props = proposed(limit=60)
+        waiting += len(open_props)
+        for prop in open_props[:max(1, min(int(limit or 6),
+                                           10))]:
+            seedlings.append({
+                "title": str(prop.get("title", ""))[:80],
+                "entities": prop.get("entities", [])[:2],
+                "href": prop.get("link", "/symbiosis"),
+            })
+    except Exception:
+        pass
+    return {"connected": connected, "waiting": waiting,
+            "discovered": seedlings,
+            "href": "/world"}
+
+
 def world_panel() -> dict:
     """World HUD for the phone: campaign, quest, attention,
     nodes, work, discoveries — same HUD as /world, small
@@ -776,6 +835,7 @@ def dashboard(node: str = "") -> dict:
         "quests": quests_panel(),
         "campaigns": campaign_panel(),
         "world": world_panel(),
+        "connected": connected_panel(),
         "hardware": hardware_panel(),
         "finance": finance_panel(),
         "energy": energy_panel(),
