@@ -2375,7 +2375,11 @@ async def web_delete_relationship_form(rel_id: str, request: Request) -> Redirec
 
 def _type_options(selected: str | None) -> str:
     opts = [("", "Alle types"), ("objects", "Objects"), ("projects", "Projecten"),
-            ("ideas", "Ideeën"), ("relationships", "Relaties")]
+            ("ideas", "Ideeën"), ("relationships", "Relaties"),
+            ("hardware", "Hardware"), ("sensors", "Sensoren"),
+            ("cameras", "Camera's"), ("locations", "Locaties"),
+            ("models", "Modellen"), ("tasks", "Taken"),
+            ("actuators", "Actuatoren"), ("files", "Bestanden")]
     return "".join(
         f'<option value="{v}"{" selected" if v == (selected or "") else ""}>{l}</option>'
         for v, l in opts
@@ -2428,7 +2432,7 @@ def web_search(q: str = "", type: str | None = None) -> str:
     if not q.strip():
         body = f"""
 <div class="flex justify-between items-center mb-3">
-  <div><h1>🔍 Search</h1><p class="subtitle">Doorzoek objecten, projecten, ideeën en relaties</p></div>
+  <div><h1>🔍 Search</h1><p class="subtitle">Doorzoek alle collecties</p></div>
 </div>
 {form}
 <div class="card"><p class="text-muted text-sm">Vul hierboven een zoekterm in.</p></div>"""
@@ -2438,7 +2442,7 @@ def web_search(q: str = "", type: str | None = None) -> str:
     except HTTPException as error:
         body = f"""
 <div class="flex justify-between items-center mb-3">
-  <div><h1>🔍 Search</h1><p class="subtitle">Doorzoek objecten, projecten, ideeën en relaties</p></div>
+  <div><h1>🔍 Search</h1><p class="subtitle">Doorzoek alle collecties</p></div>
 </div>
 {form}
 <div class="card"><p class="text-muted text-sm">{escape(str(error.detail))}</p></div>"""
