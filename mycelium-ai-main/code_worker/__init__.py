@@ -1,0 +1,1 @@
+"""Mycelium OpenCode worker registrations."""
