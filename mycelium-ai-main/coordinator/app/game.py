@@ -125,6 +125,56 @@ def presence_as_stakes(limit: int = 60) -> dict:
             "labels": BAND_GAME_LABEL}
 
 
+#: Closed growth levels. Presentation only — derived, never
+#: stored, never a permission, never an execution gate.
+LEVELS = ("SEEDLING", "ROOTED", "GROVE")
+
+
+def derive_level(*, verified_objects: int | None = 0,
+                 verified_files: int | None = 0,
+                 completed_quests: int | None = 0) -> dict:
+    """Derive one growth level from verified counts only.
+
+    Pure: no database, no I/O, no persistence, no side
+    effects, deterministic. UNVERIFIED and REVOKED records
+    must never reach these inputs (callers count verified
+    outcomes only). UNKNOWN (None) is not zero: it caps the
+    level at SEEDLING with explicit unknown evidence.
+    """
+    inputs = {"verified_objects": verified_objects,
+              "verified_files": verified_files,
+              "completed_quests": completed_quests}
+    evidence: list[str] = []
+    unknown = [key for key, value in inputs.items()
+               if value is None]
+    if unknown:
+        for key in sorted(unknown):
+            evidence.append(f"{key}: UNKNOWN (not 0)")
+        return {"level": "SEEDLING", "inputs": inputs,
+                "evidence": evidence,
+                "provenance": "derived"}
+    try:
+        objects = max(0, int(verified_objects or 0))
+        files = max(0, int(verified_files or 0))
+        quests = max(0, int(completed_quests or 0))
+    except (TypeError, ValueError):
+        return {"level": "SEEDLING", "inputs": inputs,
+                "evidence": ["inputs unreadable; treating as "
+                             "UNKNOWN, not 0"],
+                "provenance": "derived"}
+    evidence.append(f"{objects} verified object(s)")
+    evidence.append(f"{files} verified file(s)")
+    evidence.append(f"{quests} completed quest(s)")
+    if objects >= 5 and files >= 5 and quests >= 2:
+        level = "GROVE"
+    elif (objects >= 1 and files >= 1) or quests >= 1:
+        level = "ROOTED"
+    else:
+        level = "SEEDLING"
+    return {"level": level, "inputs": inputs,
+            "evidence": evidence, "provenance": "derived"}
+
+
 def game_state() -> dict:
     """One derived game-state view. Best-effort per section:
     failing sources degrade to explicit empty, never invented."""

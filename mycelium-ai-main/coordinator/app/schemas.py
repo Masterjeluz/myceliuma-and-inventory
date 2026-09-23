@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from .adapter_contracts import AdapterProposal
 from .approval import ApprovalResult
@@ -73,6 +73,10 @@ class Heartbeat(BaseModel):
     compute_capabilities: list[dict[str, Any]] | None = Field(default=None,
                                                                max_length=20)
     energy_state: dict[str, Any] | None = Field(default=None)
+    # VERTICAL SLICE 1: read-only display report (node-state,
+    # validated by check_displays; unknown values stay null).
+    displays: list[dict[str, Any]] | None = Field(default=None,
+                                                  max_length=16)
 
 
 class PresenceTriageBody(BaseModel):
@@ -236,6 +240,7 @@ class TaskCreate(BaseModel):
     preferred_tier: NodeTier | None = None
     priority: int = Field(default=0, ge=-10, le=10)
     requirements: dict[str, Any] = Field(default_factory=dict)
+    mission_id: str | None = Field(default=None, max_length=80)
 
 
 class TaskAssignBody(BaseModel):
@@ -259,6 +264,7 @@ class ClaimedTask(BaseModel):
     kind: str
     payload: dict[str, Any]
     required_capabilities: list[str]
+    mission_id: str | None = None
 
 
 class TaskResult(BaseModel):
@@ -404,6 +410,58 @@ class DesktopDispatchBody(BaseModel):
     node_id: str | None = Field(default=None, min_length=3, max_length=80)
 
 
+class RemoteInputSessionBody(BaseModel):
+    """CONNECT one ephemeral remote-mouse session (explicit human YES).
+
+    The click is the authorization; the server re-checks
+    registration, freshness and the desktop.mouse.move capability.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    node_id: str = Field(min_length=3, max_length=80)
+
+
+class RemoteInputMoveBody(BaseModel):
+    """One mouse move inside an open session. Coordinates are
+    re-validated server-side with the existing move_mouse contract
+    (integers 0..16384); anything else is refused, never stored."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    x: Any = Field(default=None)
+    y: Any = Field(default=None)
+
+
+class RemoteInputActionBody(BaseModel):
+    """One discrete input action inside an open session (click,
+    key_press, hotkey, type_text, scroll, mouse_down, mouse_up,
+    clipboard_set). Closed kind vocabulary; params re-validated
+    server-side per kind; anything else is refused, never stored."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    kind: str = Field(min_length=1, max_length=40)
+    params: dict[str, Any] = Field(default_factory=dict)
+
+
+class RemoteInputPollBody(BaseModel):
+    """Node pull for pending input (existing node auth pattern).
+
+    The node_id pins the session owner; node_token authenticates
+    exactly like the desktop claim route. clipboard_text carries
+    node-delivered clipboard text only after the browser
+    requested it (text-only, bounded, validated server-side).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    node_id: str = Field(min_length=3, max_length=80)
+    node_token: str | None = Field(default=None, min_length=8,
+                                   max_length=256)
+    clipboard_text: Any = Field(default=None)
+
+
 class MissionStepBody(BaseModel):
     kind: str = Field(min_length=1, max_length=20)
     description: str = Field(min_length=1, max_length=500)
@@ -437,6 +495,34 @@ class ChatMissionBody(BaseModel):
 class SuggestStepsBody(BaseModel):
     goal: str = Field(min_length=1, max_length=500)
     context: str = Field(default="", max_length=1000)
+
+
+class WorkspaceForkBody(BaseModel):
+    """Fork one conversation; optional target workspace slug."""
+
+    target_workspace: str = Field(default="", max_length=80)
+
+
+class WorkspaceMissionAttachBody(BaseModel):
+    """Re-link a mission to a conversation (hence its workspace)."""
+
+    conversation_id: str = Field(min_length=3, max_length=80)
+
+
+class WorkspaceResearchStartBody(BaseModel):
+    """Open workspace research: conversation + mission + run.
+
+    Never approves, never executes, never writes canonical
+    state. node-first routes seed fetches to workers (pull-only);
+    local waits for the existing mission approve/tick gates.
+    """
+
+    question: str = Field(min_length=1, max_length=500)
+    objective: str = Field(default="", max_length=500)
+    route: str = Field(default="node-first", max_length=20)
+    seed_urls: list[str] = Field(default_factory=list, max_length=3)
+    conversation_id: str = Field(default="", max_length=80)
+    max_sources: int = Field(default=6, ge=1, le=6)
 
 
 class TemplateMissionBody(BaseModel):

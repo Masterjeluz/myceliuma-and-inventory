@@ -330,6 +330,122 @@ def run_session(session_id: str) -> IngestSession:
     return session
 
 
+def poll_inbox(device_id: str,
+               limit: int = MAX_SESSION_FILES) -> dict:
+    """Explicit operator/n8n poll: inbox → session → observation →
+    VLM → candidates. Synchronous, no thread/scheduler.
+
+    Uses only existing blocks: list_inbox_files, known_shas,
+    create_session, run_session, describe_observation,
+    propose_candidates. Never writes to INVENTory itself.
+
+    - second poll of the same file = duplicate-skip (SHA dedupe,
+      restart-safe);
+    - at most MAX_SESSION_FILES per poll, the rest stays put;
+    - refused files already refused in recent sessions are not
+      re-ingested while unchanged (existing session history,
+      no new persistence);
+    - VLM runs only for newly observed items without an
+      existing REAL analysis (existing analyses/markers reused;
+      propose stays idempotent).
+    """
+    from .cameras import get_device
+    from .vision_ingest import IngestRefusedError, list_inbox_files
+    cleaned_device = str(device_id or "").strip()[:80]
+    if get_device(cleaned_device) is None:
+        raise EcosystemRefusedError("Camera not found")
+    try:
+        cap = max(1, min(int(limit or MAX_SESSION_FILES),
+                         MAX_SESSION_FILES))
+    except (TypeError, ValueError):
+        cap = MAX_SESSION_FILES
+    try:
+        inbox = list_inbox_files(limit=100)
+    except Exception:
+        inbox = []
+    known = known_shas()
+    refused_history: set[str] = set()
+    try:
+        for session in list_sessions(limit=20):
+            for item in session.items:
+                if item.state == "refused" and item.filename:
+                    refused_history.add(item.filename)
+    except Exception:
+        refused_history = set()
+    # Lazy import: media facts + analysis listing only.
+    from .vision_ingest import media_facts as _facts
+    from .vision_flow import list_analyses as _analyses
+    candidates: list[str] = []
+    duplicates: list[str] = []
+    refused: list[dict] = []
+    for entry in inbox:
+        filename = str((entry or {}).get("filename", ""))
+        if not filename or filename in candidates:
+            continue
+        if filename in refused_history:
+            refused.append({"filename": filename,
+                            "reason": "previously refused; unchanged"})
+            continue
+        try:
+            media = _facts(filename)
+        except IngestRefusedError as error:
+            refused.append({"filename": filename,
+                            "reason": str(error)[:200]})
+            continue
+        except Exception as error:
+            refused.append({"filename": filename,
+                            "reason": str(error)[:200]})
+            continue
+        if media.sha256 in known:
+            duplicates.append(filename)
+            continue
+        candidates.append(filename)
+        if len(candidates) >= cap:
+            break
+    if not candidates:
+        return {"session_id": "", "ingested": [],
+                "duplicates": duplicates, "refused": refused}
+    session = create_session(cleaned_device, candidates)
+    session = run_session(session.session_id)
+    ingested: list[dict] = []
+    for item in session.items:
+        if item.state == "duplicate":
+            if item.filename not in duplicates:
+                duplicates.append(item.filename)
+        elif item.state == "refused":
+            refused.append({"filename": item.filename,
+                            "reason": item.note[:200]})
+        elif item.state == "observed" and item.observation_id:
+            try:
+                analyses = _analyses(item.observation_id, limit=5)
+            except Exception:
+                analyses = []
+            has_real = any(
+                isinstance(getattr(entry, "result", None), dict)
+                and entry.result.get("model")
+                for entry in analyses)
+            if not has_real:
+                try:
+                    describe_observation(item.observation_id)
+                except EcosystemRefusedError:
+                    pass
+                except Exception:
+                    pass
+            try:
+                propose_candidates(item.observation_id)
+            except EcosystemRefusedError:
+                pass
+            except Exception:
+                pass
+            ingested.append({"filename": item.filename,
+                             "observation_id": item.observation_id,
+                             "sha256": item.sha256})
+            known.add(item.sha256)
+    return {"session_id": session.session_id,
+            "ingested": ingested, "duplicates": duplicates,
+            "refused": refused}
+
+
 def session_observations(session_id: str) -> list[dict]:
     """Stored observations for one session (metadata only)."""
     from .cameras import list_observations

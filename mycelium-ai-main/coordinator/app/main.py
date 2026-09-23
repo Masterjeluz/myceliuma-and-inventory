@@ -6,7 +6,8 @@ from datetime import datetime, timedelta, timezone
 from html import escape
 
 from fastapi import FastAPI, Header, HTTPException, Request, Response
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
+from pydantic import ValidationError
 
 from .adapter_contracts import AdapterProposal
 from .advisor_proposals import extract_proposal
@@ -333,7 +334,7 @@ from .routing import (
     requirements_from_payload,
     route_task,
 )
-from .schemas import AdviseRequest, AdviseResponse, AdvancedOpBody, CadDocumentBody, CadOpBody, CadPartBody, CampaignBody, CameraRegisterBody, CaptureCloseBody, CaptureOpenBody, ChatMissionBody, ChatRequest, ChatResponse, ClaimedTask, DecideApprovalBody, DesktopActionBody, DesktopClaimBody, DesktopDecisionBody, DesktopDispatchBody, DesktopResultBody,     DistEnvelopeBody, DroneCreateBody, DroneMissionApproveBody, DroneMissionBody,     FabGenerateBody, FabSliceBody, FamiliarCreateBody, FoodCreateBody, GarminImportBody, GitCommitBody, HealthMeasureBody, Heartbeat, InstagramImportBody,     InterfaceChatBody, IntegrationEnvelopeBody, IntegrationKeyBody, IntegrationTriggerBody, InventoryWriteBody, JobRunBody, LiveContextBody, LiveProposeBody, LiveSessionBody, MealCreateBody, MealItemBody, MemoryConsolidateBody, MemoryCreateBody, MemoryRetrieveBody, MemoryVerifyBody,     MissionApproveBody, MissionCreateBody, MissionRunBody, MissionStepBody, NodeRegistration, NodeRotateBody,     NotifyBody, OperatorBody, OutboxAckBody, OutboxEnqueueBody, PhoneCameraBody,     PlanBody, PlanToProposalBody, PipelinePlanBody, PrintCancelBody, PrintProposeBody, PrinterRegisterBody, PrinterSelectBody, PromptEditBody, ResearchAdvanceBody, ResearchClaimBody, ResearchRecordBody, ResearchSourceBody, RobotActionBody, RobotApproveBody, RobotCreateBody, RobotSafetyBody, RobotTelemetryBody, SessionOpenBody,     StreamStartBody, SuggestStepsBody, SkillAcceptBody, SkillAdvanceBody, SkillCreateBody, SkillDiscoverBody, SkillEvidenceBody, SpoolCreateBody, SyncApplyBody, TaskAssignBody, TaskCreate, TaskFromProposalBody, TaskResult, TaskRouteBody,     TemplateMissionBody, TransformBody, TwinLinkBody, VisionAnalyzeBody, VisionProposeBody, VoiceApprovalRequestBody, VoiceApproveBody, VoiceChatBody,     VoiceSynthesizeBody, VoiceTranscribeBody, WriteDecisionBody, CommandBody, RecoverBody, AgendaImportBody, BootstrapBody, ResearchRunBody, ResearchExecuteBody, PresenceTriageBody, PresenceNotifyBody, MeshDelegateBody, MeshPreviewBody, HardwareLinkBody, CampaignCreateBody, HardwareVerifyBody, HardwareRevokeBody, FinanceRecordBody, FinanceStatusBody, EnergyRecordBody, QuestCreateBody, WorkflowDispatchBody
+from .schemas import AdviseRequest, AdviseResponse, AdvancedOpBody, CadDocumentBody, CadOpBody, CadPartBody, CampaignBody, CameraRegisterBody, CaptureCloseBody, CaptureOpenBody, ChatMissionBody, ChatRequest, ChatResponse, ClaimedTask, DecideApprovalBody, DesktopActionBody, DesktopClaimBody, DesktopDecisionBody, DesktopDispatchBody, DesktopResultBody,     DistEnvelopeBody, DroneCreateBody, DroneMissionApproveBody, DroneMissionBody,     FabGenerateBody, FabSliceBody, FamiliarCreateBody, FoodCreateBody, GarminImportBody, GitCommitBody, HealthMeasureBody, Heartbeat, InstagramImportBody,     InterfaceChatBody, IntegrationEnvelopeBody, IntegrationKeyBody, IntegrationTriggerBody, InventoryWriteBody, JobRunBody, LiveContextBody, LiveProposeBody, LiveSessionBody, MealCreateBody, MealItemBody, MemoryConsolidateBody, MemoryCreateBody, MemoryRetrieveBody, MemoryVerifyBody,     MissionApproveBody, MissionCreateBody, MissionRunBody, MissionStepBody, NodeRegistration, NodeRotateBody,     NotifyBody, OperatorBody, OutboxAckBody, OutboxEnqueueBody,     PhoneCameraBody,     PlanBody, RemoteInputSessionBody, RemoteInputMoveBody, RemoteInputActionBody, RemoteInputPollBody, PlanToProposalBody, PipelinePlanBody, PrintCancelBody, PrintProposeBody, PrinterRegisterBody, PrinterSelectBody, PromptEditBody, ResearchAdvanceBody, ResearchClaimBody, ResearchRecordBody, ResearchSourceBody, RobotActionBody, RobotApproveBody, RobotCreateBody, RobotSafetyBody, RobotTelemetryBody, SessionOpenBody,     StreamStartBody, SuggestStepsBody, WorkspaceForkBody, WorkspaceMissionAttachBody, WorkspaceResearchStartBody, SkillAcceptBody, SkillAdvanceBody, SkillCreateBody, SkillDiscoverBody, SkillEvidenceBody, SpoolCreateBody, SyncApplyBody, TaskAssignBody, TaskCreate, TaskFromProposalBody, TaskResult, TaskRouteBody,     TemplateMissionBody, TransformBody, TwinLinkBody, VisionAnalyzeBody, VisionProposeBody, VoiceApprovalRequestBody, VoiceApproveBody, VoiceChatBody,     VoiceSynthesizeBody, VoiceTranscribeBody, WriteDecisionBody, CommandBody, RecoverBody, AgendaImportBody, BootstrapBody, ResearchRunBody, ResearchExecuteBody, PresenceTriageBody, PresenceNotifyBody, MeshDelegateBody, MeshPreviewBody, HardwareLinkBody, CampaignCreateBody, HardwareVerifyBody, HardwareRevokeBody, FinanceRecordBody, FinanceStatusBody, EnergyRecordBody, QuestCreateBody, WorkflowDispatchBody
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 logger = logging.getLogger("mycelium.coordinator")
@@ -599,7 +600,7 @@ def heartbeat(node_id: str, heartbeat_data: Heartbeat) -> Response:
         # BIG #39: Hardware Reality Layer telemetry
         from .nodes import (
             check_telemetry, check_hardware, check_compute_capabilities,
-            check_energy_state
+            check_energy_state, check_displays
         )
         if heartbeat_data.telemetry is not None:
             updates["telemetry"] = dump(check_telemetry(
@@ -614,6 +615,10 @@ def heartbeat(node_id: str, heartbeat_data: Heartbeat) -> Response:
         if heartbeat_data.energy_state is not None:
             updates["energy_state"] = dump(check_energy_state(
                 heartbeat_data.energy_state))
+        # VERTICAL SLICE 1: read-only display report (node-state).
+        if heartbeat_data.displays is not None:
+            updates["displays"] = dump(check_displays(
+                heartbeat_data.displays))
     except NodeRefusedError as error:
         raise HTTPException(status_code=422, detail=str(error))
     with connection() as db:
@@ -622,7 +627,7 @@ def heartbeat(node_id: str, heartbeat_data: Heartbeat) -> Response:
         params = [updates["last_seen"], updates["status"], updates["last_auth"]]
         optional_fields = ("capabilities", "models", "executors", "resources",
                            "telemetry", "telemetry_timestamp", "hardware",
-                           "compute_capabilities", "energy_state")
+                           "compute_capabilities", "energy_state", "displays")
         for field in optional_fields:
             if field in updates:
                 set_clauses.append(f"{field}=COALESCE(?, {field})")
@@ -639,7 +644,7 @@ NODE_PUBLIC_COLUMNS = (
     "energy_source, last_seen, status, display_name, models, "
     "executors, resources, locality_zone, last_auth, "
     "coordinator_capable, telemetry, telemetry_timestamp, hardware, "
-    "compute_capabilities, energy_state, health"
+    "compute_capabilities, energy_state, health, displays"
 )
 
 
@@ -668,12 +673,15 @@ def _assigned_tasks_map() -> dict:
 def _node_to_json(row, tasks_by_node: dict | None = None) -> dict:
     record = dict(row)
     for key in ("capabilities", "models", "executors", "resources",
-                "telemetry", "hardware", "compute_capabilities", "energy_state"):
+                "telemetry", "hardware", "compute_capabilities", "energy_state",
+                "displays"):
         try:
             record[key] = load(record.get(key) or (
                 "[]" if key not in ("resources", "telemetry", "energy_state") else "{}"))
         except ValueError:
             record[key] = [] if key not in ("resources", "telemetry", "energy_state") else {}
+    if not isinstance(record.get("displays"), list):
+        record["displays"] = []
     record["derived_status"] = derive_status(
         record.get("status", "unknown"), record.get("last_seen", ""))
     try:
@@ -736,6 +744,19 @@ def get_node(node_id: str) -> dict:
     if row is None:
         raise HTTPException(404, "Node is not registered")
     return _node_to_json(row, _assigned_tasks_map())
+
+
+@app.get("/api/v1/digital-world")
+def digital_world() -> dict:
+    """Derived NODE -> DISPLAY view (VERTICAL SLICE 1).
+
+    Read-only: pure derivation over the node registry
+    (derive_digital_world). No writes, no node contact, no
+    display database — the snapshot is a VIEW of node-state
+    with provenance 'derived'. Unknown display values stay
+    null; UI position/scale/selection live client-side only."""
+    from .nodes import derive_digital_world
+    return derive_digital_world(list_nodes())
 
 
 @app.get("/api/v1/nodes/{node_id}/reality")
@@ -826,6 +847,8 @@ def node_reality(node_id: str) -> dict:
             for entry in compute],
         "energy_state": record.get("energy_state", {})
         if isinstance(record.get("energy_state"), dict) else {},
+        "displays": record.get("displays", [])
+        if isinstance(record.get("displays"), list) else [],
         "roles": _node_role_list(record),
         "current_task": record.get("current_task"),
         "last_seen": record.get("last_seen", ""),
@@ -922,7 +945,10 @@ def enable_node(node_id: str, body: OperatorBody) -> dict:
 def create_task(task: TaskCreate) -> dict[str, object]:
     """Create one queued task. Routing requirements come from the
     explicit field and (validated, merged) the reserved payload
-    key; the payload never keeps a shadow copy afterwards."""
+    key; the payload never keeps a shadow copy afterwards.
+    mission_id is traceability only: it must reference a real
+    mission, never causes execution, and stays NULL for
+    general/system tasks."""
     try:
         requirements = check_requirements(task.requirements or {})
         embedded = requirements_from_payload(task.payload)
@@ -937,16 +963,23 @@ def create_task(task: TaskCreate) -> dict[str, object]:
         requirements = check_requirements(merged)
     except ValueError as error:
         raise HTTPException(status_code=422, detail=str(error))
+    mission_id = (task.mission_id or "").strip() or None
+    if mission_id is not None:
+        from .missions import load_mission as _load_mission
+        if _load_mission(mission_id) is None:
+            raise HTTPException(status_code=422,
+                                detail="unknown mission_id")
     payload = dict(task.payload)
     payload.pop("routing", None)
     with connection() as db:
-        cursor = db.execute("""INSERT INTO tasks (kind,payload,required_capabilities,preferred_tier,priority,status,created_at,routing)
-        VALUES (?, ?, ?, ?, ?, 'queued', ?, ?)""",
+        cursor = db.execute("""INSERT INTO tasks (kind,payload,required_capabilities,preferred_tier,priority,status,created_at,routing,mission_id)
+        VALUES (?, ?, ?, ?, ?, 'queued', ?, ?, ?)""",
         (task.kind, dump(payload), dump(task.required_capabilities), task.preferred_tier, task.priority, now(),
-         dump(requirements.model_dump(mode="json"))))
+          dump(requirements.model_dump(mode="json")), mission_id))
     logger.info("task_created task_id=%s kind=%s", cursor.lastrowid, task.kind)
     emit_event("task.queued", f"Task {cursor.lastrowid} ({task.kind}) queued",
-               task_id=str(cursor.lastrowid))
+               task_id=str(cursor.lastrowid),
+               mission_id=mission_id or "")
     return {"id": cursor.lastrowid, "status": "queued"}
 
 
@@ -1117,6 +1150,9 @@ def _claim_task(node_id: str, now_str: str,
     Pre-assigned tasks only go to their assignee; routing requirements
     (model types, executor) revalidate against live advertisements;
     token-bound nodes must present their credential.
+    Stale leases expire first (same rules as expire_leases, same
+    desktop-claim precedent): a crashed worker never pins a task,
+    and no scheduler, daemon or background thread is involved.
     """
     with connection() as db:
         node = db.execute(
@@ -1132,6 +1168,10 @@ def _claim_task(node_id: str, now_str: str,
                                 detail="node credential rejected")
         if node["status"] != "online" or node_is_stale(node["last_seen"], now_str):
             return None
+        # Piggyback lease recovery on the authenticated claim path
+        # (mirrors desktop_claim_next): crashed workers never pin
+        # tasks, without any scheduler, daemon or background thread.
+        expire_leases(now_str)
         try:
             node_models = load(node["models"] or "[]")
         except ValueError:
@@ -1185,29 +1225,46 @@ def _claim_task(node_id: str, now_str: str,
             if changed:
                 logger.info("task_claimed task_id=%s node_id=%s attempt=%s", task["id"], node_id, attempts + 1)
                 return ClaimedTask(id=task["id"], kind=task["kind"], payload=load(task["payload"]),
-                                   required_capabilities=list(needed))
+                                   required_capabilities=list(needed),
+                                   mission_id=task["mission_id"] if "mission_id" in task.keys() else None)
     return None
 
 
 @app.post("/api/v1/tasks/{task_id}/complete", status_code=204)
-def complete_task(task_id: int, result: TaskResult, node_id: str | None = None) -> Response:
-    _complete_task(task_id, result, completing_node_id=node_id, now_str=now())
+async def complete_task(task_id: int, request: Request, node_id: str | None = None) -> Response:
+    """Close an assigned task. The completing node identifies itself
+    via query (?node_id=) or body (node_id), matching how existing
+    workers already send it; anonymous or foreign completions are
+    refused exactly like unknown tasks (no identity oracle)."""
+    try:
+        body = await request.json()
+    except ValueError:
+        raise HTTPException(status_code=422, detail="invalid JSON body")
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=422, detail="invalid JSON body")
+    claimed = node_id or body.get("node_id")
+    try:
+        result = TaskResult.model_validate(body)
+    except ValidationError as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    _complete_task(task_id, result, completing_node_id=claimed, now_str=now())
     return Response(status_code=204)
 
 
 def _complete_task(task_id: int, result: TaskResult, completing_node_id: str | None = None, now_str: str | None = None) -> None:
     """Complete an assigned task within its lease. Fail-closed otherwise.
 
-    Requires status 'assigned', a still-valid lease, and — when the caller
-    identifies itself — a matching assigned node. Expired or foreign
-    assignments can never complete.
+    The completing node must identify itself and match the assignment:
+    anonymous or foreign completions are refused exactly like
+    unknown tasks (no identity oracle). Expired assignments can
+    never complete.
     """
     current = now_str or now()
     with connection() as db:
         row = db.execute("SELECT status, assigned_node_id, lease_until, routing_decision FROM tasks WHERE id=?", (task_id,)).fetchone()
         if row is None or row["status"] != "assigned":
             raise HTTPException(404, "Assigned task not found")
-        if completing_node_id is not None and row["assigned_node_id"] != completing_node_id:
+        if not completing_node_id or row["assigned_node_id"] != completing_node_id:
             raise HTTPException(404, "Assigned task not found")
         try:
             stamped = load(row["routing_decision"] or "{}")
@@ -1469,6 +1526,423 @@ def list_tasks() -> list[dict]:
             record["routing_decision"] = None
         items.append(record)
     return items
+
+
+# =============================================================================
+# INTEGRATION PASS — smallest UI connections over existing backend truth.
+# Every route below is a read-only view (or a thin web-form bridge onto an
+# existing POST API) over stores/APIs that already exist: tasks queue,
+# nodes, missions, desktop approvals, write proposals, voice approvals,
+# model_router (pure), interface events, jobs. No new queue, no new bus,
+# no new registry, no new auth, no new scheduler — only visibility.
+# =============================================================================
+
+
+@app.get("/api/v1/models/routes")
+def model_routes() -> dict:
+    """Read-only model-router status: one resolution per task class.
+
+    Pure decision layer (model_router.resolve_model): no I/O, no
+    execution, no downloads. tool_execution has no automatic route
+    by design and reports its refusal openly."""
+    from .model_router import (
+        PROVEN_LOCAL_TOOL_MODELS,
+        TASK_CLASSES,
+        ModelRefusedError,
+        code_model_pin,
+        resolve_model,
+    )
+    routes: dict[str, dict] = {}
+    for task_class in sorted(TASK_CLASSES):
+        try:
+            resolved = resolve_model(task_class)
+        except ModelRefusedError as error:
+            routes[task_class] = {"routed": False,
+                                  "reason": str(error)[:300]}
+            continue
+        routes[task_class] = {"routed": True,
+                              "provider": resolved.provider,
+                              "model": resolved.model,
+                              "local": resolved.local,
+                              "operator_override": resolved.operator_override,
+                              "reason": resolved.reason}
+    return {"routes": routes,
+            "code_pin": code_model_pin(),
+            "proven_local_tool_models": sorted(PROVEN_LOCAL_TOOL_MODELS)}
+
+
+@app.get("/api/v1/events/stream")
+async def events_stream(after: str = "", type: str = "",
+                        limit: int = 50, once: bool = False) -> StreamingResponse:
+    """Minimal read-only SSE tail over the existing interface event bus.
+
+    Same store and validation as GET /api/v1/events (poll remains the
+    fallback): `after` is an event_id cursor, `type` filters one event
+    type, `limit` bounds the initial replay. Emits `data:` JSON lines
+    for backlog + new rows, `: ping` keep-alives every 2s when quiet.
+    `once=true` sends the backlog plus the hello comment and closes
+    (snapshot for tests/curl); default keeps the tail open.
+    Events inform; they never authorize."""
+    from .events import EventRefusedError, POLL_LIMIT
+    try:
+        count = max(1, min(int(limit or 50), POLL_LIMIT))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=422,
+                            detail="limit must be an integer")
+    try:
+        backlog = bus_events(limit=count, after=after,
+                             event_type=type)
+    except EventRefusedError as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error))
+
+    async def _generate():
+        import asyncio as _asyncio
+        cursor = after
+        for event in backlog:
+            yield f"data: {json.dumps(event.model_dump(mode='json'))}\n\n"
+            cursor = event.event_id
+        yield ": connected — poll fallback: GET /api/v1/events\n\n"
+        if once:
+            return
+        while True:
+            await _asyncio.sleep(2.0)
+            try:
+                fresh = bus_events(limit=count, after=cursor,
+                                   event_type=type)
+            except (EventRefusedError, ValueError):
+                yield ": refusing — filter rejected, stream closing\n\n"
+                return
+            except Exception:
+                yield ": ping\n\n"
+                continue
+            if not fresh:
+                yield ": ping\n\n"
+                continue
+            for event in fresh:
+                yield (f"data: "
+                       f"{json.dumps(event.model_dump(mode='json'))}\n\n")
+                cursor = event.event_id
+
+    return StreamingResponse(_generate(),
+                             media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache",
+                                      "X-Accel-Buffering": "no",
+                                      "Connection": "keep-alive"})
+
+
+def _task_status_counts(rows: list[dict]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for row in rows:
+        key = str(row.get("status", "unknown"))
+        counts[key] = counts.get(key, 0) + 1
+    return counts
+
+
+@app.get("/tasks", response_class=HTMLResponse)
+def tasks_page(status: str = "") -> str:
+    """Task dashboard over the existing queue: every row links to its
+    mission, node, context and events. No gate bypass: assignment,
+    claim and completion stay on the existing POST APIs."""
+    from . import ui as _ui
+    try:
+        rows = list_tasks()
+    except Exception:
+        rows = []
+    wanted = (status or "").strip().lower()
+    if wanted:
+        rows = [row for row in rows
+                if str(row.get("status", "")).lower() == wanted]
+    counts = _task_status_counts(list_tasks() if wanted else rows)
+    chips = " ".join(
+        f"<a class=\"chip\" href=\"/tasks\">{'all'}</a>",
+        ) + "".join(
+        f" <a class=\"chip\" href=\"/tasks?status={_ui.esc(key)}\">"
+        f"{_ui.esc(key)} {value}</a>"
+        for key, value in sorted(counts.items()))
+    cards = "".join(
+        f"<div class=\"sprout\">"
+        f"<b>#{row.get('id')} {_ui.esc(str(row.get('kind', '')))}</b><br>"
+        f"{_ui.status_dot(str(row.get('status', '')))}"
+        f"{_ui.chip(str(row.get('status', '')))}"
+        + (f" <span class=\"muted\">mission "
+           f"<a href=\"/missions/{_ui.esc(str(row.get('mission_id') or ''))}\">"
+           f"{_ui.esc(str(row.get('mission_id') or '')[:24])}</a></span>"
+           if row.get("mission_id") else "")
+        + (f" <span class=\"muted\">→ "
+           f"{_ui.esc(str(row.get('assigned_node_id') or ''))}</span>"
+           if row.get("assigned_node_id") else "")
+        + (f" <span class=\"muted\">attempt "
+           f"{_ui.esc(str(row.get('attempt_count', 0)))}/3</span>")
+        + f"<br><a href=\"/tasks/{row.get('id')}\">Open task</a></div>"
+        for row in rows[:100]) or _ui.empty(
+            "No tasks yet — queue one below or via POST /api/v1/tasks.")
+    main = f"""<h1>Tasks — delegation units</h1>
+    <p class="muted">TASK = one delegatable unit. Queued → assigned (lease 300s, max 3 attempts) → completed/failed. MISSION = the plan it belongs to. Nodes pull; the coordinator never pushes.</p>
+    <div class="panel"><p>{chips}</p>
+    <form method="post" action="/web/tasks">
+    <input type="text" name="kind" placeholder="kind, e.g. system_inventory" style="width:26%" aria-label="Task kind">
+    <input type="text" name="capabilities" placeholder="capabilities, comma separated" style="width:26%" aria-label="Required capabilities">
+    <input type="text" name="mission_id" placeholder="mission_id (optional)" style="width:22%" aria-label="Mission id">
+    <button type="submit">Queue task</button></form>
+    <form method="post" action="/web/maintenance/sweep" style="display:inline">
+    <button type="submit">Sweep expired leases</button></form>
+    <p class="muted">mission_id is traceability only and must reference a real mission; the task never executes on creation.</p></div>
+    <div class="grove">{cards}</div>"""
+    return _ui.shell("Tasks", "/tasks", main, _ui.command_bar())
+
+
+@app.get("/tasks/{task_id}", response_class=HTMLResponse)
+def task_page(task_id: int):
+    """One task: goal, mission, node, capability, status, attempts,
+    lease, result, provenance-relevant links. Read-only."""
+    from . import ui as _ui
+    try:
+        record = get_task(task_id)
+    except HTTPException as error:
+        return HTMLResponse(f"Task not found ({error.status_code})",
+                            status_code=error.status_code)
+    payload = record.get("payload") or {}
+    goal = ""
+    if isinstance(payload, dict):
+        for key in ("goal", "question", "url", "summary", "text"):
+            if payload.get(key):
+                goal = str(payload[key])[:300]
+                break
+    result = record.get("result") or {}
+    routing = record.get("routing") or {}
+    decision = record.get("routing_decision") or {}
+    events = ""
+    try:
+        matches = [event for event in bus_events(limit=200)
+                   if str(event.task_id) == str(task_id)][-15:]
+        events = "".join(
+            f"<li><small>{_ui.esc(event.created_at)}</small> "
+            f"<b>{_ui.esc(event.event_type)}</b> "
+            f"{_ui.esc(event.summary[:200])}</li>"
+            for event in matches) or "<li>No events yet.</li>"
+    except Exception:
+        events = "<li>Events unavailable.</li>"
+    mission = record.get("mission_id") or ""
+    node = record.get("assigned_node_id") or ""
+    main = f"""<h1>Task #{_ui.esc(str(record.get('id')))}</h1>
+    <div class="panel">
+    <p><b>{_ui.esc(str(record.get('kind', '')))}</b> {_ui.status_dot(str(record.get('status', '')))}{_ui.chip(str(record.get('status', '')))}</p>
+    {f"<p>{_ui.esc(goal)}</p>" if goal else ""}
+    <p class="muted">mission: {(f"<a href='/missions/{_ui.esc(str(mission))}'>{_ui.esc(str(mission)[:40])}</a>" if mission else "— (general/system task)")}</p>
+    <p class="muted">claimed by: {(f"<a href='/nodes'>{_ui.esc(str(node))}</a>" if node else "— (queued, unclaimed)")}</p>
+    <p class="muted">capabilities: {_ui.esc(', '.join(record.get('required_capabilities') or []) or 'none')} · tier: {_ui.esc(str(record.get('preferred_tier') or 'any'))} · priority: {_ui.esc(str(record.get('priority', 0)))}</p>
+    <p class="muted">attempts: {_ui.esc(str(record.get('attempt_count', 0)))}/3 · lease until: {_ui.esc(str(record.get('lease_until') or '—'))} · created: {_ui.esc(str(record.get('created_at', ''))[:16])}</p>
+    <p class="muted">routing: {_ui.esc(str((routing or {}).get('required_executor', '') or (decision or {}).get('selected_node_id', '') or 'auto'))} · <a href="/api/v1/tasks/by-id/{_ui.esc(str(record.get('id')))}">raw JSON</a></p>
+    <p class="muted">context: <a href="/api/v1/context/packet?goal={_ui.esc(str(record.get('kind', ''))[:80])}">context packet for this kind</a> (bounded; same packet the code worker fetches) · world: <a href="/world">INVENTory</a></p>
+    </div>
+    <h2>Result</h2><div class="panel"><p>{_ui.esc(str((result or {}).get('error', '') or (result or {}).get('result', '') or '— no result yet —')[:1000])}</p></div>
+    <h2>Assign</h2><div class="panel">
+    <form method="post" action="/web/tasks/{_ui.esc(str(record.get('id')))}/assign">
+    <input type="text" name="node_id" placeholder="node_id (empty = auto-route)" style="width:40%" aria-label="Node id">
+    <button type="submit">Assign</button></form>
+    <p class="muted">Explicit assignment constrains the next claim; the node still pulls the task. Empty node_id auto-routes via the existing routing decision.</p></div>
+    <h2>Events</h2><ul>{events}</ul>
+    <p class="muted">Stuck or expired? <code>POST /api/v1/maintenance/sweep-leases</code> requeues expired leases (physical-uncertain tasks block instead of duplicating). Retry happens by re-queueing, never by forcing.</p>"""
+    return _ui.shell(f"Task #{task_id}", "/tasks", main,
+                     _ui.command_bar())
+
+
+@app.post("/web/tasks/{task_id}/assign")
+async def web_task_assign(task_id: int, request: Request) -> RedirectResponse:
+    """Smallest UI bridge onto POST /api/v1/tasks/{id}/assign: same
+    eligibility proof, same routing decision. Assignment constrains,
+    never pushes executable work."""
+    from fastapi import HTTPException as _HTTPException
+    fields = await _form_fields(request)
+    node_id = fields.get("node_id", "").strip() or None
+    try:
+        assign_task(task_id, TaskAssignBody(node_id=node_id, policy={}))
+    except (_HTTPException, ValueError):
+        pass
+    return RedirectResponse(f"/tasks/{task_id}", status_code=303)
+
+
+@app.post("/web/maintenance/sweep")
+async def web_maintenance_sweep() -> RedirectResponse:
+    """Smallest UI bridge onto POST /api/v1/maintenance/sweep-leases:
+    existing expiry rules only (requeue/fail/block), creates nothing,
+    executes nothing. Repeated sweeps are safe by conditional update."""
+    maintenance_sweep_leases()
+    return RedirectResponse("/tasks", status_code=303)
+
+
+@app.post("/web/tasks")
+async def web_task_create(request: Request) -> RedirectResponse:
+    """Smallest UI bridge onto POST /api/v1/tasks: same validation,
+    same traceability rule, no execution."""
+    from fastapi import HTTPException as _HTTPException
+    fields = await _form_fields(request)
+    kind = fields.get("kind", "").strip()
+    if not kind:
+        return RedirectResponse("/tasks", status_code=303)
+    capabilities = [part.strip() for part in
+                    fields.get("capabilities", "").replace(";", ",").split(",")
+                    if part.strip()][:20]
+    mission_id = fields.get("mission_id", "").strip() or None
+    try:
+        created = create_task(TaskCreate(kind=kind,
+                                         required_capabilities=capabilities,
+                                         mission_id=mission_id))
+    except (_HTTPException, ValueError):
+        return RedirectResponse("/tasks", status_code=303)
+    return RedirectResponse(f"/tasks/{created.get('id', '')}",
+                            status_code=303)
+
+
+def _mission_tasks_html(mission_id: str) -> str:
+    """Tasks bound to one mission via task.mission_id (traceability
+    link, read-only)."""
+    from . import ui as _ui
+    try:
+        linked = [row for row in list_tasks()
+                  if str(row.get("mission_id") or "") == str(mission_id)]
+    except Exception:
+        linked = []
+    rows = "".join(
+        f"<li>{_ui.status_dot(str(row.get('status', '')))}"
+        f"<a href=\"/tasks/{row.get('id')}\">#{row.get('id')} "
+        f"{_ui.esc(str(row.get('kind', '')))}</a> — "
+        f"{_ui.esc(str(row.get('status', '')))}"
+        + (f" → {_ui.esc(str(row.get('assigned_node_id') or ''))}"
+           if row.get("assigned_node_id") else "")
+        + "</li>"
+        for row in linked)
+    return rows or ("<li>No tasks bound — queue one from "
+                    "<a href=\"/tasks\">Tasks</a> with this mission_id.</li>")
+
+
+@app.get("/approvals", response_class=HTMLResponse)
+def approvals_page() -> str:
+    """One human gate: desktop actions + write proposals + voice
+    requests + missions waiting. Read-only aggregation; every decide
+    control lives on its existing route. Nothing auto-approves."""
+    from . import ui as _ui
+    try:
+        desktop = [row for row in agent_status().get("waiting", [])
+                   if row.get("status") == "pending_approval"]
+    except Exception:
+        desktop = []
+    try:
+        writes = [item for item in _write_list(limit=100)
+                  if str(item.get("status", "")).lower() in
+                  ("proposed", "pending", "pending_approval")]
+    except Exception:
+        writes = []
+    try:
+        voice = pending_voice_requests()
+    except Exception:
+        voice = []
+    try:
+        missions_waiting = [m for m in
+                            (_mission_to_json(mission)
+                             for mission in list_missions())
+                            if m.get("status") == "pending_approval"]
+    except Exception:
+        missions_waiting = []
+    desktop_html = "".join(
+        f"<li>{_ui.status_dot(entry.get('status', ''))}"
+        f"<code>{_ui.esc(entry.get('action_type', ''))}</code> "
+        f"{_ui.esc(entry.get('action_id', ''))} "
+        f"<a href=\"/agents\">decide in Agents</a></li>"
+        for entry in desktop[:20]) or "<li>None.</li>"
+    writes_html = "".join(
+        f"<li><code>{_ui.esc(item.get('proposal_id', ''))}</code> "
+        f"{_ui.esc(item.get('summary', ''))} "
+        f"<a href=\"/writes\">decide in Writes (exact YES)</a></li>"
+        for item in writes[:20]) or "<li>None.</li>"
+    voice_html = "".join(
+        f"<li><code>{_ui.esc(item.approval_id)}</code> "
+        f"{_ui.esc(item.kind)} → {_ui.esc(item.target_id)} "
+        f"<span class=\"muted\">{_ui.esc(item.summary[:120])}</span></li>"
+        for item in voice[:20]) or "<li>None.</li>"
+    missions_html = "".join(
+        f"<li><a href=\"/missions/{_ui.esc(m.get('mission_id', ''))}\">"
+        f"{_ui.esc(m.get('goal', '')[:100])}</a></li>"
+        for m in missions_waiting[:20]) or "<li>None.</li>"
+    total = len(desktop) + len(writes) + len(voice) + len(missions_waiting)
+    main = f"""<h1>Approvals — the human gate</h1>
+    <p class="muted"><b>{total}</b> waiting. Approval is permission, never verification, never execution. Nothing here auto-approves.</p>
+    <div class="panel"><h2>Missions ({len(missions_waiting)})</h2><ul>{missions_html}</ul></div>
+    <div class="panel"><h2>Desktop actions ({len(desktop)})</h2><ul>{desktop_html}</ul></div>
+    <div class="panel"><h2>Write proposals ({len(writes)})</h2><ul>{writes_html}</ul></div>
+    <div class="panel"><h2>Voice requests ({len(voice)})</h2><ul>{voice_html}</ul></div>"""
+    return _ui.shell("Approvals", "/approvals", main,
+                     _ui.command_bar())
+
+
+@app.get("/system", response_class=HTMLResponse)
+def system_page() -> str:
+    """System truth: model routing, coordinator counts, jobs. All
+    read-only; the scheduler stays on-demand (jobs run via API/n8n
+    cron, never a background thread)."""
+    from . import ui as _ui
+    try:
+        routes = model_routes()
+    except Exception:
+        routes = {"routes": {}, "code_pin": "?", "proven_local_tool_models": []}
+    route_rows = "".join(
+        f"<tr><td><code>{_ui.esc(task_class)}</code></td>"
+        f"<td>{'refused' if not info.get('routed') else _ui.esc(str(info.get('provider', '')) + '/' + str(info.get('model', '')))}</td>"
+        f"<td>{'yes' if info.get('local') else 'no' if info.get('routed') else '—'}</td>"
+        f"<td class=\"muted\">{_ui.esc(str(info.get('reason', ''))[:140])}</td></tr>"
+        for task_class, info in sorted(routes.get("routes", {}).items())
+    ) or "<tr><td colspan='4'>Router unavailable.</td></tr>"
+    try:
+        status = coordinator_status()
+    except Exception:
+        status = {}
+    try:
+        jobs = job_list()
+    except Exception:
+        jobs = []
+    jobs_html = "".join(
+        f"<li><code>{_ui.esc(str(job.get('job_name', '')))}</code> "
+        f"<span class=\"muted\">{_ui.esc(str(job.get('trigger', '')))}</span> "
+        f"<form method=\"post\" action=\"/web/jobs/run\" "
+        f"style=\"display:inline\">"
+        f"<input type=\"hidden\" name=\"job_name\" "
+        f"value=\"{_ui.esc(str(job.get('job_name', '')))}\">"
+        f"<button type=\"submit\">Run</button></form></li>"
+        for job in (jobs if isinstance(jobs, list) else [])[:20]
+    ) or "<li>No jobs registered.</li>"
+    main = f"""<h1>System — routing, counts, jobs</h1>
+    <div class="panel"><h2>Model routing (existing router, read-only)</h2>
+    <table><tr><th>Task class</th><th>Provider/model</th><th>Local</th><th>Why</th></tr>{route_rows}</table>
+    <p class="muted">Code pin (worker safety override): <code>{_ui.esc(str(routes.get('code_pin', '')))}</code> · proven local tool models: {_ui.esc(', '.join(routes.get('proven_local_tool_models', [])) or 'none — tool execution needs an explicit operator model')}.</p>
+    <p class="muted">Full JSON: <a href="/api/v1/models/routes">/api/v1/models/routes</a></p></div>
+    <div class="panel"><h2>Coordinator</h2><p class="muted">{_ui.esc(str(status)[:600])}</p>
+    <p class="muted">JSON: <a href="/api/v1/status">/api/v1/status</a> · live events: <a href="/api/v1/events/stream">SSE stream</a> (poll fallback: <a href="/api/v1/events">/api/v1/events</a>)</p></div>
+    <div class="panel"><h2>Jobs (on-demand scheduler)</h2><ul>{jobs_html}</ul>
+    <p class="muted">No background thread by design — jobs run via <code>POST /api/v1/jobs/run</code> or n8n cron. Runs: <a href="/automation">Automation</a>.</p></div>"""
+    return _ui.shell("System", "/system", main, _ui.command_bar())
+
+
+@app.post("/web/jobs/run")
+async def web_job_run(request: Request) -> RedirectResponse:
+    """Smallest UI bridge onto POST /api/v1/jobs/run: same validation,
+    same idempotent run_key discipline (unique key per click, so every
+    explicit click runs). No auto-run anywhere."""
+    import secrets as _secrets
+    import time as _time
+    from fastapi import HTTPException as _HTTPException
+    fields = await _form_fields(request)
+    job_name = fields.get("job_name", "").strip()
+    if not job_name:
+        return RedirectResponse("/system", status_code=303)
+    try:
+        job_run(JobRunBody(
+            job_name=job_name, params={},
+            run_key=f"web-{int(_time.time())}-{_secrets.token_hex(2)}"))
+    except (_HTTPException, ValueError):
+        pass
+    return RedirectResponse("/system", status_code=303)
 
 
 # =============================================================================
@@ -1910,6 +2384,496 @@ def get_conversation(conversation_id: str) -> dict:
 
 
 # =============================================================================
+# PROJECT WORKSPACES (vertical slice 1) — minimal connection, no new store.
+# A workspace is the existing conversations.project_ref; one workspace
+# holds many conversations, missions follow their conversation, forks
+# copy rows and re-links update rows. Seeds (mycelium-ai, inventory,
+# forge-studio) are views over existing pages, never new entities.
+# Events reuse the existing conversation_events + interface bus.
+# =============================================================================
+
+@app.get("/api/v1/workspaces")
+def workspace_list() -> list[dict]:
+    from .workspaces import list_workspaces as _list_workspaces
+    return _list_workspaces()
+
+
+@app.get("/api/v1/workspaces/{workspace_id}")
+def workspace_get(workspace_id: str) -> dict:
+    from .workspaces import WorkspaceRefusedError
+    from .workspaces import get_workspace as _get_workspace
+    try:
+        return _get_workspace(workspace_id)
+    except WorkspaceRefusedError as error:
+        raise HTTPException(status_code=422, detail=str(error))
+
+
+@app.post("/api/v1/conversations/{conversation_id}/fork",
+          status_code=201)
+def conversation_fork(conversation_id: str,
+                      body: WorkspaceForkBody | None = None) -> dict:
+    from .workspaces import WorkspaceNotFoundError, WorkspaceRefusedError
+    from .workspaces import fork_conversation as _fork
+    try:
+        record = _fork(conversation_id,
+                       (body.target_workspace
+                        if body is not None else ""))
+    except WorkspaceNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error))
+    except WorkspaceRefusedError as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    emit_event("conversation.message",
+               f"Conversation {conversation_id} forked to "
+               f"{record['conversation_id']}",
+               conversation_id=record["conversation_id"])
+    return record
+
+
+@app.post("/api/v1/workspaces/{workspace_id}/conversations/"
+          "{conversation_id}/attach")
+def conversation_attach(workspace_id: str,
+                        conversation_id: str) -> dict:
+    from .workspaces import WorkspaceNotFoundError, WorkspaceRefusedError
+    from .workspaces import attach_conversation as _attach
+    try:
+        record = _attach(conversation_id, workspace_id)
+    except WorkspaceNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error))
+    except WorkspaceRefusedError as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    emit_event("conversation.message",
+               f"Conversation {conversation_id} linked to "
+               f"workspace '{record['workspace_id']}'",
+               conversation_id=conversation_id)
+    return record
+
+
+@app.post("/api/v1/workspaces/{workspace_id}/missions/"
+          "{mission_id}/attach")
+def mission_attach(workspace_id: str, mission_id: str,
+                   body: WorkspaceMissionAttachBody) -> dict:
+    from .workspaces import WorkspaceNotFoundError, WorkspaceRefusedError
+    from .workspaces import attach_mission as _attach_mission
+    from .workspaces import check_workspace_id
+    try:
+        check_workspace_id(workspace_id)
+        record = _attach_mission(mission_id, body.conversation_id)
+    except WorkspaceNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error))
+    except WorkspaceRefusedError as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    if record["workspace_id"] != workspace_id:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Conversation {body.conversation_id} lives in "
+                   f"workspace '{record['workspace_id'] or '-'}', "
+                   f"not '{workspace_id}'; link it there first")
+    emit_event("mission.updated",
+               f"Mission {mission_id} linked to workspace "
+               f"'{workspace_id}' via {body.conversation_id}",
+               conversation_id=body.conversation_id,
+               mission_id=mission_id)
+    return record
+
+
+# =============================================================================
+# WORKSPACE RESEARCH (vertical slice 1) — one real end-to-end flow over
+# existing pieces only: workspace conversation -> research_topic mission
+# (pending_approval, human YES required) -> research run (mission_id +
+# project_ref) -> node-first fetch tasks (pull-only workers) or local
+# approve/tick -> dossier -> explicit report back into the conversation.
+# No scheduler, no background thread, no auto-approval, no canonical
+# mutation: the dossier stays UNVERIFIED external-source until a human
+# acts through the existing candidate/approval/write gates.
+# =============================================================================
+
+async def _start_workspace_research(workspace_id: str, question: str,
+                                    objective: str, route: str,
+                                    seed_urls_raw: list,
+                                    conversation_id: str,
+                                    max_sources: int) -> dict:
+    """Shared start logic for the API route and the web form."""
+    from .mission_templates import instantiate as _instantiate
+    from .research_engine import new_run as _new_run
+    from .research_engine import save_run as _save_run
+    from .research_transport import TransportRefusedError as _TRefused
+    from .research_transport import validate_url as _validate_url
+    from .workspaces import WorkspaceNotFoundError, WorkspaceRefusedError
+    from .workspaces import attach_conversation as _attach
+    from .workspaces import check_workspace_id as _check_ws
+    from .workspaces import ensure_conversation as _ensure_conv
+    try:
+        wid = _check_ws(workspace_id)
+    except WorkspaceRefusedError as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    clean_route = str(route or "node-first").strip().lower()
+    if clean_route not in ("local", "node-first"):
+        raise HTTPException(
+            status_code=422,
+            detail="route must be local or node-first")
+    clean_question = str(question or "").strip()
+    if not clean_question:
+        raise HTTPException(status_code=422,
+                            detail="question is required")
+    if len(clean_question) > 500:
+        raise HTTPException(status_code=422,
+                            detail="question too long (max 500)")
+    seed_urls: list[str] = []
+    for raw in (seed_urls_raw or [])[:3]:
+        try:
+            seed_urls.append(_validate_url(str(raw)))
+        except _TRefused as error:
+            raise HTTPException(status_code=422, detail=str(error))
+    if clean_route == "node-first" and not seed_urls:
+        raise HTTPException(
+            status_code=422,
+            detail="node-first needs 1..3 seed_urls; use local "
+                   "for provider-side retrieval")
+    conv_id = str(conversation_id or "").strip()
+    if conv_id:
+        with chat_connection() as db:
+            init_chat_database()
+            row = db.execute(
+                "SELECT project_ref FROM conversations "
+                "WHERE conversation_id=?", (conv_id,)).fetchone()
+        if row is None:
+            raise HTTPException(404, "Conversation not found")
+        ref = str(row["project_ref"] or "")
+        if ref and ref != wid:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Conversation lives in workspace '{ref}', "
+                       f"not '{wid}'; link it there first")
+        if not ref:
+            try:
+                _attach(conv_id, wid)
+            except (WorkspaceNotFoundError,
+                    WorkspaceRefusedError) as error:
+                raise HTTPException(status_code=422,
+                                    detail=str(error))
+    else:
+        conv_id = _ensure_conv(wid, clean_question[:120])[
+            "conversation_id"]
+    records, _, _ = await _chat_world_context(clean_question)
+    try:
+        steps, template_max = _instantiate("research_topic",
+                                           clean_question)
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    try:
+        mission = _executor().create(
+            conv_id, clean_question, steps,
+            max_steps=template_max, context_records=records)
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    except ExecutorError as error:
+        raise _mission_error(error)
+    try:
+        run = _new_run(
+            clean_question, objective=str(objective or "")[:500],
+            project_ref=wid, mission_id=mission.mission_id,
+            requested_by="workspace",
+            metadata={"provider": "wikipedia",
+                      "max_sources": max(1, min(int(max_sources or 6),
+                                               6)),
+                      "route": clean_route,
+                      "seed_urls": seed_urls, "workspace": wid})
+        _save_run(run)
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    routed: dict = {"routed": False, "task_ids": []}
+    if clean_route == "node-first":
+        routed = _route_run_to_nodes(run)
+    opener = (
+        f"Research geopend: {clean_question[:200]}\n"
+        f"Missie {mission.mission_id} wacht op jouw YES; "
+        f"run {run.run_id} is draft. "
+        + (f"{len(routed.get('task_ids', []))} fetch-taak/taakjes "
+           f"staan klaar voor workers met research.fetch."
+           if routed.get("routed") else
+           f"Status: {routed.get('reason', 'lokaal')[:160]}"))
+    try:
+        opening = new_message(conv_id, "assistant", opener)
+        _chat_store_message(
+            opening.message_id, conv_id, "assistant",
+            opening.content, now(),
+            dump(opening.provenance.model_dump(mode="json")), "[]")
+    except ValueError:
+        pass
+    emit_event("research.queued",
+               f"Workspace '{wid}': {clean_question[:120]} "
+               f"(run {run.run_id}, missie {mission.mission_id})",
+               conversation_id=conv_id,
+               mission_id=mission.mission_id)
+    emit_event("mission.started",
+               f"Mission {mission.mission_id}: {clean_question[:120]}",
+               conversation_id=conv_id,
+               mission_id=mission.mission_id)
+    return {
+        "workspace_id": wid,
+        "conversation_id": conv_id,
+        "mission_id": mission.mission_id,
+        "mission_status": mission.status,
+        "run_id": run.run_id,
+        "run_status": run.status,
+        "route": clean_route,
+        "routed": bool(routed.get("routed", False)),
+        "task_ids": list(routed.get("task_ids", [])),
+        "status_note": str(routed.get("reason", "") or (
+            "wacht op missie-YES, daarna approve/tick" if clean_route
+            == "local" else ""))[:300],
+    }
+
+
+@app.post("/api/v1/workspaces/{workspace_id}/research",
+          status_code=201)
+async def workspace_research_start(
+        workspace_id: str, body: WorkspaceResearchStartBody) -> dict:
+    return await _start_workspace_research(
+        workspace_id, body.question, body.objective, body.route,
+        body.seed_urls, body.conversation_id, body.max_sources)
+
+
+def _workspace_task_states(task_ids: list) -> list[dict]:
+    """Bounded task status view for a research run. Read-only,
+    best-effort: missing rows simply do not appear."""
+    out: list[dict] = []
+    try:
+        with connection() as db:
+            for raw in (task_ids or [])[:10]:
+                try:
+                    tid = int(raw)
+                except (TypeError, ValueError):
+                    continue
+                row = db.execute(
+                    "SELECT id, kind, status, assigned_node_id "
+                    "FROM tasks WHERE id=?", (tid,)).fetchone()
+                if row is not None:
+                    out.append(dict(row))
+    except Exception:
+        pass
+    return out
+
+
+@app.post("/api/v1/workspaces/{workspace_id}/research/{run_id}/report")
+def workspace_research_report(workspace_id: str, run_id: str) -> dict:
+    """Report one run's dossier back into its workspace conversation.
+
+    Explicit and idempotent (no scheduler, no background): the first
+    call posts a bounded UNVERIFIED dossier message + mission/bus
+    events and records reported_to on the run metadata; later calls
+    report already-reported. Waiting/failed runs return status only —
+    the mission is never touched here, so an outage cannot corrupt
+    mission state. Never approves, never writes canonical state.
+    """
+    from .missions import load_mission as _load_mission
+    from .missions import new_event as _new_mission_event
+    from .missions import save_event as _save_mission_event
+    from .research_engine import dossier_for_run as _dossier_for
+    from .research_engine import load_run as _load_run
+    from .research_engine import save_run as _save_run
+    from .workspaces import WorkspaceRefusedError
+    from .workspaces import check_workspace_id as _check_ws
+    try:
+        wid = _check_ws(workspace_id)
+    except WorkspaceRefusedError as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    run = _load_run(run_id)
+    if run is None:
+        raise HTTPException(404, "Research run not found")
+    if run.project_ref and run.project_ref != wid:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Run belongs to workspace '{run.project_ref}', "
+                   f"not '{wid}'")
+    mission = _load_mission(run.mission_id) if run.mission_id else None
+    if mission is None:
+        raise HTTPException(
+            status_code=422,
+            detail="Run has no known mission; refusing to report "
+                   "into the void")
+    conv_id = str(mission.conversation_id or "")
+    with chat_connection() as db:
+        init_chat_database()
+        row = db.execute(
+            "SELECT project_ref FROM conversations "
+            "WHERE conversation_id=?", (conv_id,)).fetchone()
+    if row is None or str(row["project_ref"] or "") != wid:
+        raise HTTPException(
+            status_code=422,
+            detail="Mission conversation is not in this workspace; "
+                   "link it there first")
+    dossier = _dossier_for(run_id)
+    task_ids = list((run.metadata or {}).get("routed_task_ids", []))
+    tasks = _workspace_task_states(task_ids)
+    if dossier is None:
+        return {
+            "reported": False, "run_id": run_id,
+            "workspace_id": wid, "conversation_id": conv_id,
+            "mission_id": mission.mission_id,
+            "mission_status": mission.status,
+            "status": run.status,
+            "execution_state": run.execution_state,
+            "reason": (run.error or "nog geen dossier; workers "
+                       "onderweg of run nog niet uitgevoerd")[:300],
+            "sources": len(run.source_ids or []),
+            "tasks": tasks,
+        }
+    if (run.metadata or {}).get("reported_to") == conv_id:
+        return {
+            "reported": False, "run_id": run_id,
+            "workspace_id": wid, "conversation_id": conv_id,
+            "mission_id": mission.mission_id,
+            "mission_status": mission.status,
+            "reason": "already-reported",
+            "dossier_id": dossier.dossier_id,
+            "tasks": tasks,
+        }
+    sources = list(dossier.sources or [])[:10]
+    source_lines = "\n".join(
+        f"- {str(item.get('title', ''))[:100]} "
+        f"({str(item.get('url', ''))[:120]} · "
+        f"{str(item.get('execution_state', ''))})" for item in sources
+    ) or "- (geen bronnen)"
+    text = (
+        f"Onderzoeksresultaat [{dossier.execution_state}]: "
+        f"{run.question[:200]}\n\n"
+        f"{dossier.summary[:1500]}\n\n"
+        f"Bronnen ({len(dossier.sources)}):\n{source_lines}\n\n"
+        f"Claims: {len(dossier.claims)}, open vragen: "
+        f"{len(dossier.open_questions)}, tegenstrijdigheden: "
+        f"{len(dossier.contradictions)}. Dossier "
+        f"{dossier.dossier_id}."
+        f"{' Research-memory ' + run.memory_id + '.' if run.memory_id else ''}\n\n"
+        "UNVERIFIED — mensenreview vereist. Geen feit, geen "
+        "automatische write; promotie loopt uitsluitend via de "
+        "bestaande candidate/approval/write-gates.")
+    try:
+        message = new_message(conv_id, "assistant", text)
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    _chat_store_message(
+        message.message_id, conv_id, "assistant", message.content,
+        now(), dump(message.provenance.model_dump(mode="json")),
+        "[]")
+    try:
+        _save_mission_event(_new_mission_event(
+            conv_id, "note",
+            f"Dossier {dossier.dossier_id} gerapporteerd "
+            f"({dossier.execution_state}, {len(dossier.sources)} "
+            "bronnen, UNVERIFIED).",
+            mission_id=mission.mission_id))
+    except ValueError:
+        pass
+    emit_event("conversation.message",
+               f"Dossier {dossier.dossier_id} voor run {run_id} "
+               f"staat in {conv_id} (UNVERIFIED)",
+               conversation_id=conv_id,
+               mission_id=mission.mission_id)
+    try:
+        _save_run(run.model_copy(update={
+            "metadata": {**(run.metadata or {}),
+                         "reported_to": conv_id}}))
+    except ValueError:
+        pass
+    return {
+        "reported": True, "run_id": run_id,
+        "workspace_id": wid, "conversation_id": conv_id,
+        "mission_id": mission.mission_id,
+        "mission_status": mission.status,
+        "dossier_id": dossier.dossier_id,
+        "execution_state": dossier.execution_state,
+        "message_id": message.message_id,
+        "sources": len(dossier.sources),
+        "tasks": tasks,
+    }
+
+
+@app.get("/api/v1/workspaces/{workspace_id}/workstreams")
+def workspace_workstreams(workspace_id: str) -> dict:
+    """All live workstreams in one workspace, read-only.
+
+    One workstream per mission (conversation + steps + tasks +
+    research + proposals + greenlight), plus shared workers, the
+    Forge registry counts and the workspace event tails. Pure
+    aggregation over existing stores: no new database, queue,
+    bus, scheduler or engine — independent streams stay
+    independent, this only shows them side by side.
+    """
+    from .workspaces import WorkspaceRefusedError
+    from .workspaces import workstream_overview as _overview
+    try:
+        return _overview(workspace_id)
+    except WorkspaceRefusedError as error:
+        raise HTTPException(status_code=422, detail=str(error))
+
+
+async def _linked_inventory_projects(workspace_id: str) -> dict:
+    """Resolve demonstrably linked INVENTory projects, read-only.
+
+    Candidate ids come from existing rows only
+    (workspaces.inventory_project_refs); each resolves through
+    the existing single-GET bridge with its own provenance
+    intact. Unresolvable ids never appear as projects — no
+    false positives, no writes, linkage labelled derived.
+    """
+    from .inventory_read import InventoryRefusedError
+    from .inventory_read import InventoryUnavailable
+    from .workspaces import inventory_project_refs
+    refs = inventory_project_refs(workspace_id)
+    reader = _world_reader()
+    resolved: list[dict] = []
+    unresolved = 0
+    for ref in refs[:10]:
+        try:
+            record = await reader.get("project", ref["entity_id"])
+        except (InventoryRefusedError, InventoryUnavailable,
+                ValueError, AttributeError):
+            unresolved += 1
+            continue
+        if record is None:
+            unresolved += 1
+            continue
+        try:
+            provenance = record.provenance.model_dump(mode="json")
+        except (ValueError, AttributeError):
+            provenance = {"source_type": "unknown",
+                          "human_verified": False}
+        resolved.append({
+            "entity_id": record.entity_id,
+            "title": record.title[:200],
+            "status": str((record.details or {}).get(
+                "status", ""))[:40],
+            "via": ref["via"],
+            "link": "derived: workspace row references this id; "
+                    "INVENTory stays source of truth",
+            "provenance": {
+                "source_type": str(provenance.get(
+                    "source_type", "unknown")),
+                "human_verified": bool(provenance.get(
+                    "human_verified", False)),
+                "creator_id": str(provenance.get(
+                    "creator_id", "unknown"))[:80],
+            },
+            "href": f"/world?entity_id={record.entity_id}",
+        })
+    return {"workspace_id": workspace_id,
+            "candidate_refs": len(refs),
+            "projects": resolved,
+            "unresolved": unresolved,
+            "reader": "inventory_read.get(project) single-GET"}
+
+
+@app.get("/api/v1/workspaces/{workspace_id}/inventory-projects")
+async def workspace_inventory_projects(workspace_id: str) -> dict:
+    from .workspaces import WorkspaceRefusedError
+    try:
+        return await _linked_inventory_projects(workspace_id)
+    except WorkspaceRefusedError as error:
+        raise HTTPException(status_code=422, detail=str(error))
+
+
+# =============================================================================
 # PLANNING (Fase D) — stateless like M8.4/M8.5: validate a plan, convert a
 # validated plan into one AdapterProposal for the existing approval gate.
 # No storage, no queue, no dispatch, no second approval mechanism.
@@ -2184,6 +3148,312 @@ def desktop_claim_next(body: DesktopClaimBody) -> dict | None:
                     record.action.action_id, body.node_id)
         return _with_binding(agent_describe(updated))
     return None
+
+
+# =============================================================================
+# REMOTE INPUT SLICE 1 — ephemeral mouse sessions (no new transport).
+# Browser -> coordinator -> node pull -> OS input. The coordinator never
+# pushes: the node polls POST .../poll with its node_token (same auth
+# as the desktop claim). Sessions + moves live only in the
+# process-local registry (no table, no queue, no persistence):
+# restart wipes them, fail-closed. CONNECT is the explicit human
+# YES; DISCONNECT (or expiry, or a stale node) ends input.
+# =============================================================================
+
+def _remote_node_gate(node_id: str,
+                      need: set[str] | None = None) -> dict:
+    """Shared fail-closed gate: registered + online/fresh + capable.
+
+    Returns the node record dict. Unknown nodes 404; stale/disabled
+    nodes and nodes missing any needed capability are refused (403).
+    Default need is the mouse capability (slice 1 compat).
+    """
+    from .remote_input import MOUSE_CAPABILITY
+    needed = set(need) if need else {MOUSE_CAPABILITY}
+    with connection() as db:
+        row = db.execute(
+            f"SELECT {NODE_PUBLIC_COLUMNS}, auth_token_hash "
+            "FROM nodes WHERE node_id=?",
+            (node_id,)).fetchone()
+    if row is None:
+        raise HTTPException(404, "Node is not registered")
+    record = _node_to_json(row)
+    if record.get("derived_status") not in ("online", "busy"):
+        raise HTTPException(status_code=403,
+                            detail="node is not online; refusing")
+    advertised = {str(cap).strip().lower()
+                  for cap in (record.get("capabilities") or [])}
+    missing = {cap for cap in needed if cap not in advertised}
+    if missing:
+        raise HTTPException(status_code=403,
+                            detail="node lacks "
+                                   f"{sorted(missing)[0]}; refusing")
+    return record
+
+
+@app.post("/api/v1/remote-input/sessions", status_code=201)
+def remote_input_connect(body: RemoteInputSessionBody) -> dict:
+    """CONNECT: explicit human YES for one ephemeral mouse session.
+
+    Idempotent: an already-open session for the node is returned
+    instead of a second one. Expired sessions never resurrect.
+    """
+    import time as _time
+    from .remote_input import REGISTRY, describe, open_session
+    try:
+        node_id = check_node_id(body.node_id)
+    except NodeRefusedError as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    _remote_node_gate(node_id)
+    existing = REGISTRY.open_for_node(node_id)
+    if existing is not None:
+        return describe(existing, _time.time())
+    session = open_session(node_id)
+    REGISTRY.put(session)
+    logger.info("remote_input_connected node_id=%s session=%s",
+                node_id, session.session_id[:12])
+    return describe(session, _time.time())
+
+
+@app.get("/api/v1/remote-input/sessions/{session_id}")
+def remote_input_status(session_id: str) -> dict:
+    """Session status for the UI (open/closed). Read-only."""
+    import time as _time
+    from .remote_input import REGISTRY, RemoteInputGoneError, describe, require_live
+    session = REGISTRY.get(session_id)
+    if session is None:
+        raise HTTPException(404, "Unknown remote-input session")
+    try:
+        require_live(session, _time.time())
+    except RemoteInputGoneError:
+        pass
+    return describe(session, _time.time())
+
+
+@app.post("/api/v1/remote-input/sessions/{session_id}/move",
+          status_code=204)
+def remote_input_move(session_id: str,
+                      body: RemoteInputMoveBody) -> Response:
+    """One mouse move inside an open session. Never stored: latest
+    wins in the ephemeral buffer, consumed by the next node poll."""
+    from .remote_input import (
+        REGISTRY, RemoteInputGoneError, RemoteInputRefusedError, check_move,
+    )
+    import time as _time
+    session = REGISTRY.get(session_id)
+    if session is None:
+        raise HTTPException(404, "Unknown remote-input session")
+    # The node must still be live: a stale node auto-closes input.
+    try:
+        _remote_node_gate(session.node_id)
+    except HTTPException as error:
+        if error.status_code in (403, 404):
+            from .remote_input import close_session
+            close_session(session)
+            raise HTTPException(status_code=403,
+                                detail="node no longer live; "
+                                       "session closed")
+        raise
+    try:
+        check_move(session, body.x, body.y, now=_time.time())
+    except RemoteInputGoneError as error:
+        raise HTTPException(status_code=410, detail=str(error))
+    except RemoteInputRefusedError as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    return Response(status_code=204)
+
+
+@app.post("/api/v1/remote-input/sessions/{session_id}/close")
+def remote_input_close(session_id: str) -> dict:
+    """DISCONNECT: further moves and polls are refused."""
+    import time as _time
+    from .remote_input import REGISTRY, close_session, describe
+    session = REGISTRY.get(session_id)
+    if session is None:
+        raise HTTPException(404, "Unknown remote-input session")
+    close_session(session)
+    logger.info("remote_input_closed node_id=%s session=%s",
+                session.node_id, session.session_id[:12])
+    return describe(session, _time.time())
+
+
+def _remote_session_input(session_id: str,
+                          need: set[str]) -> tuple:
+    """Shared gate for session input routes: known session + live
+    node advertising `need`. A dead node auto-closes the session."""
+    import time as _time
+    from .remote_input import REGISTRY, close_session
+    session = REGISTRY.get(session_id)
+    if session is None:
+        raise HTTPException(404, "Unknown remote-input session")
+    try:
+        _remote_node_gate(session.node_id, need)
+    except HTTPException as error:
+        if error.status_code in (403, 404):
+            close_session(session)
+            raise HTTPException(status_code=403,
+                                detail="node no longer live; "
+                                       "session closed")
+        raise
+    return session, _time.time()
+
+
+@app.post("/api/v1/remote-input/sessions/{session_id}/input",
+          status_code=204)
+def remote_input_action(session_id: str,
+                        body: RemoteInputActionBody) -> Response:
+    """One discrete input action inside an open session (click,
+    key_press, hotkey, type_text, scroll, mouse_down, mouse_up,
+    clipboard_set). Closed kind vocabulary, per-kind validation,
+    capability-gated per kind, bounded fifo (refuse-when-full).
+    Never stored beyond the ephemeral buffer."""
+    from .remote_input import (
+        REGISTRY, RemoteInputGoneError, RemoteInputRefusedError,
+        capability_for_kind, queue_action,
+    )
+    session = REGISTRY.get(session_id)
+    if session is None:
+        raise HTTPException(404, "Unknown remote-input session")
+    try:
+        need = capability_for_kind(body.kind)
+    except RemoteInputRefusedError as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    session, moment = _remote_session_input(session_id, need)
+    try:
+        queue_action(session, body.kind,
+                     body.params if isinstance(body.params, dict)
+                     else {}, now=moment)
+    except RemoteInputGoneError as error:
+        raise HTTPException(status_code=410, detail=str(error))
+    except RemoteInputRefusedError as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    return Response(status_code=204)
+
+
+@app.post("/api/v1/remote-input/sessions/{session_id}/clipboard/request",
+          status_code=204)
+def remote_input_clipboard_request(session_id: str) -> Response:
+    """Browser asks the node for its clipboard text (one-shot).
+
+    The node delivers on its next polls; the browser reads via
+    GET .../clipboard. Text-only, single ephemeral slot.
+    """
+    from .remote_input import (
+        CLIPBOARD_READ_CAPABILITY, RemoteInputGoneError,
+        RemoteInputRefusedError, request_clipboard,
+    )
+    session, moment = _remote_session_input(
+        session_id, {CLIPBOARD_READ_CAPABILITY})
+    try:
+        request_clipboard(session, now=moment)
+    except RemoteInputGoneError as error:
+        raise HTTPException(status_code=410, detail=str(error))
+    except RemoteInputRefusedError as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    return Response(status_code=204)
+
+
+@app.get("/api/v1/remote-input/sessions/{session_id}/clipboard")
+def remote_input_clipboard_read(session_id: str) -> dict:
+    """Read delivered clipboard text once (consume-on-read).
+
+    Returns {"text": ...} or {"text": null} when nothing arrived
+    yet. No history, no persistence."""
+    import time as _time
+    from .remote_input import (
+        REGISTRY, RemoteInputGoneError, take_clipboard,
+    )
+    session = REGISTRY.get(session_id)
+    if session is None:
+        raise HTTPException(404, "Unknown remote-input session")
+    try:
+        text = take_clipboard(session, now=_time.time())
+    except RemoteInputGoneError as error:
+        raise HTTPException(status_code=410, detail=str(error))
+    return {"text": text}
+
+
+@app.post("/api/v1/remote-input/poll")
+def remote_input_poll(body: RemoteInputPollBody) -> dict | None:
+    """Node pull: pending move (latest wins) + drained discrete
+    actions + clipboard-request flag, or null when idle.
+
+    Existing node auth (token) + freshness on every poll. A stale
+    node auto-closes its session. A known-but-closed session
+    answers 410 Gone (so a node holding a drag button releases
+    it); a node that never had a session stays quiet (null).
+    clipboard_text in the body is accepted only after the
+    browser requested it (text-only, validated, single slot).
+    Nothing here is persisted or replayed.
+    """
+    import time as _time
+    from .remote_input import (
+        MOUSE_CAPABILITY, REGISTRY, RemoteInputGoneError,
+        RemoteInputRefusedError, close_session, store_clipboard,
+        take_actions, take_pending,
+    )
+    try:
+        node_id = check_node_id(body.node_id)
+    except NodeRefusedError as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    with connection() as db:
+        row = db.execute(
+            "SELECT status, last_seen, auth_token_hash, capabilities "
+            "FROM nodes WHERE node_id=?",
+            (node_id,)).fetchone()
+    if row is None:
+        raise HTTPException(404, "Node is not registered")
+    try:
+        authenticate(node_id, row["auth_token_hash"],
+                     body.node_token)
+    except NodeAuthError:
+        raise HTTPException(status_code=403,
+                            detail="node credential rejected")
+    moment = now()
+    session = REGISTRY.open_for_node(node_id)
+    if session is None:
+        # Closed session the node still polls: tell it to stop
+        # (and release any held drag button). Never-seen: quiet.
+        if REGISTRY.latest_for_node(node_id) is not None:
+            raise HTTPException(status_code=410,
+                                detail="no open remote-input session")
+        return None
+    if row["status"] != "online" or node_is_stale(row["last_seen"],
+                                                  moment):
+        close_session(session)
+        raise HTTPException(status_code=410,
+                            detail="node stale; session closed")
+    advertised = {str(cap).strip().lower()
+                  for cap in load(row["capabilities"] or "[]")}
+    if MOUSE_CAPABILITY not in advertised:
+        close_session(session)
+        raise HTTPException(status_code=410,
+                            detail="capability gone; session closed")
+    if body.clipboard_text is not None:
+        try:
+            store_clipboard(session, body.clipboard_text,
+                            now=_time.time())
+        except RemoteInputGoneError as error:
+            raise HTTPException(status_code=410, detail=str(error))
+        except RemoteInputRefusedError as error:
+            raise HTTPException(status_code=422, detail=str(error))
+    try:
+        move = take_pending(session, now=_time.time())
+        actions = take_actions(session, now=_time.time())
+    except RemoteInputGoneError:
+        raise HTTPException(status_code=410,
+                            detail="session closed")
+    if move is None and not actions and not session.clipboard_request:
+        return None
+    answer: dict = {"session_id": session.session_id,
+                    "node_id": node_id,
+                    "clipboard_request": bool(
+                        session.clipboard_request)}
+    if move is not None:
+        answer["move"] = move
+    if actions:
+        answer["actions"] = actions
+    return answer
 
 
 @app.get("/api/v1/agent/status")
@@ -7144,6 +8414,21 @@ def maintenance_prune() -> dict:
     return _run()
 
 
+@app.post("/api/v1/maintenance/sweep-leases")
+def maintenance_sweep_leases() -> dict:
+    """Recover expired task + desktop-action leases without waiting
+    for a claim call. Calls only the existing expiry functions, so
+    the exact claim-path rules apply: requeue below MAX_ATTEMPTS,
+    fail at the limit, block physical-uncertain tasks, recover
+    dispatched actions to approved (block when attempts are
+    exhausted). Conditional updates make repeated sweeps safe.
+    Creates nothing, executes nothing, extends no lease.
+    Same convention as maintenance/prune: operator-triggered,
+    loopback-bound server, no per-endpoint auth layer."""
+    return {"tasks": expire_leases(),
+            "desktop_actions": expire_desktop_leases()}
+
+
 @app.get("/workshop/graph", response_class=HTMLResponse)
 async def workshop_graph_page(entity_id: str = "", depth: int = 1,
                               show: str = "missions,nodes"):
@@ -8363,6 +9648,641 @@ async def world_page(entity_id: str = "", depth: int = 1,
                      _ui.command_bar())
 
 
+def _workspace_research_html(workspace_id: str) -> str:
+    """Research NPC panel: a role over existing workers, not an agent.
+
+    The NPC is UI + identity only — starting uses the workspace
+    research route (mission + run + pull-only fetch tasks), workers
+    are the registered nodes, review stays human (mission YES,
+    UNVERIFIED dossiers, existing gates). Best-effort reads; an
+    empty panel never breaks the page.
+    """
+    from . import ui as _ui
+    wid = _ui.esc(str(workspace_id))
+    try:
+        workers = [entry["node_id"]
+                   for entry in eligible_nodes_for("research.fetch")]
+    except Exception:
+        workers = []
+    try:
+        queued = len(_queue_list(limit=50))
+    except Exception:
+        queued = 0
+    try:
+        from .research_engine import list_runs as _list_runs
+        runs = [run for run in _list_runs(limit=50)
+                if run.project_ref == workspace_id][:10]
+    except Exception:
+        runs = []
+    worker_line = (", ".join(_ui.esc(name) for name in workers[:6])
+                   or "geen worker met research.fetch online")
+    run_rows = "".join(
+        f"<tr><td class=\"muted\">{_ui.esc(run.run_id[:20])}</td>"
+        f"<td>{_ui.esc(run.question[:70])}</td>"
+        f"<td>{_ui.chip(run.status)} "
+        f"<span class=\"muted\">{_ui.esc(run.execution_state)} · "
+        f"{len(run.source_ids or [])} bronnen</span></td>"
+        f"<td><form method=\"post\" action=\"/web/workspaces/"
+        f"{wid}/research/{_ui.esc(run.run_id)}/report\" "
+        f"style=\"display:inline\">"
+        f"<button type=\"submit\">Report</button></form> "
+        + (f"<a href=\"/api/v1/research/dossiers/"
+           f"{_ui.esc(run.dossier_id)}\">dossier</a>"
+           if run.dossier_id else "<span class=\"muted\">"
+           "nog geen dossier</span>") + "</td></tr>"
+        for run in runs
+    ) or ("<tr><td colspan='4'>Nog geen research-runs in deze "
+          "workspace.</td></tr>")
+    return (
+        f"<div class=\"panel living\"><h2>🔍 Research NPC</h2>"
+        f"<p>Geen nieuw agent-framework — deze rol start de "
+        f"bestaande keten: research-missie (wacht op jouw YES) → "
+        f"fetch-taken voor workers → echte research met bronnen → "
+        f"dossier terug in de conversatie (UNVERIFIED, jij "
+        f"reviewt). Niets schrijft canoniek zonder de bestaande "
+        f"gates.</p>"
+        f"<p class=\"muted\">Workers: {worker_line} · "
+        f"research-queue: {queued}</p>"
+        f"<table><tr><th>Run</th><th>Vraag</th><th>Status</th>"
+        f"<th></th></tr>{run_rows}</table>"
+        f"<form method=\"post\" "
+        f"action=\"/web/workspaces/{wid}/research\">"
+        f"<input type=\"text\" name=\"question\" "
+        f"placeholder=\"Onderzoeksvraag…\" style=\"width:60%\" "
+        f"aria-label=\"Research question\"> "
+        f"<select name=\"route\" aria-label=\"Route\">"
+        f"<option value=\"node-first\">node-first (workers)</option>"
+        f"<option value=\"local\">local (approve/tick)</option>"
+        f"</select><br><br>"
+        f"<input type=\"text\" name=\"seed_urls\" "
+        f"placeholder=\"seed-URL's (komma/regel-gescheiden, voor node-first)\" "
+        f"style=\"width:60%\" aria-label=\"Seed URLs\"> "
+        f"<button type=\"submit\">Start research</button></form>"
+        f"<p class=\"muted\">Missie-approval blijft mensenwerk op "
+        f"<a href=\"/missions\">/missions</a>; dossiers krijgen "
+        f"alleen betekenis via jouw review.</p></div>")
+
+
+def _workspace_workstreams_html(workspace_id: str) -> str:
+    """Side-by-side workstreams: one block per mission.
+
+    Read-only aggregation (conversations, missions + greenlight,
+    tasks, research, proposals) plus shared workers/registry.
+    Streams stay independent — claiming, approving or reporting
+    one never touches another; this panel only shows them next
+    to each other. Best-effort: "" on any failure.
+    """
+    from . import ui as _ui
+    try:
+        from .workspaces import FORGE_STEP_KINDS
+        from .workspaces import workstream_overview as _overview
+        view = _overview(str(workspace_id))
+    except Exception:
+        return ""
+    blocks = []
+    for stream in view.get("workstreams", []):
+        steps = "".join(
+            f"<span class=\"chip\">"
+            f"{_ui.esc(step['kind'])}:"
+            f"{_ui.esc(step['status'])}</span>"
+            for step in stream.get("steps", [])[:10])
+        stream_tasks = "".join(
+            f"<li>{_ui.esc(task['kind'])} "
+            f"{_ui.chip(task['status'])}"
+            + (f" <span class=\"muted\">→ "
+               f"{_ui.esc(task['assigned_node_id'])}</span>"
+               if task["assigned_node_id"] else "")
+            + "</li>"
+            for task in stream.get("tasks", [])[:10])
+        stream_runs = "".join(
+            f"<li><span class=\"muted\">"
+            f"{_ui.esc(run['run_id'][:20])}</span> "
+            f"{_ui.chip(run['status'])} "
+            f"{_ui.esc(run['execution_state'])}"
+            + (f" <a href=\"/api/v1/research/dossiers/"
+               f"{_ui.esc(run['dossier_id'])}\">dossier</a>"
+               if run["dossier_id"] else "")
+            + "</li>"
+            for run in stream.get("research", [])[:6])
+        stream_props = "".join(
+            f"<li>{_ui.esc(prop['kind'])} "
+            f"{_ui.chip(prop['status'])} "
+            f"<span class=\"muted\">"
+            f"{_ui.esc(prop['proposal_id'][:24])}</span></li>"
+            for prop in stream.get("proposals", [])[:6])
+        forge_steps = [step for step in stream.get("steps", [])
+                       if step["kind"] in FORGE_STEP_KINDS]
+        forge_line = ""
+        if forge_steps:
+            forge_line = (
+                f"<p>🔨 Forge: "
+                f"{', '.join(_ui.esc(step['kind']) + ':' + _ui.esc(step['status']) for step in forge_steps)} "
+                f"· <a href=\"/forge\">Forge Studio</a></p>")
+        mib = _ui.esc(stream["mission_id"])
+        opening = stream.get("open", {}) or {}
+        open_links = (
+            f"<a href=\"{_ui.esc(opening.get('mission', ''))}\">"
+            f"Mission</a>"
+            f" · <a href=\"{_ui.esc(opening.get('conversation', ''))}\">"
+            f"Conversation</a>")
+        if opening.get("forge"):
+            open_links += (
+                f" · <a href=\"{_ui.esc(opening['forge'])}\">Forge</a>")
+        if opening.get("research"):
+            open_links += (
+                f" · <a href=\"{_ui.esc(opening['research'])}\">"
+                f"Research</a>")
+            for run_link in stream.get("research_links", [])[:3]:
+                if run_link.get("dossier_id"):
+                    open_links += (
+                        f" · <a href=\"/api/v1/research/dossiers/"
+                        f"{_ui.esc(run_link['dossier_id'])}\">"
+                        f"dossier</a>")
+                    break
+        if opening.get("approve"):
+            open_links += (
+                f" · <a href=\"{_ui.esc(opening['approve'])}\">"
+                f"Approve</a>")
+        blocks.append(
+            f"<div class=\"sprout\" id=\"stream-{mib[:20]}\"><b>"
+            f"{_ui.esc(stream['goal'][:80] or stream['mission_id'])}"
+            f"</b><br>"
+            f"{_ui.chip(stream['greenlight'])} "
+            f"{_ui.chip(stream['status'])}<br>"
+            f"<span class=\"muted\">missie "
+            f"<a href=\"{_ui.esc(stream['href'])}\">{mib[:20]}</a> "
+            f"· <a href=\"{_ui.esc(opening.get('conversation', ''))}\">"
+            f"conversatie</a>"
+            f"</span><br>{steps}{forge_line}"
+            f"{f'<ul>{stream_tasks}</ul>' if stream_tasks else ''}"
+            f"{f'<ul>{stream_runs}</ul>' if stream_runs else ''}"
+            f"{f'<ul>{stream_props}</ul>' if stream_props else ''}"
+            f"<p><b>OPEN:</b> {open_links}</p>"
+            f"</div>")
+    counts = " · ".join(
+        f"{total} {state}"
+        for state, total in sorted(view.get("task_counts", {}).items())
+    ) or "geen taken"
+    empty = ("<p>Geen missies - start een research of koppel "
+             "een conversatie.</p>")
+    cards = "".join(blocks) or empty
+    return (
+        f"<div class=\"panel\"><h2>ACTIVE WORKSTREAMS</h2>"
+        f"<p class=\"muted\">Taken: {counts} · "
+        f"<a href=\"/api/v1/workspaces/"
+        f"{_ui.esc(str(workspace_id))}/workstreams\">JSON</a> · "
+        f"workers, events en registers staan hieronder bij "
+        f"SHARED RESOURCES en ACTIVITY.</p>"
+        f"<div class=\"grove\">"
+        f"{cards}"
+        f"</div>"
+        f"</div>")
+
+
+@app.get("/workspaces", response_class=HTMLResponse)
+def workspaces_page() -> str:
+    """Project workspaces (slice 1): one project, many conversations.
+
+    Derived view only — seeds (Mycelium AI, INVENTory, Forge Studio)
+    plus every used project_ref. Fork/attach run on the existing
+    conversation/mission rows; context and packages stay where they
+    were (/api/v1/project/package, /api/v1/context/packet).
+    """
+    from . import ui as _ui
+    from .workspaces import list_workspaces as _list_workspaces
+    try:
+        items = _list_workspaces()
+    except Exception:
+        items = []
+    cards = "".join(
+        f"<div class=\"sprout\"><b>{_ui.esc(item['title'])}</b><br>"
+        f"{_ui.chip(item['kind'])} "
+        f"<span class=\"muted\">{item['conversations']} conversation(s) "
+        f"· {item['missions']} mission(s)</span><br>"
+        + (f"<span class=\"muted\">"
+           f"{_ui.esc(str(item.get('view', ''))[:140])}</span><br>"
+           if item.get("view") else "")
+        + f"<a href=\"{_ui.esc(item['href'])}\">Open workspace</a></div>"
+        for item in items) or _ui.empty("No workspaces yet.")
+    main = (f"<h1>Project workspaces</h1>"
+            f"<p class=\"muted\">One project holds many conversations; "
+            f"a conversation forks and keeps going on its own; "
+            f"anything re-links later. Seeds below are existing "
+            f"views — <a href=\"/missions\">Mycelium AI</a>, "
+            f"<a href=\"/projects\">INVENTory</a>, "
+            f"<a href=\"/forge\">Forge Studio</a> — not new systems.</p>"
+            f"<div class=\"grove\">{cards}</div>")
+    return _ui.shell("Workspaces", "/workspaces", main, "",
+                     _ui.command_bar())
+
+
+def _workspace_tree_ul(tree: dict, node_id: str, wid: str) -> str:
+    """One nested tree branch. Parent edges exist only when the
+    fork bookkeeping proves them; nothing is guessed."""
+    from . import ui as _ui
+    nodes = tree.get("nodes", {}) or {}
+    children = tree.get("children", {}) or {}
+    node = nodes.get(node_id, {})
+    if not node:
+        return ""
+    label = _ui.esc(str(node.get("title", node_id))[:70])
+    info = (
+        f"<a href=\"{_ui.esc(node.get('open_href', ''))}\">{label}</a> "
+        f"<span class=\"muted\">({node.get('messages', 0)} msgs)</span>")
+    if node.get("parent"):
+        info += (
+            f" <span class=\"chip\">fork van "
+            f"{_ui.esc(str(node['parent'])[:20])}</span>")
+    info += (
+        f" <a href=\"{_ui.esc(node.get('open_href', ''))}\">OPEN</a>"
+        f" <form method=\"post\" action=\"/web/conversations/"
+        f"{_ui.esc(node_id)}/fork\" style=\"display:inline\">"
+        f"<input type=\"hidden\" name=\"target_workspace\" "
+        f"value=\"{_ui.esc(wid)}\">"
+        f"<button type=\"submit\">Fork</button></form>")
+    branch = "".join(
+        _workspace_tree_ul(tree, child, wid)
+        for child in children.get(node_id, []))
+    if branch:
+        return f"<li>{info}<ul>{branch}</ul></li>"
+    return f"<li>{info}</li>"
+
+
+def _workspace_tree_html(view: dict, wid: str) -> str:
+    """CONVERSATIONS panel: MAIN tree plus management forms.
+
+    Fork/attach reuse the existing routes; new conversations reuse
+    the existing ensure_conversation store through a thin web form.
+    """
+    from . import ui as _ui
+    tree = view.get("tree", {}) or {}
+    roots = tree.get("roots", []) or []
+    main_tree = "".join(
+        _workspace_tree_ul(tree, root, wid) for root in roots)
+    if not main_tree:
+        main_tree = "<li>Nog geen conversations.</li>"
+    return (
+        f"<div class=\"panel\"><h2>CONVERSATIONS</h2>"
+        f"<p class=\"muted\">MAIN (alleen bewezen fork-relaties; "
+        f"de rest staat plat, nooit gegokt)</p>"
+        f"<ul class=\"convtree\">{main_tree}</ul>"
+        f"<form method=\"post\" "
+        f"action=\"/web/workspaces/{_ui.esc(wid)}/conversations/new\">"
+        f"<input type=\"text\" name=\"title\" "
+        f"placeholder=\"Titel voor nieuwe conversation\" "
+        f"style=\"width:16rem\" aria-label=\"Title\">"
+        f"<button type=\"submit\">NEW CONVERSATION</button></form>"
+        f"<form method=\"post\" "
+        f"action=\"/web/workspaces/{_ui.esc(wid)}/attach-conversation\">"
+        f"<input type=\"text\" name=\"conversation_id\" "
+        f"placeholder=\"conv-… / conv_… om te koppelen\" "
+        f"style=\"width:16rem\" aria-label=\"Conversation ID\">"
+        f"<button type=\"submit\">ATTACH</button></form>"
+        f"<form method=\"post\" "
+        f"action=\"/web/workspaces/{_ui.esc(wid)}/attach-mission\">"
+        f"<input type=\"text\" name=\"mission_id\" "
+        f"placeholder=\"mission_…\" style=\"width:12rem\" "
+        f"aria-label=\"Mission ID\">"
+        f"<input type=\"text\" name=\"conversation_id\" "
+        f"placeholder=\"doel-conversatie\" style=\"width:12rem\" "
+        f"aria-label=\"Target conversation\">"
+        f"<button type=\"submit\">Link mission here</button></form>"
+        f"</div>")
+
+
+def _workspace_pending_html(view: dict) -> str:
+    """PENDING HUMAN ACTIONS: every row opens an existing gate.
+
+    Mission approvals (mission page), desktop items (/approvals),
+    writes (/writes), research reports (existing report action).
+    This panel never approves or executes anything itself.
+    """
+    from . import ui as _ui
+    pending = view.get("pending", {}) or {}
+    wid = _ui.esc(str(view.get("workspace_id", "")))
+    rows = "".join(
+        f"<li>mission: "
+        f"<a href=\"{_ui.esc(item['href'])}\">"
+        f"{_ui.esc(item['label'][:70])}</a> "
+        f"{_ui.chip('wacht op YES')}</li>"
+        for item in pending.get("mission_approvals", [])[:10])
+    rows += "".join(
+        f"<li>desktop: "
+        f"{_ui.esc(item['label'][:40])} "
+        f"<span class=\"muted\">"
+        f"{_ui.esc(item['mission_id'][:20])}</span> "
+        f"<a href=\"/approvals\">review</a></li>"
+        for item in pending.get("desktop", [])[:10])
+    rows += "".join(
+        f"<li>write: "
+        f"{_ui.esc(item['label'][:40])} "
+        f"<span class=\"muted\">"
+        f"{_ui.esc(item['mission_id'][:20])}</span> "
+        f"<a href=\"/writes\">review</a></li>"
+        for item in pending.get("writes", [])[:10])
+    rows += "".join(
+        f"<li>research-report: "
+        f"{_ui.esc(item['label'][:70])} "
+        f"<form method=\"post\" action=\"/web/workspaces/"
+        f"{wid}/research/{_ui.esc(item['run_id'])}/report\" "
+        f"style=\"display:inline\">"
+        f"<button type=\"submit\">Report</button></form></li>"
+        for item in pending.get("research_reports", [])[:10])
+    return (
+        f"<div class=\"panel\"><h2>PENDING HUMAN ACTIONS</h2>"
+        f"<p class=\"muted\">{pending.get('total', 0)} open — "
+        f"elke actie loopt via de bestaande gates "
+        f"(<a href=\"/approvals\">approvals</a> · "
+        f"<a href=\"/writes\">writes</a> · "
+        f"<a href=\"/missions\">missions</a>).</p>"
+        f"<ul>{rows or '<li>Nothing waiting.</li>'}</ul></div>")
+
+
+def _workspace_activity_html(view: dict) -> str:
+    """ACTIVITY: existing conversation events + interface bus tail."""
+    from . import ui as _ui
+    stored = "".join(
+        f"<li>{_ui.esc(item.get('event_type', ''))} — "
+        f"{_ui.esc(str(item.get('message', ''))[:120])} "
+        f"<span class=\"muted\">"
+        f"{_ui.esc(str(item.get('created_at', ''))[:16])}</span></li>"
+        for item in view.get("events", [])[:10])
+    bus = "".join(
+        f"<li>{_ui.esc(item.get('event_type', ''))} — "
+        f"{_ui.esc(str(item.get('summary', ''))[:120])} "
+        f"<span class=\"muted\">"
+        f"{_ui.esc(str(item.get('created_at', ''))[:16])}</span></li>"
+        for item in view.get("bus_events", [])[:12])
+    return (
+        f"<div class=\"panel\"><h2>ACTIVITY</h2>"
+        f"<ul>{stored}{bus or ''}"
+        f"{'' if (stored or bus) else '<li>Quiet.</li>'}</ul></div>")
+
+
+def _workspace_shared_html(view: dict, inventory_html: str) -> str:
+    """SHARED RESOURCES: workers, Forge, research, INVENTory.
+
+    Workers and registries are global and labelled shared;
+    per-workstream assignment lives on the tasks above.
+    """
+    from . import ui as _ui
+    available = [worker for worker in view.get("workers", [])
+                 if worker.get("available")]
+    workers = "".join(
+        f"<li>{_ui.esc(worker['node_id'])} "
+        f"{_ui.chip(worker['status'])} "
+        f"<span class=\"muted\">"
+        f"{_ui.esc(', '.join(worker.get('capabilities', [])[:6]))}"
+        f"</span></li>"
+        for worker in available[:12])
+    forge = view.get("forge", {}) or {}
+    registry = forge.get("registry", {}) or {}
+    runs = "".join(
+        f"<li><span class=\"muted\">"
+        f"{_ui.esc(run['run_id'][:20])}</span> "
+        f"{_ui.esc(run['question'][:70])} "
+        f"{_ui.chip(run['status'])}"
+        + (f" <a href=\"/api/v1/research/dossiers/"
+           f"{_ui.esc(run['dossier_id'])}\">dossier</a>"
+           if run["dossier_id"] else "")
+        + "</li>"
+        for run in view.get("research", [])[:8])
+    return (
+        f"<div class=\"panel\"><h2>SHARED RESOURCES</h2>"
+        f"<h3>Workers</h3>"
+        f"<ul>{workers or '<li>WAITING — geen workers online.</li>'}</ul>"
+        f"<p><a href=\"/nodes\">All nodes</a></p>"
+        f"<h3>Forge models</h3>"
+        f"<p>{registry.get('models', 0)} modellen, "
+        f"{registry.get('fabjobs', 0)} fabjobs (gedeeld register) · "
+        f"<a href=\"/forge\">Forge Studio</a>"
+        f"</p>"
+        f"<h3>Research runs</h3>"
+        f"<ul>{runs or '<li>—</li>'}</ul>"
+        f"<p><a href=\"/research\">Research</a></p>"
+        f"{inventory_html}"
+        f"<p><a href=\"/projects\">Projects</a> · "
+        f"<a href=\"/world\">World graph</a></p>"
+        f"</div>")
+
+
+async def _workspace_inventory_html(workspace_id: str) -> str:
+    """Linked INVENTory projects + browse sample, all read-only.
+
+    Linked records resolve only from demonstrable row relations
+    (workspace id, mission context, research links) with their
+    own provenance; the browse sample is explicitly unlinked.
+    Any outage renders UNAVAILABLE — never invented data.
+    """
+    from . import ui as _ui
+    wid = str(workspace_id)
+    try:
+        linked = await _linked_inventory_projects(wid)
+    except Exception:
+        linked = {"projects": [], "unresolved": 0,
+                  "candidate_refs": 0}
+    if linked["projects"]:
+        linked_html = "<ul>" + "".join(
+            f"<li><a href=\"{_ui.esc(item['href'])}\">"
+            f"{_ui.esc(item['title'] or item['entity_id'])}</a> "
+            f"<span class=\"muted\">{_ui.esc(item['entity_id'][:24])}"
+            f" · via {_ui.esc(item['via'])} · "
+            f"{_ui.esc(item['status'] or 'unknown')} · "
+            f"provenance "
+            f"{_ui.esc(item['provenance']['source_type'])}"
+            f"{'/verified' if item['provenance']['human_verified'] else '/unverified'}"
+            f"</span></li>"
+            for item in linked["projects"]) + "</ul>"
+    elif linked["unresolved"]:
+        linked_html = (
+            f"<p class=\"muted\">INVENTory: UNAVAILABLE — "
+            f"{linked['unresolved']} gekoppelde id(s) niet op te "
+            f"lossen; niets verzonnen.</p>")
+    else:
+        linked_html = (
+            "<p class=\"muted\">Geen aantoonbaar gekoppeld "
+            "INVENTory-project (alleen exacte proj_-relaties "
+            "tellen).</p>")
+    try:
+        browsed = await _world_reader().browse("projects")
+        records = [(record.entity_id, record.title)
+                   for record in (browsed.results or [])][:8]
+        if records:
+            sample_html = "<ul>" + "".join(
+                f"<li><a href=\"/world?entity_id={_ui.esc(rid)}\">"
+                f"{_ui.esc(title[:60] or rid)}</a> "
+                f"<span class=\"muted\">{_ui.esc(rid[:20])}</span></li>"
+                for rid, title in records) + "</ul>"
+        else:
+            sample_html = ("<p class=\"muted\">Geen project-records "
+                           "gevonden.</p>")
+    except Exception as error:
+        sample_html = (
+            f"<p class=\"muted\">INVENTory: UNAVAILABLE "
+            f"({_ui.esc(str(error)[:120])}) — geen verzonnen data.</p>")
+    return (
+        f"<h3>Inventory / project records</h3>"
+        f"<h4>Gekoppeld (bewezen relaties)</h4>{linked_html}"
+        f"<p class=\"muted\"><a href=\"/api/v1/workspaces/"
+        f"{_ui.esc(wid)}/inventory-projects\">JSON</a></p>"
+        f"<h4>Sample (niet gekoppeld)</h4>{sample_html}")
+
+
+@app.get("/workspaces/{workspace_id}", response_class=HTMLResponse)
+async def workspace_page(workspace_id: str) -> str:
+    """Workspace development cockpit: independent workstreams side
+    by side. VIEW ONLY — every action below reuses an existing
+    route/gate; no new state, no orchestration, no auto-anything."""
+    from . import ui as _ui
+    from .workspaces import WorkspaceRefusedError
+    from .workspaces import get_workspace as _get_workspace
+    from .workspaces import workstream_overview as _overview
+    try:
+        workspace = _get_workspace(workspace_id)
+    except WorkspaceRefusedError:
+        return HTMLResponse("Unknown workspace", status_code=422)
+    wid = _ui.esc(workspace["workspace_id"])
+    try:
+        view = _overview(workspace["workspace_id"])
+    except Exception:
+        view = None
+    seed_view = ""
+    if workspace.get("view"):
+        seed_view = (
+            f"<div class=\"panel\"><h2>Existing view</h2>"
+            f"<p>{_ui.esc(workspace['view'])}</p>"
+            f"<p><a href=\"{_ui.esc(workspace['href'])}\">"
+            f"Open {_ui.esc(workspace['title'])} →</a></p></div>")
+    if view is None:
+        main = (f"<h1>{_ui.esc(workspace['title'])}</h1>"
+                f"{seed_view}"
+                f"<div class=\"panel\"><p>UNAVAILABLE — "
+                f"workstream-overzicht kon niet worden gelezen.</p>"
+                f"</div>")
+        return _ui.shell(workspace["title"], "/workspaces", main, "",
+                         _ui.command_bar())
+    try:
+        inventory_html = await _workspace_inventory_html(
+            workspace["workspace_id"])
+    except Exception:
+        inventory_html = ("<h3>Inventory / project records</h3>"
+                          "<p class=\"muted\">UNAVAILABLE.</p>")
+    streams_panel = _workspace_workstreams_html(
+        workspace["workspace_id"])
+    research_panel = _workspace_research_html(
+        workspace["workspace_id"])
+    main = f"""<h1>{_ui.esc(workspace['title'])}</h1>
+    <p class="muted">workspace <code>{wid}</code> · {workspace['kind']} ·
+    development cockpit (alleen kijken; handelen via bestaande gates) ·
+    <a href="{_ui.esc(workspace['package_href'])}">project package (JSON)</a> ·
+    <a href="{_ui.esc(workspace['context_href'])}">context packet (JSON)</a></p>
+    {seed_view}
+    {streams_panel}
+    {_workspace_tree_html(view, workspace['workspace_id'])}
+    {_workspace_pending_html(view)}
+    {_workspace_activity_html(view)}
+    {_workspace_shared_html(view, inventory_html)}
+    {research_panel}"""
+    return _ui.shell(workspace["title"], "/workspaces", main, "",
+                     _ui.command_bar())
+
+
+@app.post("/web/conversations/{conversation_id}/fork")
+async def web_conversation_fork(conversation_id: str,
+                                request: Request) -> Response:
+    from .workspaces import WorkspaceNotFoundError, WorkspaceRefusedError
+    from .workspaces import fork_conversation as _fork
+    fields = await _form_fields(request)
+    try:
+        record = _fork(conversation_id,
+                       fields.get("target_workspace", ""))
+    except (WorkspaceNotFoundError, WorkspaceRefusedError):
+        return RedirectResponse("/workspaces", status_code=303)
+    return RedirectResponse(
+        f"/api/v1/conversations/{record['conversation_id']}",
+        status_code=303)
+
+
+@app.post("/web/workspaces/{workspace_id}/attach-conversation")
+async def web_workspace_attach_conversation(
+        workspace_id: str, request: Request) -> Response:
+    from .workspaces import WorkspaceNotFoundError, WorkspaceRefusedError
+    from .workspaces import attach_conversation as _attach
+    fields = await _form_fields(request)
+    try:
+        _attach(fields.get("conversation_id", ""), workspace_id)
+    except (WorkspaceNotFoundError, WorkspaceRefusedError):
+        pass
+    return RedirectResponse(f"/workspaces/{workspace_id}",
+                            status_code=303)
+
+
+@app.post("/web/workspaces/{workspace_id}/conversations/new")
+async def web_workspace_conversation_new(
+        workspace_id: str, request: Request) -> Response:
+    """Open one conversation row in this workspace, then continue
+    it in /chat. Reuses the existing ensure_conversation store;
+    no workstream record, no orchestration."""
+    from .workspaces import WorkspaceRefusedError
+    from .workspaces import ensure_conversation as _ensure
+    fields = await _form_fields(request)
+    try:
+        record = _ensure(workspace_id, fields.get("title", ""))
+    except WorkspaceRefusedError:
+        return RedirectResponse(f"/workspaces/{workspace_id}",
+                                status_code=303)
+    return RedirectResponse(
+        f"/chat?id={record['conversation_id']}", status_code=303)
+
+
+@app.post("/web/workspaces/{workspace_id}/attach-mission")
+async def web_workspace_attach_mission(
+        workspace_id: str, request: Request) -> Response:
+    from .workspaces import WorkspaceNotFoundError, WorkspaceRefusedError
+    from .workspaces import attach_mission as _attach_mission
+    fields = await _form_fields(request)
+    try:
+        record = _attach_mission(fields.get("mission_id", ""),
+                                 fields.get("conversation_id", ""))
+        target = (f"/workspaces/{record['workspace_id']}"
+                  if record["workspace_id"] else
+                  f"/workspaces/{workspace_id}")
+    except (WorkspaceNotFoundError, WorkspaceRefusedError):
+        target = f"/workspaces/{workspace_id}"
+    return RedirectResponse(target, status_code=303)
+
+
+@app.post("/web/workspaces/{workspace_id}/research")
+async def web_workspace_research_start(
+        workspace_id: str, request: Request) -> Response:
+    fields = await _form_fields(request)
+    seeds = [line.strip() for line in
+             fields.get("seed_urls", "").replace(",", "\n").splitlines()
+             if line.strip()][:3]
+    try:
+        record = await _start_workspace_research(
+            workspace_id, fields.get("question", ""),
+            fields.get("objective", ""),
+            fields.get("route", "node-first"), seeds,
+            fields.get("conversation_id", ""), 6)
+    except HTTPException:
+        return RedirectResponse(f"/workspaces/{workspace_id}",
+                                status_code=303)
+    return RedirectResponse(
+        f"/workspaces/{record['workspace_id']}", status_code=303)
+
+
+@app.post("/web/workspaces/{workspace_id}/research/{run_id}/report")
+async def web_workspace_research_report(
+        workspace_id: str, run_id: str) -> Response:
+    try:
+        workspace_research_report(workspace_id, run_id)
+    except HTTPException:
+        pass
+    return RedirectResponse(f"/workspaces/{workspace_id}",
+                            status_code=303)
+
+
 @app.get("/projects", response_class=HTMLResponse)
 async def projects_page(project_id: str = "") -> str:
     """Projects as visual ecosystems: goal, components,
@@ -8823,6 +10743,12 @@ def research_dossier_page(dossier_id: str):
     <h2>Open questions</h2><ul>{questions or "<li>—</li>"}</ul>
     <h2>Related entities</h2><ul>{entities or "<li>—</li>"}</ul>
     <h2>Provenance</h2><p class="muted">external-source · {_ui.esc(dossier.provenance.creator_id)} · human_verified=false · run {_ui.esc(dossier.run_id)}{' · memory ' + _ui.esc(run.memory_id) if run and run.memory_id else ''}</p>
+    <h2>Maak taak van dossier</h2><div class="panel">
+    <form method="post" action="/web/research/dossiers/{_ui.esc(dossier.dossier_id)}/task">
+    <input type="text" name="kind" placeholder="kind, e.g. research.fetch_url" style="width:30%" aria-label="Task kind">
+    <input type="text" name="question_index" placeholder="open question # (optional)" style="width:24%" aria-label="Open question index">
+    <button type="submit">Queue task</button></form>
+    <p class="muted">Dossiers zijn geen AdapterProposals (daarvoor bestaat proposal_to_task), dus deze bridge gebruikt de bestaande POST /api/v1/tasks met dossier/run/question in de payload als provenance. Geen uitvoering bij creatie.</p></div>
     <h2>Timeline</h2><ul>{timeline}</ul>"""
     return _ui.shell("Dossier", "/research", main, "",
                      _ui.command_bar())
@@ -8863,6 +10789,44 @@ async def web_question_to_candidate(dossier_id: str,
     except CandidateRefusedError:
         pass
     return RedirectResponse(f"/research/{dossier_id}",
+                            status_code=303)
+
+
+@app.post("/web/research/dossiers/{dossier_id}/task")
+async def web_dossier_task_create(dossier_id: str,
+                                  request: Request) -> Response:
+    """Smallest UI bridge: queue one task carrying this dossier as
+    payload provenance via the existing create_task. proposal_to_task
+    does not apply here (dossiers are not AdapterProposals); the
+    dossier/run/question travel in the payload, never as commands."""
+    from fastapi import HTTPException as _HTTPException
+    from .research_engine import load_dossier
+    dossier = load_dossier(dossier_id)
+    if dossier is None:
+        return RedirectResponse("/research", status_code=303)
+    fields = await _form_fields(request)
+    kind = fields.get("kind", "").strip()
+    if not kind:
+        return RedirectResponse(f"/research/{dossier_id}",
+                                status_code=303)
+    question = ""
+    raw_index = fields.get("question_index", "").strip()
+    if raw_index.isdigit():
+        try:
+            question = str((dossier.open_questions or [])[int(raw_index)])
+        except (IndexError, ValueError, TypeError):
+            question = ""
+    try:
+        created = create_task(TaskCreate(
+            kind=kind,
+            payload={"dossier_id": dossier_id, "run_id": dossier.run_id,
+                     "question": question[:500],
+                     "title": dossier.title[:200]},
+            required_capabilities=[]))
+    except (_HTTPException, ValueError):
+        return RedirectResponse(f"/research/{dossier_id}",
+                                status_code=303)
+    return RedirectResponse(f"/tasks/{created.get('id', '')}",
                             status_code=303)
 
 
@@ -9048,6 +11012,31 @@ def agents_page() -> str:
         f"({_ui.esc(node['status'])}, seen {_ui.esc(str(node['last_seen']))})<br><small>"
         f"{_ui.esc(', '.join(node['capabilities']))}</small></li>"
         for node in status["desktop_nodes"]) or "<li>No desktop agent</li>"
+    try:
+        _queue_rows = list_tasks()
+    except Exception:
+        _queue_rows = []
+    try:
+        _queue_nodes = [node for node in list_nodes()
+                        if not any("desktop" in str(cap).lower()
+                                   for cap in node.get("capabilities", []))]
+    except Exception:
+        _queue_nodes = []
+    workers_html = "".join(
+        f"<li>{_ui.status_dot(node.get('derived_status', ''))}"
+        f"{_ui.esc(node.get('node_id', ''))} "
+        f"({_ui.esc(node.get('derived_status', ''))}, tier "
+        f"{_ui.esc(str(node.get('tier', '')))}, seen "
+        f"{_ui.esc(str(node.get('last_seen', ''))[:16])})<br><small>"
+        f"{_ui.esc(', '.join(node.get('capabilities', [])[:10]))}</small>"
+        + (f"<br><small>⚙ <a href=\"/tasks/{(node.get('current_task') or {}).get('task_id', '')}\">task #{(node.get('current_task') or {}).get('task_id', '')}</a></small>"
+           if node.get("current_task") else "<br><small>idle</small>")
+        + "</li>"
+        for node in _queue_nodes) or "<li>No queue workers registered</li>"
+    queue_open = sum(1 for row in _queue_rows
+                     if str(row.get("status", "")) == "queued")
+    queue_busy = sum(1 for row in _queue_rows
+                     if str(row.get("status", "")) == "assigned")
     waiting = sum(1 for entry in status["waiting"]
                   if entry["status"] == "pending_approval")
     done = sum(1 for entry in status["activity"]
@@ -9067,16 +11056,22 @@ def agents_page() -> str:
            f" <form style='display:inline' method='post' action=\"/web/desktop/{_ui.esc(entry['action_id'])}/decision\">"
            f"<input type='hidden' name='response' value='NO'>"
            f"<button>Reject</button></form>"
-           f" <form style='display:inline' method='post' action=\"/web/desktop/{_ui.esc(entry['action_id'])}/cancel\">"
-           f"<button>Stop</button></form>" if entry["status"] == "pending_approval" else "")
+            f" <form style='display:inline' method='post' action=\"/web/desktop/{_ui.esc(entry['action_id'])}/cancel\">"
+            f"<button>Stop</button></form>" if entry["status"] == "pending_approval" else "")
+        + (f" <form style='display:inline' method='post' action=\"/web/desktop/{_ui.esc(entry['action_id'])}/dispatch\">"
+           f"<button>Dispatch</button></form>"
+           f"<span class=\"muted\">approved — releases to the local runtime; the agent claims via its poll loop</span>"
+           if entry["status"] == "approved" else "")
         + "</li>"
         for entry in status["activity"])
     main = f"""<h1>Agents</h1>
     <div class="panel"><p>Desktop Agent: <b>{"online" if online else "offline"}</b> ({status["agents_online"]} desktop node(s))</p>
     <p class="muted"><b>AI thinks</b> · <b>agent acts</b> · <b>human approval decides</b></p>
     <p>Waiting approval: <b>{waiting}</b> · completed: <b>{done}</b> · progress via <a href="/chat">Chat</a></p>
+    <p>Queue: <b>{queue_open}</b> open · <b>{queue_busy}</b> assigned — full view in <a href="/tasks">Tasks</a>, all gates in <a href="/approvals">Approvals</a></p>
     {current_html}</div>
     <h2>Desktop agents</h2><ul>{nodes_html}</ul>
+    <h2>Queue workers (task nodes)</h2><ul>{workers_html}</ul>
     <h2>Activity</h2><ul>{items or "<li>No actions yet</li>"}</ul>"""
     return _ui.shell("Agents", "/agents", main, "",
                      _ui.command_bar())
@@ -9210,11 +11205,46 @@ def mission_page(mission_id: str) -> str:
     <p class="muted">Proposed and approved are not executed. Execution shows as its own step with its own result.</p>
     <p>{buttons}</p>
     {f"<p class=\"muted\">World: <a href='/world?entity_id={_ui.esc(first_entity)}'>graph around first context entity</a></p>" if first_entity else ""}</div>
+    <h2>Queue a task of this plan</h2><div class="panel">
+    <form method="post" action="/web/missions/{_ui.esc(mission_id)}/tasks">
+    <input type="text" name="kind" placeholder="kind, e.g. system_inventory" style="width:30%" aria-label="Task kind">
+    <input type="text" name="capabilities" placeholder="capabilities, comma separated" style="width:40%" aria-label="Required capabilities">
+    <button type="submit">Queue task</button></form>
+    <p class="muted">The task carries this mission_id as traceability; it never executes on creation. Nodes claim via the existing queue.</p></div>
     <h2>Steps</h2><ul>{steps}</ul>
+    <h2>Tasks (delegation of this plan)</h2><ul>{_mission_tasks_html(mission_id)}</ul>
     <h2>Events</h2><ul>{events or "<li>—</li>"}</ul>
     <h2>Automation</h2><ul>{_mission_automation_html(mission_id)}</ul>"""
     return _ui.shell("Mission", "/missions", main, "",
                      _ui.command_bar())
+
+
+@app.post("/web/missions/{mission_id}/tasks")
+async def web_mission_task_create(mission_id: str,
+                                  request: Request) -> RedirectResponse:
+    """Smallest UI bridge: queue one task bound to this mission via the
+    existing create_task (same mission_id traceability validation, no
+    execution). Unknown missions refuse back to the mission list."""
+    from fastapi import HTTPException as _HTTPException
+    if load_mission(mission_id) is None:
+        return RedirectResponse("/missions", status_code=303)
+    fields = await _form_fields(request)
+    kind = fields.get("kind", "").strip()
+    if not kind:
+        return RedirectResponse(f"/missions/{mission_id}",
+                                status_code=303)
+    capabilities = [part.strip() for part in
+                    fields.get("capabilities", "").replace(";", ",").split(",")
+                    if part.strip()][:20]
+    try:
+        created = create_task(TaskCreate(
+            kind=kind, required_capabilities=capabilities,
+            mission_id=mission_id))
+    except (_HTTPException, ValueError):
+        return RedirectResponse(f"/missions/{mission_id}",
+                                status_code=303)
+    return RedirectResponse(f"/tasks/{created.get('id', '')}",
+                            status_code=303)
 
 
 def _mission_automation_html(mission_id: str) -> str:
@@ -10226,6 +12256,20 @@ async def web_desktop_cancel(action_id: str) -> RedirectResponse:
     return RedirectResponse("/agents", status_code=303)
 
 
+@app.post("/web/desktop/{action_id}/dispatch")
+async def web_desktop_dispatch(action_id: str) -> RedirectResponse:
+    """Smallest UI bridge onto POST /api/v1/desktop/actions/{id}/dispatch:
+    approved -> dispatched status transition only; no input happens here.
+    The standalone agent claims via its poll loop. Gate refusals (404/409/
+    422 for non-approved actions) redirect back unchanged."""
+    from fastapi import HTTPException as _HTTPException
+    try:
+        desktop_dispatch(action_id, None)
+    except _HTTPException:
+        pass
+    return RedirectResponse("/agents", status_code=303)
+
+
 # =============================================================================
 # BIG #30 — THE LIVING ECOSYSTEM. One interconnected workshop:
 # conversations in, context packets out, entity-first links, honest
@@ -10812,7 +12856,9 @@ def nodes_page(check_cap: str = "") -> str:
         f"{''.join(_ui.chip(role) for role in _node_role_list(record))}<br>"
         f"<span class=\"muted\">WHAT IT CAN DO:</span><br>"
         f"<small>{_ui.esc(', '.join(record['capabilities'][:12]) or 'no capabilities advertised')}</small><br>"
-        f"<span class=\"muted\">models {len(record.get('models', []))} · executors {len(record.get('executors', []))} · last seen {_ui.esc(str(record.get('last_seen', ''))[:16])}</span></div>"
+        + (f"<span>⚙ <a href=\"/tasks/{(record.get('current_task') or {}).get('task_id', '')}\">task #{(record.get('current_task') or {}).get('task_id', '')} ({_ui.esc(str((record.get('current_task') or {}).get('kind', '')))})</a></span><br>"
+           if record.get("current_task") else "<span class=\"muted\">idle — no assigned task</span><br>")
+        + f"<span class=\"muted\">models {len(record.get('models', []))} · executors {len(record.get('executors', []))} · last seen {_ui.esc(str(record.get('last_seen', ''))[:16])}</span></div>"
         for record in rows) or _ui.empty("No nodes yet — start one.")
     main = f"""<h1>Nodes — small ecosystem machines</h1>
     <p class="muted">Pull-only: nodes poll, the coordinator never pushes commands. ONLINE / STALE (60s) / OFFLINE / DISABLED. Capabilities are owner-advertised, never wildcard. Each card shows WHAT IT CAN DO.</p>
@@ -10825,8 +12871,573 @@ def nodes_page(check_cap: str = "") -> str:
     <button type="submit">Check</button></form>
     {_routing_answer_html(check_cap)}</div>
     {_mesh_panel_html()}
+    {_digital_world_html(rows)}
     <div class="grove">{cards}</div>"""
     return _ui.shell("Nodes", "/nodes", main, _ui.command_bar())
+
+
+# -- DIGITAL WORLD (VERTICAL SLICE 1) -------------------------------------
+# Interactieve NODE -> DISPLAY view op /nodes. Vanilla JS, geen
+# framework, geen writes: alle state (selectie, UI-offsets, zoom,
+# pan) leeft in de browser. Slepen verandert alleen lokale
+# editor-state en wordt expliciet als UI-positie gelabeld.
+
+DWORLD_JS = """
+(function(){
+"use strict";
+var data = (typeof DWDATA !== "undefined" && DWDATA) || {nodes: []};
+var svg = document.getElementById("dw-stage");
+var details = document.getElementById("dw-details");
+if (!svg || !details) return;
+var NS = "http://www.w3.org/2000/svg";
+var state = {scale: 1, tx: 0, ty: 0, selNode: null, selDisplay: null, ui: {}};
+function esc(s){ return String(s == null ? "" : s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;"); }
+function fmt(v, suffix){ return (v === null || v === undefined || v === "") ? "onbekend" : esc(v) + (suffix || ""); }
+function ukey(n, d){ return n + "\\u0000" + d; }
+function findNode(id){ var out = null; (data.nodes || []).forEach(function(n){ if (n.node_id === id) out = n; }); return out; }
+function isOffline(n){ return n.derived_status === "offline" || n.derived_status === "stale" || n.derived_status === "disabled"; }
+function layout(){
+  var placed = [];
+  (data.nodes || []).forEach(function(n, i){
+    var ox = 40 + i * 470, oy = 70;
+    var minX = null, minY = null;
+    (n.displays || []).forEach(function(d){
+      if (d.x !== null && d.x !== undefined && d.y !== null && d.y !== undefined){
+        if (minX === null || d.x < minX) minX = d.x;
+        if (minY === null || d.y < minY) minY = d.y;
+      }
+    });
+    var cursorY = 0, boxes = [], bottom = oy + 60;
+    (n.displays || []).forEach(function(d){
+      var known = !!(d.width && d.height);
+      var w = known ? Math.max(14, d.width / 8) : 72;
+      var h = known ? Math.max(12, d.height / 8) : 48;
+      var bx, by, discovered = false;
+      if (d.x !== null && d.x !== undefined && d.y !== null && d.y !== undefined && minX !== null){
+        bx = (d.x - minX) / 8; by = (d.y - minY) / 8; discovered = true;
+      } else { bx = 0; by = cursorY; cursorY += h + 26; }
+      var ui = state.ui[ukey(n.node_id, d.id)] || {dx: 0, dy: 0};
+      var bx2 = ox + 16 + bx + ui.dx, by2 = oy + 64 + by + ui.dy;
+      boxes.push({d: d, x: bx2, y: by2, w: w, h: h, known: known,
+        moved: (ui.dx !== 0 || ui.dy !== 0), discovered: discovered, ui: ui});
+      if (by2 + h > bottom) bottom = by2 + h;
+    });
+    var right = ox + 220;
+    boxes.forEach(function(b){ if (b.x + b.w + 16 > right) right = b.x + b.w + 16; });
+    placed.push({n: n, ox: ox, oy: oy, w: Math.max(220, right - ox), h: Math.max(110, bottom - oy + 14), boxes: boxes});
+  });
+  return placed;
+}
+function el(name, attrs, parent){
+  var e = document.createElementNS(NS, name);
+  for (var k in attrs){ e.setAttribute(k, attrs[k]); }
+  parent.appendChild(e);
+  return e;
+}
+function render(){
+  while (svg.firstChild) svg.removeChild(svg.firstChild);
+  var g = el("g", {transform: "translate(" + state.tx + "," + state.ty + ") scale(" + state.scale + ")"}, svg);
+  var placed = layout();
+  if (!placed.length){
+    var t = el("text", {x: 40, y: 60}, g);
+    t.textContent = "Nog geen nodes — start een node om de wereld te vullen.";
+  }
+  placed.forEach(function(p){
+    var n = p.n;
+    var grp = el("g", {"class": "w-node", tabindex: "0", role: "button",
+      "aria-label": "Node " + n.node_id + (isOffline(n) ? " (offline)" : "")}, g);
+    if (isOffline(n)) grp.setAttribute("opacity", "0.55");
+    var sel = (state.selNode === n.node_id && !state.selDisplay);
+    el("rect", {x: p.ox, y: p.oy, width: p.w, height: p.h, rx: 8,
+      fill: "var(--surface)", stroke: sel ? "var(--amber)" : "var(--line)",
+      "stroke-width": sel ? 3 : 1.5, "data-node": n.node_id}, grp);
+    var title = el("text", {x: p.ox + 10, y: p.oy + 22, "font-weight": "bold"}, grp);
+    title.textContent = (n.hostname || n.node_id) + " [" + n.derived_status + "]";
+    var sub = el("text", {x: p.ox + 10, y: p.oy + 38}, grp);
+    var osName = (n.identity && n.identity.os) || "OS onbekend";
+    sub.textContent = osName + " · " + (n.displays || []).length + " display(s)";
+    p.boxes.forEach(function(b){
+      var d = b.d;
+      var dsel = (state.selNode === n.node_id && state.selDisplay === d.id);
+      var r = el("rect", {x: b.x, y: b.y, width: b.w, height: b.h, rx: 3,
+        fill: dsel ? "var(--amber-dim)" : "var(--soil-2)",
+        stroke: dsel ? "var(--amber)" : (d.primary ? "var(--moss-bright)" : "var(--moss)"),
+        "stroke-width": dsel ? 3 : (d.primary ? 2.5 : 1.5),
+        "stroke-dasharray": b.known ? "" : "5 3",
+        "data-node": n.node_id, "data-display": d.id,
+        tabindex: "0", role: "button",
+        "aria-label": "Display " + (d.name || d.id)}, grp);
+      r.style.cursor = "grab";
+      var label = (d.name || d.id) + " " + ((d.width && d.height) ? d.width + "x" + d.height : "onbekend");
+      var lt = el("text", {x: b.x + 4, y: b.y + 14, "data-node": n.node_id, "data-display": d.id}, grp);
+      lt.textContent = String(label).slice(0, 26);
+      if (b.moved){
+        var mv = el("text", {x: b.x + 4, y: b.y + b.h - 5, "data-node": n.node_id, "data-display": d.id}, grp);
+        mv.textContent = "UI-pos (niet fysiek)";
+      }
+      r.addEventListener("click", function(ev){ if (suppressClick){ return; } ev.stopPropagation(); select(n.node_id, d.id); });
+      r.addEventListener("keydown", function(ev){
+        if (ev.key === "Enter" || ev.key === " "){ ev.preventDefault(); select(n.node_id, d.id); }
+      });
+      r.addEventListener("pointerdown", function(ev){ startDisplayDrag(ev, n.node_id, d.id); });
+      lt.addEventListener("click", function(ev){ if (suppressClick){ return; } ev.stopPropagation(); select(n.node_id, d.id); });
+      lt.addEventListener("pointerdown", function(ev){ startDisplayDrag(ev, n.node_id, d.id); });
+    });
+    grp.addEventListener("click", function(ev){
+      if (suppressClick) return;
+      if (ev.target && ev.target.getAttribute && ev.target.getAttribute("data-display")) return;
+      select(n.node_id, null);
+    });
+    grp.addEventListener("keydown", function(ev){
+      if (ev.key === "Enter" || ev.key === " "){ ev.preventDefault(); select(n.node_id, null); }
+    });
+  });
+}
+function select(nodeId, displayId){
+  state.selNode = nodeId; state.selDisplay = displayId || null;
+  render(); showDetails();
+}
+function showDetails(){
+  var n = state.selNode ? findNode(state.selNode) : null;
+  if (!n){ details.innerHTML = "<p class=\\"muted\\">Selecteer een node of display hierboven voor details.</p>"; return; }
+  var ident = n.identity || {}, hw = n.hardware || {}, net = n.network || {};
+  function row(k, v){ return "<tr><th scope=\\"row\\">" + esc(k) + "</th><td>" + v + "</td></tr>"; }
+  var gpu = (hw.gpu && hw.gpu.length) ? esc(hw.gpu.join(", ")) : "onbekend";
+  var ifaces = (net.interfaces && net.interfaces.length) ? esc(net.interfaces.join(", ")) : "onbekend";
+  var html = "<h3>" + esc(n.hostname || n.node_id) + " <span class=\\"muted\\">" + esc(n.node_id) + "</span></h3>";
+  html += "<h4>IDENTITY (gerapporteerd)</h4><table><tbody>";
+  html += row("node_id", esc(n.node_id)) + row("hostname", fmt(n.hostname));
+  html += row("OS", fmt(ident.os)) + row("architectuur", fmt(ident.architecture));
+  html += row("platform", fmt(ident.platform)) + row("status", esc(n.derived_status) + " / " + esc(n.health_status || "?"));
+  html += row("laatst gezien", fmt(n.last_seen)) + "</tbody></table>";
+  html += "<h4>HARDWARE (indien gerapporteerd)</h4><table><tbody>";
+  html += row("CPU cores", fmt(hw.cpu_count)) + row("RAM", fmt(hw.memory_total_mb, " MB")) + row("GPU", gpu);
+  html += "</tbody></table>";
+  html += "<h4>NETWORK</h4><table><tbody>";
+  html += row("connectiviteit", esc(net.connectivity || n.derived_status)) + row("interfaces", ifaces);
+  html += "</tbody></table>";
+  html += "<h4>DISPLAYS (" + (n.displays || []).length + ")</h4>";
+  html = dwRemoteHTML(n) + html;
+  if (!(n.displays || []).length){
+    html += "<p class=\\"muted\\">Deze node rapporteert geen displays (headless of discovery niet beschikbaar) — geen data verzonnen.</p>";
+  } else {
+    html += "<table><thead><tr><th>display</th><th>resolutie</th><th>fysiek</th><th>refresh</th><th>positie (discovered)</th><th>primary</th></tr></thead><tbody>";
+    (n.displays || []).forEach(function(d){
+      var res = (d.width && d.height) ? esc(d.width + "×" + d.height) : "onbekend";
+      var phys = (d.physical_width_mm && d.physical_height_mm) ? esc(d.physical_width_mm + "×" + d.physical_height_mm + " mm") : "onbekend";
+      var hz = (d.refresh_rate !== null && d.refresh_rate !== undefined) ? esc(d.refresh_rate) + " Hz" : "onbekend";
+      var pos = (d.x !== null && d.x !== undefined && d.y !== null && d.y !== undefined) ? esc("x=" + d.x + " y=" + d.y) : "onbekend";
+      var mark = (state.selDisplay === d.id) ? " ★" : "";
+      html += "<tr><td>" + esc(d.name || d.id) + mark + "<br><small class=\\"muted\\">" + esc(d.id) + "</small></td><td>" + res + "</td><td>" + phys + "</td><td>" + hz + "</td><td>" + pos + "</td><td>" + (d.primary ? "ja" : "nee") + "</td></tr>";
+    });
+    html += "</tbody></table>";
+    html += "<p class=\\"muted\\">DISCOVERED = door de node gerapporteerd (alleen lezen). Versleepte UI-posities zijn lokale weergave en veranderen nooit de fysieke configuratie.</p>";
+  }
+  details.innerHTML = html;
+  dwBindRemote(n);
+}
+var DWSESSION = {id: null, node: null, lastSend: 0, lastScroll: 0, padW: 0, padH: 0, padX: null, padY: null, dragging: false};
+var DWCAPS = [
+  ["Mouse", ["desktop.mouse.move"]],
+  ["Click", ["desktop.mouse.click"]],
+  ["Keyboard", ["desktop.keyboard.type", "desktop.keyboard.press"]],
+  ["Scroll", ["desktop.mouse.scroll"]],
+  ["Drag", ["desktop.mouse.move", "desktop.mouse.click"]],
+  ["Clipboard", ["desktop.clipboard.write", "desktop.clipboard.read"]]
+];
+function dwHas(n, cap){ return (n.capabilities || []).indexOf(cap) !== -1; }
+function dwCapSupported(n, name){
+  if (name === "Clipboard") return dwHas(n, "desktop.clipboard.write") || dwHas(n, "desktop.clipboard.read");
+  var need = null;
+  DWCAPS.forEach(function(c){ if (c[0] === name) need = c[1]; });
+  if (!need) return false;
+  for (var i = 0; i < need.length; i++){ if (!dwHas(n, need[i])) return false; }
+  return true;
+}
+function dwCapState(n, name){
+  if (isOffline(n)) return "OFFLINE";
+  if (!dwCapSupported(n, name)) return "UNSUPPORTED";
+  if (DWSESSION.id && DWSESSION.node === n.node_id) return "CONNECTED";
+  return "AVAILABLE";
+}
+function dwPadSize(n){
+  var prim = null, first = null;
+  (n.displays || []).forEach(function(d){
+    if (d.width && d.height){
+      if (!first) first = d;
+      if (d.primary) prim = d;
+    }
+  });
+  var pick = prim || first;
+  if (pick) return {w: pick.width, h: pick.height, approx: false};
+  return {w: 1920, h: 1080, approx: true};
+}
+function dwRemoteHTML(n){
+  var connected = (DWSESSION.id && DWSESSION.node === n.node_id);
+  var state = "AVAILABLE";
+  if (isOffline(n)) state = "OFFLINE";
+  else if (n.remote_mouse !== "supported") state = "UNSUPPORTED";
+  else if (connected) state = "CONNECTED";
+  var html = "<h4>REMOTE CONTROL</h4>";
+  html += "<p>STATUS: <b id=\"dw-conn-state\">" + state + "</b> <span class=\"muted\">expliciet en tijdelijk, nooit automatisch</span></p>";
+  html += "<table><thead><tr><th>capability</th><th>status</th></tr></thead><tbody>";
+  DWCAPS.forEach(function(c){
+    html += "<tr><td>" + c[0] + "</td><td id=\"dw-cap-" + c[0] + "\">" + dwCapState(n, c[0]) + "</td></tr>";
+  });
+  html += "</tbody></table>";
+  if (state === "CONNECTED"){
+    var size = dwPadSize(n);
+    html += "<div id=\"dw-pad\" tabindex=\"0\" role=\"application\" aria-label=\"Remote vlak: bewegen = muis, klikken = klik, slepen = drag, wiel = scroll\" style=\"height:180px;border:1px solid var(--amber);border-radius:6px;display:flex;align-items:center;justify-content:center;cursor:crosshair;touch-action:none\">Beweeg / klik / sleep in dit vlak. Wiel = scroll.</div>";
+    html += "<p class=\"muted\">Mapping: " + size.w + "x" + size.h + (size.approx ? " (bij benadering — geen display-rapport, node klemt af)" : " (primaire display)") + "</p>";
+    html += "<p class=\"flowline\">"
+      + "<button type=\"button\" id=\"dw-click-left\">Left click</button>"
+      + "<button type=\"button\" id=\"dw-click-middle\">Middle</button>"
+      + "<button type=\"button\" id=\"dw-click-right\">Right click</button>"
+      + "</p>";
+    html += "<p><input type=\"text\" id=\"dw-kbd\" placeholder=\"Typ hier (Enter = verstuur tekst)\" autocomplete=\"off\" style=\"width:60%\" aria-label=\"Remote keyboard\"> "
+      + "<span class=\"muted\" id=\"dw-kbd-msg\"></span></p>";
+    html += "<p class=\"flowline\">"
+      + "<button type=\"button\" data-dwkey=\"enter\">Enter</button>"
+      + "<button type=\"button\" data-dwkey=\"escape\">Esc</button>"
+      + "<button type=\"button\" data-dwkey=\"tab\">Tab</button>"
+      + "<button type=\"button\" data-dwkey=\"backspace\">Backspace</button>"
+      + "<button type=\"button\" data-dwkey=\"up\">↑</button>"
+      + "<button type=\"button\" data-dwkey=\"down\">↓</button>"
+      + "<button type=\"button\" data-dwkey=\"left\">←</button>"
+      + "<button type=\"button\" data-dwkey=\"right\">→</button>"
+      + "</p>";
+    html += "<p><textarea id=\"dw-clip\" rows=\"2\" style=\"width:100%\" placeholder=\"Clipboard-tekst (alleen tekst, max 64k)\" aria-label=\"Clipboard tekst\"></textarea></p>";
+    html += "<p class=\"flowline\">"
+      + "<button type=\"button\" id=\"dw-clip-send\">Send to node</button>"
+      + "<button type=\"button\" id=\"dw-clip-request\">Request from node</button>"
+      + "<span class=\"muted\" id=\"dw-clip-msg\"></span></p>";
+    html += "<p class=\"muted\" id=\"dw-clip-out\" aria-live=\"polite\"></p>";
+    html += "<p><button type=\"button\" id=\"dw-disconnect\">DISCONNECT</button> <span class=\"muted\" id=\"dw-conn-msg\"></span></p>";
+  } else if (state === "AVAILABLE"){
+    html += "<p><button type=\"button\" id=\"dw-connect\">CONNECT</button> <span class=\"muted\" id=\"dw-conn-msg\"></span></p>";
+  } else if (state === "OFFLINE"){
+    html += "<p class=\"muted\">Node is offline — remote input wordt geweigerd.</p>";
+  } else {
+    html += "<p class=\"muted\">Node adverteert desktop.mouse.move niet — start de node met --remote-mouse (en --remote-click/--remote-keyboard/--remote-scroll/--remote-clipboard) op een ondersteund OS.</p>";
+  }
+  return html;
+}
+  return html;
+}
+function dwMsg(t){ var m = document.getElementById("dw-conn-msg"); if (m) m.textContent = t; }
+function dwSetError(t){ var s = document.getElementById("dw-conn-state"); if (s) s.textContent = "ERROR"; dwMsg(t); }
+function dwBindRemote(n){
+  var c = document.getElementById("dw-connect");
+  if (c) c.addEventListener("click", function(){ dwConnect(n.node_id); });
+  var d = document.getElementById("dw-disconnect");
+  if (d) d.addEventListener("click", function(){ dwDisconnect(); });
+  var pad = document.getElementById("dw-pad");
+  if (pad){
+    var size = dwPadSize(n);
+    DWSESSION.padW = size.w; DWSESSION.padH = size.h;
+    pad.addEventListener("pointermove", function(ev){ dwPadMove(ev, pad); });
+    pad.addEventListener("pointerdown", function(ev){
+      if (!DWSESSION.id) return;
+      ev.preventDefault();
+      try { pad.setPointerCapture(ev.pointerId); } catch (e) {}
+      var pos = dwPadXY(ev, pad);
+      DWSESSION.dragging = true;
+      dwInput("mouse_down", {x: pos.x, y: pos.y, button: "left"});
+    });
+    pad.addEventListener("pointerup", function(ev){
+      if (!DWSESSION.dragging) return;
+      DWSESSION.dragging = false;
+      var pos = dwPadXY(ev, pad);
+      dwInput("mouse_up", {x: pos.x, y: pos.y, button: "left"});
+    });
+    pad.addEventListener("pointercancel", function(){
+      if (!DWSESSION.dragging) return;
+      DWSESSION.dragging = false;
+      dwInput("mouse_up", {x: DWSESSION.padX === null ? Math.round(DWSESSION.padW / 2) : DWSESSION.padX, y: DWSESSION.padY === null ? Math.round(DWSESSION.padH / 2) : DWSESSION.padY, button: "left"});
+    });
+    pad.addEventListener("pointerleave", function(){
+      if (!DWSESSION.dragging) return;
+      DWSESSION.dragging = false;
+      dwInput("mouse_up", {x: DWSESSION.padX === null ? Math.round(DWSESSION.padW / 2) : DWSESSION.padX, y: DWSESSION.padY === null ? Math.round(DWSESSION.padH / 2) : DWSESSION.padY, button: "left"});
+    });
+    pad.addEventListener("contextmenu", function(ev){
+      ev.preventDefault();
+      var pos = dwPadXY(ev, pad);
+      dwInput("click", {x: pos.x, y: pos.y, button: "right"});
+    });
+    pad.addEventListener("wheel", function(ev){
+      ev.preventDefault();
+      if (!DWSESSION.id) return;
+      var nowMs = Date.now();
+      if (nowMs - DWSESSION.lastScroll < 60) return;
+      DWSESSION.lastScroll = nowMs;
+      var dy = Math.round(ev.deltaY);
+      if (dy === 0) return;
+      dy = Math.max(-10000, Math.min(10000, dy));
+      dwInput("scroll", {dx: 0, dy: dy});
+    }, {passive: false});
+  }
+  ["left", "middle", "right"].forEach(function(btn){
+    var b = document.getElementById("dw-click-" + btn);
+    if (b) b.addEventListener("click", function(){
+      dwInput("click", {x: DWSESSION.padX === null ? Math.round(DWSESSION.padW / 2) : DWSESSION.padX, y: DWSESSION.padY === null ? Math.round(DWSESSION.padH / 2) : DWSESSION.padY, button: btn});
+    });
+  });
+  var keys = document.querySelectorAll("[data-dwkey]");
+  for (var i = 0; i < keys.length; i++){
+    (function(btn){
+      btn.addEventListener("click", function(){
+        dwInput("key_press", {key: btn.getAttribute("data-dwkey")});
+      });
+    })(keys[i]);
+  }
+  var kbd = document.getElementById("dw-kbd");
+  if (kbd) kbd.addEventListener("keydown", function(ev){ dwKeyDown(ev, kbd); });
+  var clipSend = document.getElementById("dw-clip-send");
+  if (clipSend) clipSend.addEventListener("click", function(){
+    var area = document.getElementById("dw-clip");
+    var text = area ? area.value : "";
+    if (!text){ dwClipMsg("niets te versturen"); return; }
+    dwInput("clipboard_set", {text: text});
+  });
+  var clipReq = document.getElementById("dw-clip-request");
+  if (clipReq) clipReq.addEventListener("click", function(){ dwClipRequest(0); });
+}
+function dwConnect(nodeId){
+  dwMsg("verbinden…");
+  fetch("/api/v1/remote-input/sessions", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({node_id: nodeId})}).then(function(res){
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    return res.json();
+  }).then(function(data){
+    DWSESSION.id = data.session_id; DWSESSION.node = data.node_id;
+    showDetails();
+  }).catch(function(err){ DWSESSION.id = null; DWSESSION.node = null; dwSetError("ERROR: " + err.message); });
+}
+function dwDisconnect(){
+  var id = DWSESSION.id;
+  DWSESSION.id = null; DWSESSION.node = null;
+  showDetails();
+  if (!id) return;
+  fetch("/api/v1/remote-input/sessions/" + encodeURIComponent(id) + "/close", {method: "POST"}).catch(function(){});
+}
+function dwPadXY(ev, pad){
+  var rect = pad.getBoundingClientRect();
+  var x = Math.round((ev.clientX - rect.left) / Math.max(1, rect.width) * DWSESSION.padW);
+  var y = Math.round((ev.clientY - rect.top) / Math.max(1, rect.height) * DWSESSION.padH);
+  x = Math.max(0, Math.min(16384, x)); y = Math.max(0, Math.min(16384, y));
+  DWSESSION.padX = x; DWSESSION.padY = y;
+  return {x: x, y: y};
+}
+function dwPadMove(ev, pad){
+  if (!DWSESSION.id) return;
+  var nowMs = Date.now();
+  if (nowMs - DWSESSION.lastSend < 40) return;
+  DWSESSION.lastSend = nowMs;
+  var pos = dwPadXY(ev, pad);
+  fetch("/api/v1/remote-input/sessions/" + encodeURIComponent(DWSESSION.id) + "/move", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({x: pos.x, y: pos.y})}).then(function(res){
+    if (res.status === 410 || res.status === 404 || res.status === 403){
+      DWSESSION.id = null; DWSESSION.node = null; DWSESSION.dragging = false;
+      showDetails();
+      dwMsg("sessie beeindigd door de server — opnieuw CONNECT om door te gaan");
+    } else if (!res.ok){
+      dwSetError("ERROR: HTTP " + res.status);
+    }
+  }).catch(function(err){ dwSetError("ERROR: " + err.message); });
+}
+function dwInput(kind, params){
+  if (!DWSESSION.id) return;
+  fetch("/api/v1/remote-input/sessions/" + encodeURIComponent(DWSESSION.id) + "/input", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({kind: kind, params: params})}).then(function(res){
+    if (res.status === 410 || res.status === 404 || res.status === 403){
+      DWSESSION.id = null; DWSESSION.node = null; DWSESSION.dragging = false;
+      showDetails();
+      dwMsg("sessie beeindigd door de server — opnieuw CONNECT om door te gaan");
+    } else if (!res.ok){
+      dwSetError("ERROR: HTTP " + res.status);
+    }
+  }).catch(function(err){ dwSetError("ERROR: " + err.message); });
+}
+var DWKEYS = {Enter: "enter", Escape: "escape", Esc: "esc", Tab: "tab", Backspace: "backspace", Delete: "delete", ArrowUp: "up", ArrowDown: "down", ArrowLeft: "left", ArrowRight: "right", Home: "home", End: "end", PageUp: "pageup", PageDown: "pagedown", Insert: "insert", PrintScreen: "printscreen", Pause: "pause"};
+for (var _f = 1; _f <= 12; _f++){ DWKEYS["F" + _f] = "f" + _f; }
+function dwKeyDown(ev, field){
+  if (!DWSESSION.id) return;
+  var mods = [];
+  if (ev.ctrlKey) mods.push("ctrl");
+  if (ev.altKey) mods.push("alt");
+  if (ev.shiftKey && DWKEYS[ev.key]) mods.push("shift");
+  if (ev.metaKey) mods.push("win");
+  if (mods.length && ev.key.length === 1){
+    ev.preventDefault();
+    mods.push(ev.key.toLowerCase());
+    dwInput("hotkey", {keys: mods.slice(0, 4)});
+    return;
+  }
+  if (DWKEYS[ev.key]){
+    ev.preventDefault();
+    if (ev.key === "Enter" && field.value){
+      dwInput("type_text", {text: field.value});
+      field.value = "";
+    } else {
+      dwInput("key_press", {key: DWKEYS[ev.key]});
+    }
+    return;
+  }
+  if (ev.key.length === 1 && !ev.ctrlKey && !ev.altKey && !ev.metaKey){
+    ev.preventDefault();
+    dwInput("type_text", {text: ev.key});
+  }
+}
+function dwClipMsg(t){ var m = document.getElementById("dw-clip-msg"); if (m) m.textContent = t; }
+function dwClipOut(t){ var m = document.getElementById("dw-clip-out"); if (m) m.textContent = t; }
+function dwClipRequest(attempt){
+  if (!DWSESSION.id) return;
+  if (attempt === 0){
+    dwClipMsg("opvragen…");
+    dwClipOut("");
+    fetch("/api/v1/remote-input/sessions/" + encodeURIComponent(DWSESSION.id) + "/clipboard/request", {method: "POST"}).then(function(res){
+      if (!res.ok){ dwClipMsg("ERROR: HTTP " + res.status); return; }
+      setTimeout(function(){ dwClipRequest(1); }, 600);
+    }).catch(function(err){ dwClipMsg("ERROR: " + err.message); });
+    return;
+  }
+  fetch("/api/v1/remote-input/sessions/" + encodeURIComponent(DWSESSION.id) + "/clipboard").then(function(res){
+    if (!res.ok){ dwClipMsg("ERROR: HTTP " + res.status); return; }
+    return res.json();
+  }).then(function(data){
+    if (!data) return;
+    if (data.text !== null && data.text !== undefined){
+      dwClipMsg("ontvangen");
+      dwClipOut("Node clipboard: " + data.text.slice(0, 500));
+    } else if (attempt < 6){
+      setTimeout(function(){ dwClipRequest(attempt + 1); }, 500);
+    } else {
+      dwClipMsg("niets ontvangen (node heeft geen tekst gelezen)");
+    }
+  }).catch(function(err){ dwClipMsg("ERROR: " + err.message); });
+}
+var drag = null, suppressClick = false;
+function startDisplayDrag(ev, nodeId, displayId){
+  ev.stopPropagation();
+  var k = ukey(nodeId, displayId);
+  var ui = state.ui[k] || {dx: 0, dy: 0};
+  drag = {kind: "display", node: nodeId, display: displayId, key: k,
+    startX: ev.clientX, startY: ev.clientY, dx: ui.dx, dy: ui.dy, moved: false};
+  try { ev.target.setPointerCapture(ev.pointerId); } catch (e) {}
+  ev.preventDefault();
+}
+svg.addEventListener("pointerdown", function(ev){
+  if (drag) return;
+  drag = {kind: "pan", startX: ev.clientX, startY: ev.clientY, tx: state.tx, ty: state.ty, moved: false};
+  try { svg.setPointerCapture(ev.pointerId); } catch (e) {}
+});
+svg.addEventListener("pointermove", function(ev){
+  if (!drag) return;
+  var dx = ev.clientX - drag.startX, dy = ev.clientY - drag.startY;
+  if (Math.abs(dx) + Math.abs(dy) > 4){ drag.moved = true; suppressClick = true; }
+  if (!drag.moved) return;
+  if (drag.kind === "pan"){ state.tx = drag.tx + dx; state.ty = drag.ty + dy; render(); }
+  else {
+    state.ui[drag.key] = {dx: drag.dx + dx / state.scale, dy: drag.dy + dy / state.scale};
+    state.selNode = drag.node; state.selDisplay = drag.display;
+    render(); showDetails();
+  }
+});
+function endDrag(){
+  if (drag && drag.kind === "display" && !drag.moved){ select(drag.node, drag.display); }
+  drag = null;
+  setTimeout(function(){ suppressClick = false; }, 0);
+}
+svg.addEventListener("pointerup", endDrag);
+svg.addEventListener("pointercancel", function(){ drag = null; suppressClick = false; });
+svg.addEventListener("wheel", function(ev){
+  ev.preventDefault();
+  state.scale = Math.max(0.3, Math.min(3, state.scale * (ev.deltaY < 0 ? 1.1 : 0.9)));
+  render();
+}, {passive: false});
+document.getElementById("dw-zin").addEventListener("click", function(){ state.scale = Math.min(3, state.scale * 1.2); render(); });
+document.getElementById("dw-zout").addEventListener("click", function(){ state.scale = Math.max(0.3, state.scale / 1.2); render(); });
+document.getElementById("dw-reset").addEventListener("click", function(){
+  state.ui = {}; state.scale = 1; state.tx = 0; state.ty = 0;
+  state.selNode = null; state.selDisplay = null;
+  render(); showDetails();
+});
+render();
+})();
+"""
+
+
+def _digital_world_html(rows: list[dict]) -> str:
+    """Interactive DIGITAL WORLD view (VERTICAL SLICE 1).
+
+    Server renders a derived NODE -> DISPLAY snapshot plus a
+    server-side fallback list; vanilla JS adds select / drag
+    (UI-state only) / zoom / pan / reset. This panel performs
+    zero writes: no forms, no POST, no node contact. Dragging a
+    display only moves local editor-state and is labelled as
+    such — it never claims a physical change."""
+    import json as _json
+    from . import ui as _ui
+    from .nodes import derive_digital_world
+    try:
+        world = derive_digital_world(rows or [])
+    except Exception:
+        world = {"nodes": [], "node_count": 0, "display_count": 0,
+                 "provenance": "derived", "honesty": ""}
+    snapshot = _json.dumps(world, sort_keys=True).replace("</", "<\\/")
+    fallback = []
+    for node in world.get("nodes", []):
+        offline = str(node.get("derived_status", "")) in (
+            "offline", "stale", "disabled")
+        disp_rows = []
+        for disp in node.get("displays", []):
+            width, height = disp.get("width"), disp.get("height")
+            res = (f"{width}×{height}" if width and height
+                   else "resolutie onbekend")
+            phys_w, phys_h = (disp.get("physical_width_mm"),
+                              disp.get("physical_height_mm"))
+            phys = (f"{phys_w}×{phys_h} mm" if phys_w and phys_h
+                    else "fysieke maat onbekend")
+            rate = disp.get("refresh_rate")
+            rate_text = (f"{rate:g} Hz" if rate else "onbekend")
+            disp_rows.append(
+                f"<div class=\"dw-display\" "
+                f"data-display-id=\"{_ui.esc(disp.get('id', ''))}\" "
+                f"data-node-id=\"{_ui.esc(node.get('node_id', ''))}\">"
+                f"<b>{_ui.esc(disp.get('name') or disp.get('id', ''))}</b> "
+                f"{_ui.esc(res)} · {('★ primary' if disp.get('primary') else 'secondary')} · "
+                f"{_ui.esc(phys)} · { _ui.esc(rate_text)}</div>")
+        displays_html = "".join(disp_rows) or (
+            "<div class=\"muted\">geen displays gerapporteerd</div>")
+        os_label = ((node.get("identity") or {}).get("os")
+                    or "OS onbekend")
+        fallback.append(
+            f"<div class=\"sprout dw-node{' dim-offline' if offline else ''}\" "
+            f"data-node-id=\"{_ui.esc(node.get('node_id', ''))}\">"
+            f"<b>{_ui.status_dot(node.get('derived_status', 'unknown'))}"
+            f"{_ui.esc(node.get('node_id', ''))}</b> "
+            f"{_ui.chip(node.get('derived_status', 'unknown'))} "
+            f"{_ui.chip(str(os_label))} "
+            f"<span class=\"muted\">{node.get('display_count', 0)} display(s)</span>"
+            f"<span class=\"muted dw-remote\">remote mouse: "
+            f"{_ui.esc(node.get('remote_mouse', 'unsupported'))}</span>"
+            f"{displays_html}</div>")
+    fallback_html = "".join(fallback) or _ui.empty(
+        "Nog geen nodes — start een node om de digitale wereld te vullen.")
+    return f"""<div class="panel"><h2>Digital World — nodes &amp; displays</h2>
+    <p class="muted">{_ui.esc(world.get("honesty", ""))}</p>
+    <p class="muted">Alleen kijken &amp; schuiven: selecteren en slepen gebeurt lokaal in je browser
+    (UI-positie). Er gaat <b>geen enkele write</b> naar een node — geen remote control, geen configuratie.</p>
+    <p class="flowline">
+    <button type="button" id="dw-zin">Zoom +</button>
+    <button type="button" id="dw-zout">Zoom −</button>
+    <button type="button" id="dw-reset">Reset layout</button>
+    <span class="muted" id="dw-count">{world.get("node_count", 0)} node(s) · {world.get("display_count", 0)} display(s)</span>
+    </p>
+    <svg id="dw-stage" class="world" viewBox="0 0 1000 420" role="application"
+    aria-label="Digitale wereld: nodes en displays. Klik om te selecteren, sleep een display om de UI-positie te veranderen."></svg>
+    <div id="dw-details" class="panel"><p class="muted">Selecteer een node of display hierboven voor details.</p></div>
+    <h3>Gerapporteerde nodes (server-render, ook zonder JS)</h3>
+    <div class="grove" id="dw-fallback">{fallback_html}</div>
+    <script>const DWDATA = {snapshot};{DWORLD_JS}</script></div>"""
 
 
 def _mesh_panel_html() -> str:
@@ -11513,6 +14124,28 @@ def api_camera_inbox(limit: int = 100) -> dict:
     return {"inbox": list_inbox_files(limit=limit)}
 
 
+@app.get("/api/v1/inbox/{filename}/facts")
+def api_inbox_facts(filename: str, device_id: str = "",
+                    name: str = "") -> dict:
+    """Read-only media facts + inert file payload for one inbox
+    file. Delegates to existing media_facts/file_payload_for; every
+    boundary refuses with 422. No writes, no database, no pixels."""
+    from .vision_ingest import (IngestRefusedError, file_payload_for,
+                                media_facts)
+    try:
+        media = media_facts(filename)
+    except IngestRefusedError as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    try:
+        payload = file_payload_for(
+            media, name.strip() or media.media_ref,
+            device_id.strip()[:80])
+    except IngestRefusedError as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    return {"media": media.model_dump(mode="json"),
+            "file_payload": payload}
+
+
 @app.post("/api/v1/cameras/{device_id}/ingest-file", status_code=201)
 def camera_ingest_file(device_id: str, body: dict) -> dict:
     """Ingest one inbox file as an observation (REAL file-mode).
@@ -11536,6 +14169,21 @@ def camera_ingest_file(device_id: str, body: dict) -> dict:
                f"File ingest {result.observation.observation_id} "
                f"via {device_id}", node_id=device_id)
     return result.model_dump(mode="json")
+
+
+@app.post("/api/v1/cameras/{device_id}/poll-inbox")
+def camera_poll_inbox(device_id: str) -> dict:
+    """Explicit operator/n8n poll: inbox files → session →
+    observation → VLM → candidates. Synchronous; no scheduler,
+    thread or daemon (see jobs.py). Thin delegation; the work
+    lives in camera_ecosystem.poll_inbox. No INVENTory writes."""
+    from .camera_ecosystem import EcosystemRefusedError, poll_inbox
+    if get_device(device_id) is None:
+        raise HTTPException(404, "Camera not found")
+    try:
+        return poll_inbox(device_id)
+    except EcosystemRefusedError as error:
+        raise HTTPException(status_code=422, detail=str(error))
 
 
 @app.post("/web/cameras/{device_id}/ingest-file")
@@ -11641,7 +14289,15 @@ def writes_page() -> str:
         f"{_ui.esc(item['proposal_id'])}/approve\">"
         f"<input type=\"text\" name=\"response\" placeholder=\"YES\" "
         f"style=\"width:4rem\" aria-label=\"Exact YES\">"
-        f"<button type=\"submit\">Decide</button></form></td></tr>"
+        f"<button type=\"submit\">Decide</button></form>"
+        f"<form method=\"post\" action=\"/web/writes/"
+        f"{_ui.esc(item['proposal_id'])}/execute\" "
+        f"style=\"display:inline\">"
+        f"<button type=\"submit\">Execute</button></form>"
+        f"<form method=\"post\" action=\"/web/writes/"
+        f"{_ui.esc(item['proposal_id'])}/verify\" "
+        f"style=\"display:inline\">"
+        f"<button type=\"submit\">Verify</button></form></td></tr>"
         for item in _write_list(limit=50)) or \
         "<tr><td colspan='5'>No proposals yet.</td></tr>"
     predicates = "".join(
@@ -11727,6 +14383,32 @@ async def web_write_approve(proposal_id: str,
         return RedirectResponse("/writes", status_code=303)
     status = "approved" if approval.approved else "rejected"
     _write_save(proposal, status, approval=approval)
+    return RedirectResponse("/writes", status_code=303)
+
+
+@app.post("/web/writes/{proposal_id}/execute")
+async def web_write_execute(proposal_id: str) -> Response:
+    """Smallest UI bridge onto POST /api/v1/writes/{id}/execute:
+    same gates (approved-only, revalidated allow-list), no approval
+    here. Gate refusals (404/409/422/502) redirect back; the reloaded
+    inbox shows the unchanged status."""
+    from fastapi import HTTPException as _HTTPException
+    try:
+        await write_execute(proposal_id)
+    except _HTTPException:
+        pass
+    return RedirectResponse("/writes", status_code=303)
+
+
+@app.post("/web/writes/{proposal_id}/verify")
+async def web_write_verify(proposal_id: str) -> Response:
+    """Smallest UI bridge onto POST /api/v1/writes/{id}/verify:
+    independent readback, never the result payload. Same gates."""
+    from fastapi import HTTPException as _HTTPException
+    try:
+        await write_verify(proposal_id)
+    except _HTTPException:
+        pass
     return RedirectResponse("/writes", status_code=303)
 
 
@@ -11898,6 +14580,25 @@ def api_nodes_eligible(capability: str = "") -> dict:
             "eligible": eligible_nodes_for(capability)}
 
 
+def _research_conversation(mission_id: str) -> str:
+    """Mission -> conversation linkage for worker payloads.
+
+    Best-effort read over the existing mission store; missing
+    missions yield an empty string, never a refusal — the fetch
+    itself never depends on linkage metadata.
+    """
+    try:
+        if not mission_id:
+            return ""
+        from .missions import load_mission as _load_mission
+        mission = _load_mission(str(mission_id))
+        if mission is None:
+            return ""
+        return str(mission.conversation_id or "")[:80]
+    except Exception:
+        return ""
+
+
 def _route_run_to_nodes(run) -> dict:
     """Queue a run's validated seed URLs as research.fetch_url tasks
     for eligible nodes. Nothing executes here: nodes pull, fetch
@@ -11929,13 +14630,26 @@ def _route_run_to_nodes(run) -> dict:
                           "Linux node",
                 "eligible": []}
     created: list[int] = []
+    # Worker context (additive): the claiming worker receives the
+    # bounded research linkage with the fetch — question, workspace,
+    # mission/run/conversation ids. Existing url/run_id/max_chars
+    # keys stay exactly as they were.
+    research_context = {
+        "question": str(run.question or "")[:500],
+        "project_ref": str(run.project_ref or "")[:100],
+        "mission_id": str(run.mission_id or "")[:80],
+        "run_id": run.run_id,
+        "conversation_id": _research_conversation(run.mission_id),
+    }
     for url in seed_urls:
         try:
             made = create_task(TaskCreate(
                 kind="research.fetch_url",
                 payload={"url": url, "run_id": run.run_id,
-                         "max_chars": 65536},
-                required_capabilities=["research.fetch"]))
+                         "max_chars": 65536,
+                         "research_context": research_context},
+                required_capabilities=["research.fetch"],
+                mission_id=run.mission_id or None))
             created.append(int(made.get("id", 0)))
         except HTTPException:
             continue
@@ -13632,6 +16346,165 @@ def api_workshop_packet(project_id: str = "") -> dict:
     return workshop_packet(project_id[:100])
 
 
+@app.get("/forge", response_class=HTMLResponse)
+def forge_studio_page() -> str:
+    """Forge Studio: zelfstandige 3D-werkplek (vertical slice 1).
+
+    Dunne pagina over bestaande contracten: lezen via
+    GET /api/v1/forge/session, schrijven uitsluitend via de
+    bestaande gated flows (/writes, /web/workshop/*). De
+    NPC-presentatie blijft in /play."""
+    from .forge import studio_page
+    return studio_page()
+
+
+@app.get("/api/v1/forge/session")
+async def api_forge_session() -> dict:
+    """Read-only Forge editor bootstrap: default session shape,
+    procedural primitives (bestaande CAD-builders), workshop
+    snapshot, INVENTory browse, printers, slicer-honesty en de
+    Forge-identity. Kleine GET, geen nieuwe registry."""
+    from .forge import (default_session, forge_identity,
+                        inventory_snapshot, primitive_facets,
+                        printer_summary, slicer_status,
+                        workshop_snapshot)
+    primitives = {}
+    for name in ("cube", "cylinder"):
+        try:
+            primitives[name] = primitive_facets(name)
+        except ValueError:
+            continue
+    return {
+        "session": default_session(),
+        "primitives": primitives,
+        "workshop": workshop_snapshot(),
+        "inventory": await inventory_snapshot(),
+        "printers": printer_summary(),
+        "slicer": slicer_status(),
+        "identity": forge_identity(),
+        "honesty": "bestaande stores only; lege stores = leeg, "
+                   "nooit verzonnen",
+    }
+
+
+@app.post("/api/v1/forge/ask")
+async def api_forge_ask(request: Request) -> dict:
+    """Ask Forge: READ / ADVISE / PROPOSE only. Pure helper, geen
+    writes, geen approvals, geen uitvoering."""
+    from .forge import ask_forge
+    try:
+        body = await request.json()
+    except ValueError:
+        raise HTTPException(status_code=422,
+                            detail="invalid JSON body")
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=422,
+                            detail="invalid JSON body")
+    try:
+        return ask_forge(body.get("question", ""))
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error))
+
+
+@app.post("/api/v1/forge/save", status_code=201)
+async def api_forge_save(request: Request) -> dict:
+    """Persist Forge editor geometry the existing way: merged
+    facets via the cad/mesh3d/meshops builders, a local derived
+    working file (same precedent as fab/transform persist) and
+    an inert file_payload for the existing writes gate.
+
+    Working file only: creates no proposal, no approval, no
+    execution, no registration. The client posts file_payload
+    to POST /api/v1/writes/inventory itself."""
+    from .forge import ForgeGeometryError, save_editor_geometry
+    try:
+        body = await request.json()
+    except ValueError:
+        raise HTTPException(status_code=422,
+                            detail="invalid JSON body")
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=422,
+                            detail="invalid JSON body")
+    try:
+        return save_editor_geometry(
+            body.get("design_name", ""),
+            body.get("parts", []),
+            body.get("forked_from", {}),
+            body.get("ai_edits", None))
+    except ForgeGeometryError as error:
+        raise HTTPException(status_code=422, detail=str(error))
+
+
+@app.get("/api/v1/forge/library")
+async def api_forge_library(limit: int = 8) -> dict:
+    """Read-only Forge model library: workshop registry,
+    INVENTory browse (best-effort), unregistered local mesh
+    files, and the honest external NOT_CONNECTED stub. Small
+    GET, no new registry, nothing stored."""
+    from .forge import forge_library
+    return await forge_library(limit)
+
+
+@app.post("/api/v1/forge/open")
+async def api_forge_open(request: Request) -> dict:
+    """Import one existing model into Forge editor state.
+    Read-only source: workshop/local read existing mesh bytes,
+    inventory resolves metadata + provenance via the existing
+    read bridge (geometry only when local bytes exist),
+    external refuses honestly. Writes nothing, registers
+    nothing, proposes nothing."""
+    from .forge import (ForgeGeometryError, ForgeUpstreamError,
+                        open_inventory_model, open_model)
+    try:
+        body = await request.json()
+    except ValueError:
+        raise HTTPException(status_code=422,
+                            detail="invalid JSON body")
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=422,
+                            detail="invalid JSON body")
+    source = str(body.get("source", "")).strip().lower()
+    try:
+        if source == "inventory":
+            return await open_inventory_model(
+                body.get("entity_type", ""),
+                body.get("ref", ""))
+        return open_model(source, body.get("ref", ""))
+    except ForgeGeometryError as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    except ForgeUpstreamError:
+        raise HTTPException(status_code=502,
+                            detail="INVENTory unavailable")
+
+
+@app.post("/api/v1/forge/propose")
+async def api_forge_propose(request: Request) -> dict:
+    """Selection-aware AI edit proposal over editor geometry.
+    Pure: validates scene + selection + intent through the
+    existing meshops/mesh3d/editor checkers, returns a
+    structured proposal with preview + APPLY patch. APPLY and
+    DISCARD stay client-side; this route never writes, never
+    proposes canonically, never approves, never executes."""
+    from .forge import ForgeGeometryError, propose_edit
+    try:
+        body = await request.json()
+    except ValueError:
+        raise HTTPException(status_code=422,
+                            detail="invalid JSON body")
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=422,
+                            detail="invalid JSON body")
+    try:
+        return propose_edit(
+            body.get("selection", []),
+            body.get("prompt", ""),
+            body.get("parts", []),
+            body.get("op", ""),
+            body.get("params", None))
+    except ForgeGeometryError as error:
+        raise HTTPException(status_code=422, detail=str(error))
+
+
 @app.post("/web/workshop/models")
 async def web_workshop_model_register(request: Request) -> Response:
     from .workshop3d import WorkshopRefusedError, register_model
@@ -14626,6 +17499,2151 @@ def game_page() -> str:
             "<a href=\"/api/v1/game/state\">game JSON</a></p>")
     return _ui.shell("Living game", "/game", main, "",
                      _ui.living_bg())
+
+
+# =============================================================================
+# FASE 1 — PLAYABLE GAME SHELL (/play). Presentatielaag only:
+# HTML5-canvas + requestAnimationFrame + keyboard, vaste kamer,
+# speler (WASD/pijltjes), rechthoek-collision, interactiezone met
+# placeholder-NPC Luma, camera-follow, HUD met live game-data.
+# Spelerpositie is efemeer (client-side). Geen database, geen XP,
+# geen physics-engine, geen framework, geen backend-mutatie:
+# deze route leest alleen bestaande afgeleide state.
+# =============================================================================
+
+
+@app.get("/play", response_class=HTMLResponse)
+def play_page() -> str:
+    """Speelbare shell: beweeg met WASD/pijltjes, bots tegen
+    muren en meubels, praat met Luma via E. Read-only."""
+    import json as _json
+    from . import ui as _ui
+    def _text(value, limit=120):
+        return str(value or "")[:limit]
+    live: dict = {"world": {}, "quest": {}, "counts": {},
+                  "luma": {}, "missions": [], "evidence": {},
+                  "guide": {}, "notifications": [],
+                  "events": [], "tools": {}, "fungi": {}}
+    try:
+        from .game import game_state
+        sections = (game_state().get("sections", {}) or {})
+        world = (sections.get("world", {}) or {}).get("data", {})
+        quest = (sections.get("current_quest", {}) or {}).get(
+            "data", {})
+        nodes = (sections.get("nodes", {}) or {}).get("data", [])
+        campaigns = (sections.get("campaigns", {}) or {}).get(
+            "data", [])
+        live["world"] = {
+            "glyph": _text(world.get("glyph", ""), 8),
+            "line": _text(world.get("line", ""), 160),
+            "state": _text(world.get("state", ""), 40)}
+        live["quest"] = {
+            "title": _text(quest.get("title", "")),
+            "state": _text(quest.get("state", ""), 40),
+            "progress": _text(quest.get("progress", ""), 20),
+            "href": _text(quest.get("href", "/quests"), 200)}
+        live["counts"] = {
+            "nodes": len(nodes) if isinstance(nodes, list) else 0,
+            "campaigns": len(campaigns) if isinstance(
+                campaigns, list) else 0}
+    except Exception:
+        pass
+    try:
+        from .guide import guide_items
+        items = guide_items(limit=5) or []
+        first = items[0] if items else {}
+        nxt = (first.get("next", {}) or {})
+        live["guide"] = {
+            "what": _text(first.get("what", ""), 160),
+            "label": _text(nxt.get("label", ""), 60),
+            "href": _text(nxt.get("href", "/guide"), 200)}
+    except Exception:
+        pass
+    try:
+        from .missions import list_missions
+        live["missions"] = [{
+            "id": _text(m.mission_id, 80),
+            "goal": _text(m.goal, 120),
+            "status": _text(m.status, 20)} for m in
+            list_missions(limit=50)
+            if str(m.status) in ("approved", "running",
+                                 "pending_approval")][:5]
+    except Exception:
+        pass
+    try:
+        from .knowledge import list_candidates
+        cands = list_candidates(limit=8) or []
+        live["evidence"]["candidates"] = [{
+            "title": _text(c.title), "state": _text(
+                c.state, 20)} for c in cands]
+        live["evidence"]["candidate_open"] = sum(
+            1 for c in list_candidates(limit=50) or []
+            if str(c.state) in ("observation", "candidate",
+                                "supported"))
+        live["evidence"]["supported_count"] = sum(
+            1 for c in list_candidates(limit=50) or []
+            if str(c.state) == "supported")
+    except Exception:
+        pass
+    try:
+        inbox = _recent_observations(6) or []
+        live["evidence"]["observations"] = [{
+            "id": _text(o.observation_id, 80),
+            "device": _text(o.device_id, 80),
+            "media": _text(o.media_ref, 120),
+            "created": _text(o.created_at, 16)} for o in inbox]
+    except Exception:
+        pass
+    try:
+        from .vision_ingest import list_inbox_files
+        files = list_inbox_files(limit=50) or []
+        live["tools"] = {
+            "inbox_count": len(files),
+            "inbox": [_text((f or {}).get("filename", ""))
+                      for f in files[:8]]}
+    except Exception:
+        pass
+    try:
+        notes = list_notifications_for_report(limit=10) or []
+        live["notifications"] = [{
+            "title": _text(n.title),
+            "type": _text(n.type, 40),
+            "created": _text(n.created_at, 16)} for n in notes]
+    except Exception:
+        pass
+    try:
+        live["events"] = [{
+            "type": _text(e.event_type, 60),
+            "summary": _text(e.summary, 160),
+            "created": _text(e.created_at, 16)} for e in
+            bus_events(limit=15) or []]
+    except Exception:
+        pass
+    try:
+        from .world import derive_fungi_network
+        net = derive_fungi_network(limit=120) or {}
+        live["fungi"] = {
+            "nodes": net.get("nodes", [])[:120],
+            "counts": net.get("counts", {}),
+            "total": int(net.get("total", 0) or 0),
+            "honesty": str(net.get("honesty", ""))[:200]}
+    except Exception:
+        pass
+    try:
+        from .familiars import (ensure_npc_familiars,
+                                list_familiars)
+        ensure_npc_familiars()
+        fam_map: dict[str, dict] = {}
+        for fam in list_familiars() or []:
+            fam_map[str(fam.name or "").strip().lower()] = {
+                "id": _text(fam.familiar_id, 80),
+                "kind": _text(fam.kind, 20),
+                "status": _text(fam.status, 20),
+                "capabilities": [
+                    _text(c, 40) for c in
+                    (fam.capabilities or [])[:8]]}
+        live["luma"]["familiar"] = fam_map.get("luma")
+    except Exception:
+        fam_map = {}
+        live["luma"].setdefault("familiar", None)
+    # Luma-statusbadge, uitsluitend uit echte data (prioriteit:
+    # review-aandacht > nieuwe input > bezig > afgerond).
+    try:
+        badge, reason = None, "Rustig — geen openstaande signalen."
+        if live["evidence"].get("candidate_open", 0) > 0:
+            n = live["evidence"]["candidate_open"]
+            badge, reason = ("!", f"{n} kandidaat/kandidaten "
+                                  "wachten op review.")
+        elif live["tools"].get("inbox_count", 0) > 0:
+            n = live["tools"]["inbox_count"]
+            badge, reason = ("?", f"{n} inbox-bestand(en) "
+                                  "wachten op ingest.")
+        elif live["missions"]:
+            badge, reason = ("…", f"{len(live['missions'])} "
+                                  "missie(s) onderweg.")
+        else:
+            try:
+                from .quests import list_quest_details
+                done = [q for q in list_quest_details(
+                    limit=20) or []
+                    if q.get("state") == "COMPLETED"]
+                if done:
+                    badge, reason = ("✓", f"{len(done)} quest(s) "
+                                          "afgerond.")
+            except Exception:
+                pass
+        live["luma"]["badge"] = badge or ""
+        live["luma"]["reason"] = reason
+        live["luma"]["status"] = ("Idle" if not badge
+                                  else {"!": "Aandacht nodig",
+                                        "?": "Vraag",
+                                        "…": "Bezig",
+                                        "✓": "Afgerond"}.get(
+                                      badge, "Idle"))
+    except Exception:
+        live["luma"]["badge"] = ""
+        live["luma"]["reason"] = "Status onbekend."
+        live["luma"]["status"] = "Idle"
+    # -- Forge-data (bestaande workbench/printer-stores, read-only) --
+    live["forge"] = {"models": [], "printers": [],
+                     "missions": [], "profiles": [],
+                     "quests": [], "fabrecords": []}
+    try:
+        from .workshop3d import list_models
+        for item in list_models(limit=8) or []:
+            if not isinstance(item, dict):
+                continue
+            inspection = item.get("inspection", {}) or {}
+            live["forge"]["models"].append({
+                "filename": _text(item.get("filename", ""), 80),
+                "model_id": _text(item.get("model_id", ""), 80),
+                "status": _text(item.get("status", ""), 20),
+                "verdict": _text(inspection.get("mesh_verdict",
+                                                "UNKNOWN"), 20),
+                "size": int(item.get("size_bytes", 0) or 0)})
+    except Exception:
+        pass
+    try:
+        from .printer3d import (adapter_for_printer,
+                                list_printers,
+                                list_stored_printers)
+        seen_printers: set[str] = set()
+        for printer in list(list_stored_printers() or []) + \
+                list(list_printers() or []):
+            pid = str(printer.printer_id or "")
+            if not pid or pid in seen_printers:
+                continue
+            seen_printers.add(pid)
+            try:
+                has_adapter = adapter_for_printer(pid) is not None
+            except Exception:
+                has_adapter = False
+            live["forge"]["printers"].append({
+                "printer_id": _text(pid, 80),
+                "name": _text(printer.name, 120),
+                "status": _text(printer.status, 20),
+                "adapter": bool(has_adapter)})
+        live["forge"]["printers"].sort(
+            key=lambda p: p["printer_id"])
+    except Exception:
+        pass
+    try:
+        from .slicer3d import SLICER_PROFILES
+        live["forge"]["profiles"] = sorted(SLICER_PROFILES)[:12]
+    except Exception:
+        pass
+    try:
+        from .campaigns import FABRICATION_SEEDS
+        fab_titles = {t for t, _x, _y, _z in FABRICATION_SEEDS}
+    except Exception:
+        fab_titles = set()
+    try:
+        from .missions import list_missions
+        for mission in sorted(
+                list_missions(limit=200) or [],
+                key=lambda m: str(m.mission_id)):
+            if str(mission.goal or "") not in fab_titles:
+                continue
+            live["forge"]["missions"].append({
+                "id": _text(mission.mission_id, 80),
+                "goal": _text(mission.goal, 120),
+                "status": _text(mission.status, 20)})
+        live["forge"]["missions"].sort(key=lambda m: m["id"])
+    except Exception:
+        pass
+    try:
+        from .quests import list_quest_details
+        _fab_set = fab_titles | {f"Missie: {t}" for t in fab_titles}
+        for detail in list_quest_details(limit=200) or []:
+            if str(detail.get("title", "")) not in _fab_set:
+                continue
+            steps = []
+            for step in detail.get("steps", []) or []:
+                if not isinstance(step, dict):
+                    continue
+                steps.append({
+                    "label": _text(step.get("label", "")),
+                    "kind": _text(step.get("kind", ""), 20),
+                    "state": _text(step.get("state", ""), 20),
+                    "glyph": _text(step.get("glyph", "○"), 8),
+                    "detail": _text(step.get("detail", ""), 160),
+                    "readiness": _text(step.get("readiness", ""),
+                                       20),
+                    "reason": _text(step.get(
+                        "readiness_reason", ""), 160)})
+            live["forge"]["quests"].append({
+                "quest_id": _text(detail.get("quest_id", ""), 80),
+                "title": _text(detail.get("title", "")),
+                "state": _text(detail.get("state", ""), 40),
+                "done": int(detail.get("done", 0) or 0),
+                "total": int(detail.get("total", 0) or 0),
+                "progress": _text(detail.get("progress", ""), 20),
+                "steps": steps})
+        live["forge"]["quests"].sort(key=lambda q: q["quest_id"])
+    except Exception:
+        pass
+    try:
+        from .fab_flow import list_fabrications
+        for record in list_fabrications(limit=8) or []:
+            data = record.model_dump(mode="json")
+            live["forge"]["fabrecords"].append({
+                "fabrication_id": _text(data.get(
+                    "fabrication_id", ""), 80),
+                "status": _text(data.get("status", ""), 20),
+                "mesh_ref": _text(data.get("mesh_ref", ""), 80),
+                "gcode_ref": _text(data.get("gcode_ref", ""), 80),
+                "job_id": _text(data.get("job_id", ""), 80)})
+    except Exception:
+        pass
+    # -- INVENTory-tellingen (best-effort loopback, alleen aantallen)
+    inv_counts: dict[str, int | None] = {
+        "files": None, "cameras": None, "hardware": None,
+        "models": None}
+    try:
+        import anyio as _anyio
+        _reader = _world_reader()
+
+        async def _browse_counts() -> dict:
+            out: dict[str, int | None] = {}
+            for _kind in ("files", "cameras", "hardware",
+                          "models"):
+                try:
+                    _found = await _reader.browse(_kind)
+                    out[_kind] = len(_found.results or [])
+                except Exception:
+                    out[_kind] = None
+            return out
+
+        inv_counts.update(_anyio.run(_browse_counts) or {})
+    except Exception:
+        pass
+    try:
+        from .hardware_links import list_links
+        live["verified_hw"] = len(list_links(
+            status="VERIFIED", limit=200) or [])
+    except Exception:
+        live["verified_hw"] = 0
+    # -- NPC-missies inclusief drafts (eerlijke statuslabels) --
+    _STATUS_LABEL = {"draft": "beschikbaar",
+                     "pending_approval": "WAITING",
+                     "approved": "ACTIVE", "running": "ACTIVE",
+                     "paused": "WAITING"}
+    _TERMINAL = {"completed", "failed", "cancelled", "blocked"}
+    try:
+        from .campaigns import MISSION_SEEDS
+        luma_titles = {
+            "Documenteer één object",
+            "Laat Luma je video begrijpen [FUTURE]"}
+    except Exception:
+        luma_titles = {"Documenteer één object"}
+    try:
+        from .missions import list_missions as _list_all
+        _all_missions = list_missions(limit=200) or []
+    except Exception:
+        _all_missions = []
+
+    def _mission_item(mission) -> dict:
+        return {
+            "id": _text(mission.mission_id, 80),
+            "goal": _text(mission.goal, 120),
+            "status": _text(mission.status, 20),
+            "label": _text(mission.goal, 120),
+            "href": f"/missions/{_text(mission.mission_id, 80)}",
+            "meta": _STATUS_LABEL.get(
+                str(mission.status),
+                str(mission.status))}
+
+    live["luma_missions"] = [
+        _mission_item(m) for m in _all_missions
+        if str(m.goal or "") in luma_titles
+        and str(m.status) not in _TERMINAL]
+    live["luma_missions"].sort(key=lambda m: m["id"])
+    live["docquest"] = {}
+    _questlines: list = []
+    try:
+        from .quests import list_quest_details
+        _questlines = list_quest_details(limit=50) or []
+        for _qd in _questlines:
+            if str(_qd.get("title", "")) == "Documenteer één object":
+                live["docquest"] = {
+                    "title": _text(_qd.get("title", "")),
+                    "state": _text(_qd.get("state", ""), 40),
+                    "done": int(_qd.get("done", 0) or 0),
+                    "total": int(_qd.get("total", 0) or 0),
+                    "progress": _text(_qd.get("progress", ""),
+                                      20)}
+                break
+    except Exception:
+        pass
+    # -- Missie-tracker: bestaande mission-state als speelbare
+    # voortgang (geen tweede quest-engine) --
+    _TRACK_GLYPH = {"draft": "○", "pending_approval": "◷",
+                    "approved": "…", "running": "…",
+                    "paused": "⏸", "completed": "✓",
+                    "failed": "!", "cancelled": "○",
+                    "blocked": "!"}
+    _TRACK_NEEDS = {"draft": "beschikbaar — aannemen via Missies",
+                    "pending_approval": "wacht op exacte YES",
+                    "approved": "kan tikken — drijft tot gate",
+                    "running": "kan tikken — drijft tot gate",
+                    "paused": "hervatten via Missies-pagina",
+                    "completed": "afgerond",
+                    "failed": "aandacht nodig — zie Missies",
+                    "cancelled": "geannuleerd",
+                    "blocked": "aandacht nodig — zie Missies"}
+    live["tracker"] = []
+    try:
+        for _m in sorted(_all_missions,
+                         key=lambda m: str(m.mission_id)):
+            _st = str(_m.status)
+            if _st in ("cancelled",):
+                continue
+            live["tracker"].append({
+                "id": _text(_m.mission_id, 80),
+                "goal": _text(_m.goal, 120),
+                "status": _text(_st, 20),
+                "glyph": _TRACK_GLYPH.get(_st, "○"),
+                "needs": _TRACK_NEEDS.get(_st, _st),
+                "href": f"/missions/{_text(_m.mission_id, 80)}"})
+            if len(live["tracker"]) >= 12:
+                break
+    except Exception:
+        live["tracker"] = []
+    live["questlines"] = []
+    try:
+        for _qd in _questlines[:20]:
+            live["questlines"].append({
+                "quest_id": _text(_qd.get("quest_id", ""), 80),
+                "title": _text(_qd.get("title", "")),
+                "state": _text(_qd.get("state", ""), 40),
+                "progress": _text(_qd.get("progress", ""), 20),
+                "glyph": ("✓" if _qd.get("state") == "COMPLETED"
+                          else "!" if _qd.get("state") in
+                          ("FAILED", "BLOCKED") else "○")})
+    except Exception:
+        live["questlines"] = []
+    # -- Discoveries: bestaande evidence-only vondsten --
+    live["discoveries"] = {"items": [], "research_open": []}
+    try:
+        from .ecosystem import discoveries as _findings
+        _found = _findings(limit=6) or {}
+        for _item in (_found.get("items", []) or [])[:6]:
+            if not isinstance(_item, dict):
+                continue
+            live["discoveries"]["items"].append({
+                "title": _text(_item.get("title", "")),
+                "kind": _text(_item.get("kind", ""), 40),
+                "text": _text(_item.get("text", ""), 200),
+                "evidence": _text(_item.get("evidence", ""),
+                                  160),
+                "link": _text(_item.get("link", "/symbiosis"),
+                              200)})
+        for _item in (_found.get("research_open_questions", [])
+                      or [])[:6]:
+            if not isinstance(_item, dict):
+                continue
+            live["discoveries"]["research_open"].append({
+                "question": _text(_item.get("question", ""),
+                                  200),
+                "link": _text(_item.get("link", "/research"),
+                              200)})
+    except Exception:
+        live["discoveries"] = {"items": [], "research_open": []}
+    try:
+        from .cameras import list_devices
+        live["devices"] = [{
+            "device_id": _text(d.device_id, 80),
+            "name": _text(d.name, 120)} for d in
+            list_devices() or []]
+    except Exception:
+        live["devices"] = []
+    # -- World representations v1 (dunne afbeelding echte records) --
+    live["world_reps"] = []
+    try:
+        import anyio as _anyio2
+        from .world import (derive_world_representations,
+                            inventory_spotlight)
+        _reader2 = _world_reader()
+
+        async def _spotlight() -> list:
+            try:
+                return await inventory_spotlight(_reader2)
+            except Exception:
+                return []
+
+        live["world_reps"] = derive_world_representations(
+            _anyio2.run(_spotlight) or [])
+    except Exception:
+        live["world_reps"] = []
+    live["npc_anchors"] = []
+    try:
+        from .world import npc_anchors
+        live["npc_anchors"] = npc_anchors()
+    except Exception:
+        live["npc_anchors"] = []
+    # -- Verdant: voorwaardelijke biome uit bestaande signalen --
+    live["verdant"] = {"state": "DORMANT", "signals": [],
+                       "count": 0, "mission": None,
+                       "quests": []}
+    try:
+        import anyio as _anyio3
+        from .world import (collect_verdant_signals,
+                            verdant_state_from)
+        _reader3 = _world_reader()
+
+        async def _verdant_parts() -> dict:
+            try:
+                return await collect_verdant_signals(_reader3)
+            except Exception:
+                return {"inventory": [], "solar": 0,
+                        "research": []}
+
+        live["verdant"] = verdant_state_from(
+            _anyio3.run(_verdant_parts) or {})
+    except Exception:
+        live["verdant"] = {"state": "DORMANT", "signals": [],
+                           "count": 0, "mission": None,
+                           "quests": []}
+    try:
+        for _m in _all_missions:
+            if str(_m.goal or "") == ("Ontwerp een onderdeel voor "
+                                      "de hydroponics-workshop"):
+                live["verdant"]["mission"] = {
+                    "id": _text(_m.mission_id, 80),
+                    "goal": _text(_m.goal, 120),
+                    "status": _text(_m.status, 20),
+                    "href": f"/missions/{_text(_m.mission_id, 80)}"}
+                break
+        for _qd in _questlines:
+            if str(_qd.get("title", "")) in (
+                    "Mycelium F: kweek", "Mycelium G: oogst"):
+                live["verdant"]["quests"].append({
+                    "title": _text(_qd.get("title", "")),
+                    "state": _text(_qd.get("state", ""), 40),
+                    "progress": _text(_qd.get("progress", ""),
+                                      20)})
+    except Exception:
+        pass
+    live["verdant"].setdefault("mission", None)
+    live["verdant"].setdefault("quests", [])
+    # AWAKENED-representatie: eerste whitelist-signaal wordt één
+    # beloopbare representatie in de bioom (zelfde id-vorm, geen
+    # dubbele als het record al op de plank staat).
+    live["verdant"]["rep"] = None
+    try:
+        from .world import verdant_rep_from
+        if live["verdant"].get("state") == "AWAKENED":
+            live["verdant"]["rep"] = verdant_rep_from(
+                live["verdant"].get("signals", []) or [],
+                shelf_ids={r.get("source_id")
+                           for r in live["world_reps"]})
+    except Exception:
+        live["verdant"]["rep"] = None
+    # -- NPC-lijst (data-gedreven; posities blijven client-kaart) --
+    fab_open = [m for m in live["forge"]["missions"]
+                if m["status"] not in ("draft", "completed",
+                                       "failed", "cancelled")]
+    fab_draft = [m for m in live["forge"]["missions"]
+                 if m["status"] == "draft"]
+    if fab_open:
+        forge_badge = "…"
+        forge_reason = (f"{len(fab_open)} fabricatiemissie(s) "
+                        "onderweg.")
+        forge_status = "Bezig"
+    elif fab_draft:
+        forge_badge = ""
+        forge_reason = (f"{len(fab_draft)} concept-missie(s) "
+                        "beschikbaar; printer: "
+                        + ("geen" if not live["forge"]["printers"]
+                           else str(len(live["forge"][
+                               "printers"])) + " bekend"))
+        forge_status = "Idle"
+    else:
+        forge_badge, forge_reason, forge_status = (
+            "", "Werkplaats gereed.", "Idle")
+    def _inv_word(count, singular, plural=""):
+        if count is None:
+            return "INVENTory onbereikbaar", "ONBEREIKBAAR"
+        word = singular if count == 1 else (plural or singular + "s")
+        return f"{count} {word}", "BESCHIKBAAR"
+
+    _files_word, _files_state = _inv_word(
+        inv_counts.get("files"), "file")
+    _cams_word, _cams_state = _inv_word(
+        inv_counts.get("cameras"), "camera", "camera's")
+    _hw_n = inv_counts.get("hardware")
+    _hw_word = ("INVENTory onbereikbaar" if _hw_n is None
+                else f"{_hw_n} records"
+                + (f", {live['verified_hw']} GEVERIFIEERD"
+                   if live.get("verified_hw") else ""))
+    _hw_state = ("ONBEREIKBAAR" if _hw_n is None else "BESTAAT")
+    _models_word, _models_state = _inv_word(
+        inv_counts.get("models"), "AI-model", "AI-modellen")
+    _n_models = len(live["forge"]["models"])
+    _printers = live["forge"]["printers"]
+    if not _printers:
+        _printer_detail = ("geen printer geregistreerd — "
+                           "fysiek printen onmogelijk")
+        _printer_state = "AFWEZIG"
+    else:
+        _printer_detail = (
+            f"{len(_printers)} bekend: "
+            + ", ".join(
+                f"{p['name'] or p['printer_id']} "
+                f"[{p['status']}"
+                f"{', adapter' if p['adapter'] else ', geen adapter'}]"
+                for p in _printers[:4]))
+        _printer_state = "BEKEND"
+    _exec_available = ("NOT_CONNECTED" if not _printers
+                       else "HARDWARE_REQUIRED")
+    _exec_reason = ("geen printer-record" if not _printers
+                    else "exacte YES + adapter + hardware vereist; "
+                         "missie-YES start de machine nooit")
+    # -- NPC activity: afgeleide aanwezigheid, geen simulatie --
+    live["npc_activity"] = {
+        "luma": {"state": "idle", "reason": ""},
+        "forge": {"state": "idle", "reason": ""}}
+    try:
+        from .world import derive_npc_activity
+        live["npc_activity"] = derive_npc_activity({
+            "candidate_open": live["evidence"].get(
+                "candidate_open", 0),
+            "supported_count": live["evidence"].get(
+                "supported_count", 0),
+            "inbox_count": live["tools"].get("inbox_count", 0),
+            "missions_active": bool(live["missions"]),
+            "quest_completed": bool([
+                q for q in live["questlines"]
+                if q.get("state") == "COMPLETED"]),
+            "fab_open": bool(fab_open),
+            "fab_draft": bool(fab_draft),
+            "fab_blocked": bool([
+                f for f in live["forge"]["fabrecords"]
+                if str(f.get("status", "")) in
+                ("blocked", "failed")])})
+    except Exception:
+        pass
+    live["npcs"] = [
+        {
+            "id": "luma", "name": "Luma", "glyph": "🎥",
+            "domain": "Media & Observation",
+            "role": "Waarnemer",
+            "line": "Hey Jelles. Er is hier nog veel te ontdekken.",
+            "badge": live["luma"].get("badge", ""),
+            "reason": live["luma"].get("reason", ""),
+            "status": live["luma"].get("status", "Idle"),
+            "familiar": live["luma"].get("familiar")
+            or fam_map.get("luma"),
+            "activity": live["npc_activity"].get("luma"),
+            "panel": {
+                "abilities": [
+                    {"name": "Inbox bekijken",
+                     "via": "bestaande inbox-lijst",
+                     "type": "DIGITAL", "available": "AVAILABLE",
+                     "reason": "", "tool": "Camera-inbox"},
+                    {"name": "Camera-observatie starten",
+                     "via": "bestaande ingest/sessie-flow",
+                     "type": "DIGITAL", "available": "AVAILABLE",
+                     "reason": "", "tool": "Camera-inbox"},
+                    {"name": "Foto analyseren",
+                     "via": "bestaande describe (VLM of fallback)",
+                     "type": "DIGITAL", "available": "AVAILABLE",
+                     "reason": "REAL indien Ollama actief, anders "
+                               "UNAVAILABLE",
+                     "tool": "Vision-model"},
+                    {"name": "Kandidaten voorstellen",
+                     "via": "bestaande propose-flow",
+                     "type": "DIGITAL", "available": "AVAILABLE",
+                     "reason": "alleen uit REAL-labels",
+                     "tool": "INVENTory"},
+                    {"name": "Object/file-voorstel",
+                     "via": "bestaande vision→write-flow",
+                     "type": "DIGITAL", "available": "AVAILABLE",
+                     "reason": "inert tot YES",
+                     "tool": "INVENTory"},
+                    {"name": "Video/360° verwerken",
+                     "via": "bestaat nog niet",
+                     "type": "DIGITAL", "available": "FUTURE",
+                     "reason": "alleen losse beelden via file-ingest",
+                     "tool": "Camera-inbox"}],
+                "tools": [
+                    {"name": "Camera-inbox",
+                     "detail": f"{live['tools'].get('inbox_count', '?')} "
+                               "bestand(en)",
+                     "state": "BESCHIKBAAR"},
+                    {"name": "Vision-model",
+                     "detail": "Ollama loopback indien actief, anders "
+                               "UNAVAILABLE",
+                     "state": "BESTAAT"},
+                    {"name": "Camera/file-records",
+                     "detail": f"{_cams_word}; {_files_word}",
+                     "state": _cams_state},
+                    {"name": "INVENTory",
+                     "detail": "wereldwaarheid",
+                     "state": "BESTAAT"}],
+                "missions": live["luma_missions"],
+                "evidence": live["evidence"]},
+            "mission": {
+                "items": (
+                    ([{"label": "Guide: " + live["guide"].get(
+                        "what", ""),
+                      "href": live["guide"].get("href", "/guide"),
+                      "meta": live["guide"].get("label", "")}]
+                     if live["guide"].get("what") else [])
+                    + ([{"label": "Quest: " + live["quest"].get(
+                        "title", ""),
+                         "href": live["quest"].get("href", "/quests"),
+                         "meta": live["quest"].get("state", "")}]
+                       if live["quest"].get("title") else [])
+                    + [{"label": m.get("goal", ""),
+                        "href": f"/missions/{m.get('id', '')}",
+                        "meta": m.get("meta", m.get("status", ""))}
+                       for m in live["luma_missions"]]),
+                "note": "Aannemen gebeurt op de bestaande pagina's — "
+                        "de game start niets zelf."},
+        },
+        {
+            "id": "forge", "name": "Forge", "glyph": "🛠️",
+            "domain": "Fabrication & 3D",
+            "role": "Werkplaatsbeheerder",
+            "line": "Welkom in de werkplaats. Ik bereid alles voor — "
+                    "printen zelf doen we alleen met jouw YES.",
+            "badge": forge_badge,
+            "reason": forge_reason,
+            "status": forge_status,
+            "familiar": fam_map.get("forge"),
+            "activity": live["npc_activity"].get("forge"),
+            "panel": {
+                "abilities": [
+                    {"name": "3D-model beoordelen",
+                     "via": "bestaande workbench-inspectie",
+                     "type": "DIGITAL", "available": "AVAILABLE",
+                     "reason": "", "tool": "3D-modellen"},
+                    {"name": "Printbaarheid bekijken",
+                     "via": "bestaande mesh-verdicts",
+                     "type": "DIGITAL", "available": "AVAILABLE",
+                     "reason": "", "tool": "Slicer/workbench"},
+                    {"name": "Print-missie voorstellen",
+                     "via": "bestaande propose + YES-gate",
+                     "type": "DIGITAL", "available": "AVAILABLE",
+                     "reason": "inert tot exacte YES",
+                     "tool": "Printers"},
+                    {"name": "Materiaal/model koppelen",
+                     "via": "bestaande workshop-links",
+                     "type": "DIGITAL", "available": "AVAILABLE",
+                     "reason": "", "tool": "CAD/mesh-files"},
+                    {"name": "Printerstatus tonen",
+                     "via": "bestaande printer-devices",
+                     "type": "DIGITAL", "available": "AVAILABLE",
+                     "reason": "", "tool": "Printers"},
+                    {"name": "Print uitvoeren (fysiek)",
+                     "via": "adapter + exacte YES + verificatie",
+                     "type": "PHYSICAL",
+                     "available": _exec_available,
+                     "reason": _exec_reason,
+                     "tool": "Printers"}],
+                "tools": [
+                    {"name": "3D-modellen",
+                     "detail": (f"{_n_models} geregistreerd"
+                                if _n_models else "geen modellen "
+                                "geregistreerd"),
+                     "state": ("BESCHIKBAAR" if _n_models
+                               else "AFWEZIG")},
+                    {"name": "CAD/mesh-files",
+                     "detail": _files_word,
+                     "state": _files_state},
+                    {"name": "Slicer/workbench",
+                     "detail": "profielen: " + (
+                         ", ".join(live["forge"]["profiles"][:4])
+                         if live["forge"]["profiles"]
+                         else "onbekend"),
+                     "state": "BESTAAT"},
+                    {"name": "Printers",
+                     "detail": _printer_detail,
+                     "state": _printer_state},
+                    {"name": "INVENTory hardware",
+                     "detail": _hw_word,
+                     "state": _hw_state},
+                    {"name": "AI-modellen",
+                     "detail": _models_word,
+                     "state": _models_state}],
+                "missions": [{
+                    "id": m["id"], "goal": m["goal"],
+                    "status": m["status"]} for m in
+                    live["forge"]["missions"]],
+                "evidence": {
+                    "models": live["forge"]["models"],
+                    "candidates": [],
+                    "fabrecords": live["forge"]["fabrecords"],
+                    "quests": live["forge"]["quests"]}},
+            "mission": {
+                "items": [{
+                    "label": m["goal"],
+                    "href": f"/missions/{m['id']}",
+                    "meta": _STATUS_LABEL.get(
+                        m["status"], m["status"])} for m in
+                    live["forge"]["missions"]],
+                "note": "Fysieke uitvoering vereist altijd exacte YES "
+                        "+ adapter + hardware. Draft = beschikbaar."},
+        },
+    ]
+    play_data = _json.dumps(live).replace("</", "<\\/")
+    world_line = _ui.esc(live["world"].get("line", "") or
+                         "Mycelium ademt — data volgt")
+    quest_title = _ui.esc(live["quest"].get("title", "") or
+                          "nog geen open quest")
+    quest_href = _ui.esc(live["quest"].get("href", "/quests") or
+                         "/quests")
+    guide_label = _ui.esc(live["guide"].get("label", "") or
+                          "Guide")
+    guide_href = _ui.esc(live["guide"].get("href", "/guide") or
+                         "/guide")
+    guide_what = _ui.esc(live["guide"].get("what", "") or
+                         "Geen actieve Guide-actie.")
+    notif_n = len(live["notifications"])
+    fungi_groups: dict[str, list] = {}
+    for _node in live["fungi"].get("nodes", []) or []:
+        fungi_groups.setdefault(str(_node.get("branch", "?")),
+                                []).append(_node)
+    fungi_names = {"seed": "🏠 Zaad", "quest": "🧭 Quests",
+                   "campaign": "🗺 Campagnes", "mission": "📜 Missies",
+                   "observation": "📷 Observaties",
+                   "candidate": "🌱 Kandidaten",
+                   "hardware": "🔧 Hardware", "knowledge": "📚 Kennis",
+                   "node": "⬢ Nodes"}
+    # WORLD MEMORY: per tak één betrouwbare "omdat"-regel, direct uit
+    # de derive-bron. Geen gokken per node — alleen wat de bron bewijst.
+    fungi_why = {"seed": "startpunt van het netwerk",
+                 "campaign": "campagne-voortgang uit bestaande records",
+                 "quest": "quest-status uit bestaande records",
+                 "mission": "goedgekeurde of lopende missie-records",
+                 "observation": "echte camera-observaties",
+                 "candidate": "wacht op review in Kennis",
+                 "hardware": "geverifieerde hardware-links",
+                 "knowledge": "opgeslagen kennisrecords",
+                 "node": "geregistreerde nodes"}
+    fungi_parts = []
+    for _branch in ("seed", "campaign", "quest", "mission",
+                    "observation", "candidate", "hardware",
+                    "knowledge", "node"):
+        _items = fungi_groups.get(_branch, [])
+        if not _items:
+            continue
+        _rows = "".join(
+            f"<li><a href=\"{_ui.esc(_n.get('href', '/world'))}\">"
+            f"{_ui.esc(_n.get('glyph', '•'))} "
+            f"{_ui.esc(_n.get('label', ''))}</a></li>"
+            for _n in _items[:8])
+        _more = (f"<li class=\"muted\">+{len(_items) - 8} "
+                 "meer…</li>" if len(_items) > 8 else "")
+        fungi_parts.append(
+            f"<div class=\"sprout\"><b>{fungi_names.get(_branch, _branch)} "
+            f"({_ui.esc(str(len(_items)))})</b>"
+            f"<br><small class=\"muted\">Omdat: "
+            f"{_ui.esc(fungi_why.get(_branch, 'bestaande records'))}."
+            f"</small><ul>{_rows}{_more}</ul>"
+            "</div>")
+    fungi_html = "".join(fungi_parts) or \
+        "<p class=\"muted\">Nog geen groei — het netwerk groeit pas bij echte records.</p>"
+    live_fungi_total = _ui.esc(str(live["fungi"].get("total", 0)))
+    live_fungi_honesty = _ui.esc(live["fungi"].get(
+        "honesty", "Afgeleid uit bestaande records."))
+    main = f"""<h1>Play 🎮 <span class="muted">Homebase</span></h1>
+    <p class="muted">Bewegen: <code>WASD</code>/<code>pijltjes</code> · Interactie: <code>E</code> · Meldingen: <code>N</code> · Sluiten: <code>Esc</code>. Positie is efemeer (alleen in je browser).</p>
+    <div class="panel"><div id="play-hud" class="muted">laden…</div>
+    <p>{_ui.esc(live["world"].get("glyph", "🌱"))} <b>{world_line}</b> · 🧭 <a href="{quest_href}">{quest_title}</a></p>
+    <p><span id="guide-chip" class="muted">🧭 Guide: {guide_what} — <a href="{guide_href}">{guide_label}</a></span> · <span id="notif-chip" class="muted">🔔 <button id="notif-open">Meldingen ({notif_n})</button></span></p></div>
+    <div class="panel"><h2>Live backend <span class="muted">(zelfde waarheid, elke 20s)</span></h2>
+    <div id="live-strip" class="muted">live status laden…</div>
+    <p class="muted"><a href="/tasks">Tasks</a> · <a href="/missions">Missions</a> · <a href="/activity">Activity</a> · <a href="/api/v1/events/stream?once=true">events (SSE-snapshot)</a></p></div>
+    <script>
+    (function() {{
+      var el = document.getElementById("live-strip");
+      if (!el) return;
+      function esc(s) {{ return String(s == null ? "" : s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").slice(0, 160); }}
+      async function tick() {{
+        try {{
+          var er = await fetch("/api/v1/events?limit=3");
+          var ev = er.ok ? await er.json() : [];
+          var tr = await fetch("/api/v1/tasks");
+          var tasks = tr.ok ? await tr.json() : [];
+          var open = tasks.filter(function(t) {{ return t.status === "queued"; }}).length;
+          var busy = tasks.filter(function(t) {{ return t.status === "assigned"; }}).length;
+          var last = (ev.length ? ev[ev.length - 1] : null);
+          el.innerHTML = "tasks: <b>" + open + " open / " + busy + " bezig</b>"
+            + (last ? " · laatste event: <b>" + esc(last.event_type) + "</b> — " + esc(last.summary || "") : " · nog geen events");
+        }} catch (e) {{ el.textContent = "live status onbereikbaar (backend offline?)"; }}
+      }}
+      tick(); setInterval(tick, 20000);
+    }})();
+    </script>
+    <div class="panel"><canvas id="stage" width="960" height="600" style="width:100%;height:auto;background:#0b0f0b;border:1px solid var(--line);border-radius:var(--r)" role="img" aria-label="Speelbare homebase en bosrand. Beweeg met WASD of pijltjes, praat met Luma via E, meldingen via N."></canvas>
+    <div id="interact" class="muted" role="status" style="min-height:1.6em"></div></div>
+    <div class="panel"><h2>🍄 Fungi-netwerk <span class="muted">wereldgeheugen (afgeleid, {live_fungi_total} knopen)</span></h2>
+    <p class="muted">{live_fungi_honesty}</p>
+    <div class="grove">{fungi_html}</div>
+    <p><a href="/game">Game-overzicht</a> · <a href="/world">World</a></p></div>
+    <div id="dialog" role="dialog" aria-modal="true" aria-labelledby="dialog-title" hidden>
+    <div class="panel"><h2><span id="dialog-title-name">NPC</span> <span id="npc-badge"></span></h2>
+    <div id="dialog-choices" role="group" aria-label="Gespreksopties"></div>
+    <div id="dialog-body"></div>
+    <p class="muted">Alles hieronder is bestaande data of bestaande flows. Acties lopen via echte backend-routes; NPC-persoonlijkheid beïnvloedt nooit permissions of safety.</p>
+    <button id="dialog-close">Sluiten (Esc)</button></div></div>
+    <div id="notifs" role="dialog" aria-modal="true" aria-labelledby="notifs-title" hidden>
+    <div class="panel"><h2 id="notifs-title">🔔 Meldingen</h2>
+    <div id="notifs-body"></div>
+    <p class="muted">Snapshot bij het laden van de pagina — ververs voor nieuw. Bestaande notification/event-data.</p>
+    <button id="notifs-close">Sluiten (Esc)</button></div></div>
+    <p class="muted"><a href="/game">Game-overzicht</a> · <a href="/guide">Guide</a> · <a href="/world">World</a> · <a href="/quests">Quests</a></p>
+     <script>const PLAYDATA = {play_data};
+     window.PLAYDATA = PLAYDATA;
+     const WORLD_W = 1600, WORLD_H = 1400, VIEW_W = 960, VIEW_H = 600;
+    const DIV_Y = 1000;
+    const WALLS = [
+      {{x: 0, y: 0, w: WORLD_W, h: 40}},
+      {{x: 0, y: WORLD_H - 40, w: WORLD_W, h: 40}},
+      {{x: 0, y: 0, w: 40, h: WORLD_H}},
+      {{x: WORLD_W - 40, y: 0, w: 40, h: WORLD_H}},
+      {{x: 40, y: DIV_Y - 20, w: 690, h: 40}},
+      {{x: 870, y: DIV_Y - 20, w: 690, h: 40}}
+    ];
+    const DOOR = {{x: 730, y: DIV_Y - 20, w: 140, h: 40, label: "deur-bosrand", passable: true}};
+    const SOLIDS = [
+      {{x: 220, y: 220, w: 320, h: 110, label: "werkbank"}},
+      {{x: 1050, y: 200, w: 180, h: 320, label: "stellage"}},
+      {{x: 700, y: 620, w: 220, h: 130, label: "tafel"}},
+      {{x: 1240, y: 660, w: 120, h: 120, label: "plant"}},
+      {{x: 180, y: 640, w: 120, h: 120, label: "plant"}},
+      {{x: 200, y: 1120, w: 140, h: 140, label: "boom"}},
+      {{x: 1250, y: 1140, w: 150, h: 150, label: "boom"}},
+      {{x: 700, y: 1180, w: 120, h: 120, label: "ruine"}}
+    ];
+    const DECOR = [
+      {{x: 480, y: 700, w: 220, h: 140, label: "kleed"}},
+      {{x: 880, y: 300, w: 90, h: 90, label: "lamp", light: 1}},
+      {{x: 340, y: 420, w: 90, h: 90, label: "lamp", light: 1}},
+      {{x: 500, y: 1080, w: 100, h: 60, label: "mos"}},
+      {{x: 950, y: 1240, w: 120, h: 70, label: "mos"}}
+    ];
+    const SLOTS = [
+      {{x: 300, y: 1150, w: 150, h: 90, label: "later: Verdant"}}
+    ];
+     const NPC_FALLBACK = [
+       {{id: "luma", name: "Luma", x: 1180, y: 420, r: 18, color: "#c9d66b", glyph: "🎥", radius: 95}},
+       {{id: "forge", name: "Forge", x: 1380, y: 380, r: 18, color: "#d9a441", glyph: "🛠️", radius: 95}}
+     ];
+     const NPCS = (function () {{
+       const anchors = ((window.PLAYDATA && PLAYDATA.npc_anchors) || []);
+       if (anchors.length) return anchors.map((a) => ({{id: a.id, name: a.name || a.id, x: a.x, y: a.y, r: 18, color: a.color || "#c9d66b", glyph: a.glyph || "•", radius: 95}}));
+       return NPC_FALLBACK;
+     }})();
+     let worldObj = null, worldObjDetail = null;
+     function worldReps() {{
+       const reps = ((window.PLAYDATA && PLAYDATA.world_reps) || []).slice();
+       const verd = ((window.PLAYDATA && PLAYDATA.verdant) || {{}});
+       if (verd && verd.rep && verd.rep.source_id) {{
+         if (!reps.some((r) => r && r.source_id === verd.rep.source_id)) reps.push(verd.rep);
+       }}
+       return reps;
+     }}
+    const CHOICES = {{
+       luma: [{{v: "files", l: "Bestanden bekijken"}}, {{v: "lumaflow", l: "Analyse starten"}},
+              {{v: "journey", l: "🧭 Reis"}}, {{v: "mission", l: "Missievoorstel"}}, {{v: "later", l: "Sluiten"}}],
+       forge: [{{v: "panel", l: "Bekijk"}}, {{v: "abilities", l: "Wat kun je?"}},
+               {{v: "print", l: "Help mij iets te printen"}}, {{v: "quest", l: "Missie-evidence"}}, {{v: "later", l: "Later"}}]
+    }};
+    let flow = null;
+    function flowSteps() {{
+      const s = (flow && flow.steps) || {{}};
+      const mark = (done) => done ? "✓" : "○";
+      return '<p class="muted">Stap: ' + mark(s.analyse) + ' Analyse · '
+        + mark(s.voorstel) + ' Voorstel · ' + mark(s.uitvoering) + ' Uitvoering · '
+        + mark(s.verificatie) + ' Verificatie</p>';
+    }}
+    function npcData(id) {{
+      const list = ((window.PLAYDATA && PLAYDATA.npcs) || []);
+      for (const entry of list) {{
+        if (entry && entry.id === id) return entry;
+      }}
+      return {{id: id, name: id, glyph: "•", domain: "", role: "",
+               line: "…", badge: "", reason: "", status: "Idle",
+               familiar: null,
+               panel: {{abilities: [], tools: [], missions: [],
+                        evidence: {{}}}},
+               mission: {{items: [], note: ""}}}};
+    }}
+    function npcMerged(npc) {{
+      return Object.assign({{}}, npcData(npc.id), npc);
+    }}
+    const player = {{x: 800, y: 500, r: 14, speed: 250, bob: 0}};
+    const cam = {{x: 0, y: 0}};
+    const keys = {{}};
+    let dialogOpen = false, notifsOpen = false, dialogView = "talk";
+    let dialogNpc = NPCS[0];
+    const stage = document.getElementById("stage");
+    const ctx = stage.getContext("2d");
+    const prompt = document.getElementById("interact");
+    const dialog = document.getElementById("dialog");
+    const dialogBody = document.getElementById("dialog-body");
+    const npcBadge = document.getElementById("npc-badge");
+    const hud = document.getElementById("play-hud");
+    const notifs = document.getElementById("notifs");
+    const notifsBody = document.getElementById("notifs-body");
+    function escHtml(s) {{
+      return String(s === undefined || s === null ? "" : s)
+        .replace(/&/g, "&amp;").replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+    }}
+    function luma() {{
+      return ((window.PLAYDATA && PLAYDATA.luma) || {{}});
+    }}
+    function circleHitsRect(cx, cy, r, rc) {{
+      const nx = Math.max(rc.x, Math.min(cx, rc.x + rc.w));
+      const ny = Math.max(rc.y, Math.min(cy, rc.y + rc.h));
+      const dx = cx - nx, dy = cy - ny;
+      return dx * dx + dy * dy < r * r;
+    }}
+    function collide(px, py, r) {{
+      const solids = WALLS.concat(SOLIDS);
+      for (const rc of solids) {{
+        if (circleHitsRect(px, py, r, rc)) return rc;
+      }}
+      return null;
+    }}
+     function nearestNpc() {{
+       let best = null, bestD = 1e9;
+       for (const npc of NPCS) {{
+         const d = Math.hypot(player.x - npc.x, player.y - npc.y);
+         if (d < npc.radius && d < bestD) {{ best = npc; bestD = d; }}
+       }}
+       return best;
+     }}
+     function nearestRep() {{
+       let best = null, bestD = 1e9;
+       for (const rep of worldReps()) {{
+         const d = Math.hypot(player.x - rep.x, player.y - rep.y);
+         if (d < 70 && d < bestD) {{ best = rep; bestD = d; }}
+       }}
+       return best;
+     }}
+     function nearestTarget() {{
+       const npc = nearestNpc();
+       const rep = nearestRep();
+       if (npc && rep) {{
+         const dn = Math.hypot(player.x - npc.x, player.y - npc.y);
+         const dr = Math.hypot(player.x - rep.x, player.y - rep.y);
+         return dn <= dr ? {{npc: npc}} : {{rep: rep}};
+       }}
+       if (rep) return {{rep: rep}};
+       if (npc) return {{npc: npc}};
+       return null;
+     }}
+     function zoneAt() {{
+       if (player.y > DIV_Y - 20) {{
+         if (Math.hypot(player.x - 375, player.y - 1195) < 150) {{
+           const vs = ((window.PLAYDATA && PLAYDATA.verdant) || {{}}).state || "DORMANT";
+           return vs === "AWAKENED" ? "Verdant — ontwaakt" : "Verdant — dormant";
+         }}
+         if (Math.hypot(player.x - 760, player.y - 1240) < 220) return "Ruïne — ontdekking";
+         return "Bosrand";
+       }}
+       if (player.y > DIV_Y - 200 && player.x > DOOR.x - 80 && player.x < DOOR.x + DOOR.w + 80)
+         return "Doorgang naar de bosrand";
+       if (player.y < 280 && player.x < 660) return "Homebase — Workshop";
+       return "Homebase — Werkplaats";
+     }}
+    function questLine() {{
+      const q = ((window.PLAYDATA && PLAYDATA.quest) || {{}});
+      return q.title ? ("Huidige quest: " + q.title + " [" + (q.state || "?") + " " + (q.progress || "") + "]") : "Nog geen open quest — kijk bij de Guide.";
+    }}
+    function renderTalk(npc) {{
+      const full = npcMerged(npc);
+      let h = "<p><b>" + escHtml(full.line || "…") + "</b></p>"
+        + "<p>" + escHtml(full.reason || "") + "</p>";
+      if (full.id === "luma") h += '<p class="muted">' + escHtml(questLine()) + "</p>";
+      h += '<p><button data-act="goto" data-view="panel">Mogelijkheden bekijken</button></p>';
+      return h;
+    }}
+    function renderFiles() {{
+      const inbox = ((((window.PLAYDATA && PLAYDATA.tools) || {{}}).inbox) || []);
+      const ev = ((window.PLAYDATA && PLAYDATA.evidence) || {{}});
+      const obs = ev.observations || [];
+      let h = "<h3>Camera-inbox (" + inbox.length + ")</h3>";
+      h += inbox.length ? "<ul>" + inbox.map((f) => "<li>📁 " + escHtml(f) + "</li>").join("") + "</ul>"
+        : '<p class="muted">Inbox leeg — leg een JPG in de camera-inbox.</p>';
+      h += "<h3>Observaties (" + obs.length + ")</h3>";
+      h += obs.length ? "<ul>" + obs.map((o) =>
+        '<li>📷 ' + escHtml(o.media || o.id) + ' <span class="muted">' + escHtml(o.device || "") + " " + escHtml(o.created || "") + "</span></li>").join("") + "</ul>"
+        : '<p class="muted">Nog geen observaties — start een analyse.</p>';
+      h += '<p class="muted">Snapshot bij laden; ververs voor nieuwe data.</p>';
+      return h;
+    }}
+    function renderCandidates() {{
+      if (!flow || !flow.observation_id) return '<p class="muted">Start eerst een analyse.</p>';
+      const list = flow.candidates || [];
+      let h = "<h3>🔎 Kandidaten (" + list.length + ")</h3>" + flowSteps();
+      h += list.length ? "<ul>" + list.map((c, i) =>
+        '<li><b>' + escHtml(c.label || c.candidate_id) + '</b> <span class="muted">(' + escHtml(String(c.confidence === undefined ? "?" : c.confidence)) + ")</span> "
+        + '<button data-act="candidate" data-i="' + i + '">Bekijk</button></li>').join("") + "</ul>"
+        + '<p class="muted">Kandidaat bekijken via Bekijk — niets promoveert zichzelf.</p>'
+        : '<p class="muted">Geen kandidaten — de VLM vond geen labels (geen proposal mogelijk).</p>';
+      h += '<div id="flow-result" class="muted" role="status"></div>';
+      return h;
+    }}
+    function renderCandidateDetail() {{
+      const c = flow && flow.candidate;
+      if (!c) return renderCandidates();
+      const prov = c.provenance || {{}};
+      let h = "<h3>🔎 Mogelijk object</h3>"
+        + "<p><b>" + escHtml(c.title || "") + "</b></p>"
+        + (c.summary ? "<p>" + escHtml(c.summary) + "</p>" : "")
+        + '<p class="muted">Staat: ' + escHtml(c.state || "?")
+        + " · bron: " + escHtml(prov.source_type || "?") + " door " + escHtml(prov.creator_id || "?")
+        + " · human_verified: " + escHtml(String(prov.human_verified)) + "</p>";
+      h += ((c.evidence || []).length ? "<ul>" + c.evidence.map((e) =>
+        "<li>" + escHtml(e.text || JSON.stringify(e)) + "</li>").join("") + "</ul>" : "")
+        + flowSteps()
+        + '<p><button data-act="toproposal">Maak voorstel</button> <button data-act="gotocands">Later</button></p>'
+        + '<div id="flow-result" class="muted" role="status"></div>'
+        + '<p class="muted">Niets promoveert zichzelf — een voorstel is inert tot YES.</p>';
+      return h;
+    }}
+    function renderProposal() {{
+      if (!flow || !flow.candidate) return renderCandidates();
+      const f = flow;
+      let h = "<h3>📝 Voorstel</h3><p><b>Wat gaat er gebeuren?</b></p>" + flowSteps();
+      h += '<p><b>Object:</b> ' + escHtml(f.objName || "?") + '<br><span class="muted">' + escHtml((f.objDesc || "").slice(0, 300)) + "</span></p>"
+        + '<p><b>File:</b> ' + escHtml(f.fileName || "?") + '<br><span class="muted">sha256 ' + escHtml((f.fileSha || "").slice(0, 16)) + "… · " + escHtml(String(f.fileSize || 0)) + " bytes</span></p>"
+        + "<p><b>Bron:</b> " + escHtml(f.filename || "") + " · <b>Provenance:</b> ai-generated, human_verified=False</p>"
+        + "<p><b>Status:</b> APPROVAL REQUIRED</p>";
+      if (f.objProposalId || f.fileProposalId) {{
+        h += "<p><b>Voorstellen:</b> " + escHtml(f.objProposalId || "?") + " / " + escHtml(f.fileProposalId || "?") + "</p>";
+      }}
+      h += '<p><button data-act="yes">YES — uitvoeren</button> <button data-act="gotocands">Annuleren</button></p>'
+        + '<div id="flow-result" class="muted" role="status"></div>';
+      return h;
+    }}
+    function renderWorldChanged() {{
+      const f = flow || {{}};
+      let h = "<h3>🌱 Wereld veranderd</h3>" + flowSteps();
+      h += "<p>Object toegevoegd: <b>" + escHtml(f.objEntity || "?") + "</b><br>File toegevoegd: <b>" + escHtml(f.fileEntity || "?") + "</b></p>";
+      const q = ((window.PLAYDATA && PLAYDATA.docquest) || {{}});
+      if (q.title) h += '<p><b>QUEST</b> ' + escHtml(q.title) + ' [' + escHtml(q.state || "") + ' ' + escHtml(q.progress || "") + '] <span class="muted">(stand bij laden)</span></p>';
+      h += "<p>Luma: <b>Dit is nu onderdeel van je wereld.</b></p>"
+        + '<p><button data-act="refresh">Ververs wereld</button> <span class="muted">laadt guide/fungi/meldingen bij</span></p>';
+      return h;
+    }}
+    function renderPanel(npc, section) {{
+      const full = npcMerged(npc);
+      const panel = full.panel || {{abilities: [], tools: [], missions: [], evidence: {{}}}};
+       let h = "<h3>" + escHtml(full.glyph || "") + " " + escHtml(full.name || "") + " — " + escHtml(full.domain || "") + "</h3>"
+         + "<p><b>STATUS</b> " + escHtml(full.status || "Idle")
+         + (full.badge ? " " + escHtml(full.badge) : "") + " · "
+         + escHtml(full.reason || "") + "</p>"
+         + '<p class="muted">Rol: ' + escHtml(full.role || "—") + "</p>";
+       if (full.activity && full.activity.state) {{
+         h += '<p><b>ACTIVITEIT</b> ' + escHtml(full.activity.state) + ' <span class="muted">— ' + escHtml(full.activity.reason || "afgeleid uit backend-state") + "</span></p>";
+       }}
+      if (full.familiar) {{
+        h += '<p class="muted">Familiar-record: ' + escHtml(full.familiar.id) + ' (' + escHtml(full.familiar.kind) + ', ' + escHtml(full.familiar.status) + ')</p>';
+      }} else {{
+        h += '<p class="muted">Geen familiar-record — placeholder-weergave.</p>';
+      }}
+      h += '<h3 id="panel-abilities">ABILITIES</h3><ul>' + (panel.abilities || []).map((a) =>
+        '<li>' + escHtml(a.name) + ' [' + escHtml(a.type || "?") + ' · ' + escHtml(a.available || "?") + ']'
+        + ' <span class="muted">— ' + escHtml(a.via || "") + (a.reason ? ' (' + escHtml(a.reason) + ')' : '') + '</span></li>').join("") + "</ul>";
+      h += "<h3>TOOLS</h3><ul>" + (panel.tools || []).map((t) =>
+        '<li>' + escHtml(t.name) + ' [' + escHtml(t.state || "?") + '] <span class="muted">— ' + escHtml(t.detail || "") + '</span></li>').join("") + "</ul>";
+      const ms = panel.missions || [];
+      h += "<h3>MISSIONS</h3>" + (ms.length ? "<ul>" + ms.map((m) =>
+        '<li><a href="/missions/' + escHtml(m.id) + '">' + escHtml(m.goal) + '</a> [' + escHtml(m.meta || m.status) + ']</li>').join("") + "</ul>"
+        : '<p class="muted">Geen open missies.</p>');
+      const ev = panel.evidence || {{}};
+      h += "<h3>EVIDENCE</h3><ul>"
+        + (ev.observations || []).map((o) => '<li>📷 ' + escHtml(o.media || o.id) + ' <span class="muted">' + escHtml(o.device || "") + ' ' + escHtml(o.created || "") + '</span></li>').join("")
+        + (ev.candidates || []).map((c) => '<li>🌱 ' + escHtml(c.title) + ' <span class="muted">[' + escHtml(c.state) + ']</span></li>').join("")
+         + (ev.models || []).map((m) => '<li>🧊 ' + escHtml(m.filename || m.model_id) + ' <span class="muted">[' + escHtml(m.verdict || m.status) + ']</span></li>').join("")
+         + (ev.fabrecords || []).map((f) => '<li>🧾 ' + escHtml(f.fabrication_id || f.job_id) + ' <span class="muted">[' + escHtml(f.status) + ']</span></li>').join("")
+         + (ev.quests || []).map((q) => '<li>🧭 ' + escHtml(q.title) + ' <span class="muted">[' + escHtml(q.state) + ' ' + escHtml(q.progress || "") + ']</span></li>').join("")
+         + "</ul>";
+      if (section === "abilities") {{
+        h += '<p class="muted">↑ abilities hierboven — allemaal bestaande flows, geen nieuwe executie.</p>';
+      }}
+      return h;
+    }}
+    function renderMission(npc) {{
+      const full = npcMerged(npc);
+      const data = full.mission || {{items: [], note: ""}};
+      let h = "<h3>Missievoorstel</h3>";
+      if (full.id === "luma") {{
+        const g = ((window.PLAYDATA && PLAYDATA.guide) || {{}});
+        const q = ((window.PLAYDATA && PLAYDATA.quest) || {{}});
+        if (g.what) h += '<p><b>Guide:</b> ' + escHtml(g.what) + ' — <a href="' + escHtml(g.href || "/guide") + '">' + escHtml(g.label || "Open") + '</a></p>';
+        if (q.title) h += '<p><b>Quest:</b> <a href="' + escHtml(q.href || "/quests") + '">' + escHtml(q.title) + '</a> [' + escHtml(q.state || "") + ' ' + escHtml(q.progress || "") + ']</p>';
+      }}
+      h += (data.items || []).length ? "<ul>" + data.items.map((m) =>
+        '<li><a href="' + escHtml(m.href || "/missions") + '">' + escHtml(m.label) + '</a>' + (m.meta ? ' [' + escHtml(m.meta) + ']' : '') + '</li>').join("") + "</ul>"
+        : '<p class="muted">Geen open missies — start er een via <a href="/missions">Missies</a>.</p>';
+      if (data.note) h += '<p class="muted">' + escHtml(data.note) + '</p>';
+      return h;
+    }}
+     function renderWorldObj() {{       const r = worldObj;
+       if (!r) return '<p class="muted">Geen object gekozen.</p>';
+       let h = "<h3>" + escHtml(r.glyph || "•") + " " + escHtml(r.label || r.source_id || "?") + "</h3>"
+         + "<p><b>TYPE</b> " + escHtml(r.kind || "?") + " (" + escHtml(r.entity_type || "?") + ")"
+         + " · <b>STATUS</b> " + escHtml(r.status || "?") + "</p>"
+         + (r.detail ? "<p>" + escHtml(r.detail) + "</p>" : "")
+         + '<p class="muted">Bron: INVENTory ' + escHtml(r.source_id || "") + " · zone " + escHtml(r.zone || "") + "</p>";
+       if (worldObjDetail) {{
+         const d = worldObjDetail;
+         const prov = (d && d.provenance) || {{}};
+         h += "<h3>Bronrecord</h3>"
+           + "<p><b>" + escHtml(d.title || r.label || "?") + "</b></p>"
+           + '<p class="muted">provenance: ' + escHtml(prov.source_type || "?") + " door " + escHtml(prov.creator_id || "?")
+           + " · human_verified: " + escHtml(String(prov.human_verified)) + "</p>";
+       }}
+       h += '<p><button data-act="worldrefresh">Detail verversen</button> <a href="' + escHtml(r.href || "/world") + '">Bekijk bron</a></p>'
+         + '<p class="muted">Vondsten en onderzoek: <a href="/research">Research</a> · <a href="/symbiosis">Symbiosis</a> · <a href="/knowledge">Kennis</a></p>'
+         + '<div id="flow-result" class="muted" role="status"></div>';
+       return h;
+     }}
+     function openWorldObj(rep) {{
+       dialogOpen = true;
+       dialogNpc = NPCS[0];
+       dialogView = "worldobj";
+       worldObj = rep;
+       worldObjDetail = null;
+       npcBadge.textContent = "";
+       document.getElementById("dialog-title-name").textContent = (rep.glyph ? rep.glyph + " " : "") + (rep.label || "Object");
+       const box = document.getElementById("dialog-choices");
+       box.innerHTML = "";
+       const b = document.createElement("button");
+       b.textContent = "Sluiten";
+       b.addEventListener("click", closeDialog);
+       box.appendChild(b);
+       dialogBody.innerHTML = renderWorldObj();
+       dialog.hidden = false;
+       document.getElementById("dialog-close").focus();
+     }}
+     function journeyData() {{
+       return ((window.PLAYDATA && PLAYDATA.questlines) || []);
+     }}
+     function trackerData() {{
+       return ((window.PLAYDATA && PLAYDATA.tracker) || []);
+     }}
+     function discoveryData() {{
+       return ((window.PLAYDATA && PLAYDATA.discoveries) || {{items: [], research_open: []}});
+     }}
+     function trackGlyph(status) {{
+       const m = {{draft: "○", pending_approval: "◷", approved: "…", running: "…", paused: "⏸", completed: "✓", failed: "!", cancelled: "○", blocked: "!"}};
+       return m[status] || "○";
+     }}
+     function trackNeeds(status) {{
+       const m = {{draft: "beschikbaar — aannemen via Missies", pending_approval: "wacht op exacte YES", approved: "kan tikken — drijft tot gate", running: "kan tikken — drijft tot gate", paused: "hervatten via Missies-pagina", completed: "afgerond", failed: "aandacht nodig — zie Missies", cancelled: "geannuleerd", blocked: "aandacht nodig — zie Missies"}};
+       return m[status] || status;
+     }}
+     function renderJourney() {{
+       let h = "<h3>🧭 Reis — echte voortgang, geen XP</h3>";
+       const qs = journeyData();
+       h += "<h3>Quests (" + qs.length + ")</h3>";
+       h += qs.length ? "<ul>" + qs.map((q) =>
+         '<li>' + escHtml(q.glyph || "○") + ' <b>' + escHtml(q.title) + '</b> <span class="muted">[' + escHtml(q.state || "?") + " " + escHtml(q.progress || "") + "]</span></li>").join("") + "</ul>"
+         : '<p class="muted">Nog geen quests — leg ze aan via <a href="/quests">Quests</a>.</p>';
+       const ms = trackerData();
+       h += "<h3>Missies (" + ms.length + ")</h3>";
+       h += ms.length ? "<ul>" + ms.map((m) =>
+         '<li>' + escHtml(m.glyph || trackGlyph(m.status)) + ' <b>' + escHtml(m.goal) + '</b> <span class="muted">[' + escHtml(m.status || "?") + " · " + escHtml(m.needs || trackNeeds(m.status)) + "]</span> "
+         + ((m.status === "approved" || m.status === "running") ? '<button data-act="mtick" data-id="' + escHtml(m.id) + '">Tik</button> ' : "")
+         + (m.status === "pending_approval" ? '<button data-act="myes" data-id="' + escHtml(m.id) + '">YES — starten</button> ' : "")
+         + '<a href="' + escHtml(m.href || "/missions") + '">Missie</a></li>').join("") + "</ul>"
+         : '<p class="muted">Nog geen missies — start er een via <a href="/missions">Missies</a>.</p>';
+       h += '<p class="muted">Draft = beschikbaar; aannemen gebeurt op de Missies-pagina — de game start niets zelf. Tik drijft goedgekeurd werk tot de eerstvolgende gate.</p>';
+       const dc = discoveryData();
+       const dn = (dc.items || []).length + (dc.research_open || []).length;
+       h += "<h3>Ontdekkingen (" + dn + ")</h3>"
+         + (dn ? '<p>Er ligt iets in de Bosrand te wachten. Loop naar de <b>ruïne</b> en druk op E.</p>'
+               : '<p class="muted">Geen open ontdekkingen — de ruïne is stil.</p>');
+       h += '<p><button data-act="jrefresh">Ververs voortgang</button> <button data-act="refresh">Ververs wereld</button></p>'
+         + '<div id="flow-result" class="muted" role="status"></div>';
+       return h;
+     }}
+     function nearDiscovery() {{
+       return Math.hypot(player.x - 760, player.y - 1240) < 150;
+     }}
+     function discoveryCount() {{
+       const dc = discoveryData();
+       return (dc.items || []).length + (dc.research_open || []).length;
+     }}
+     function renderDiscovery() {{
+       const dc = discoveryData();
+       const items = dc.items || [];
+       const open = dc.research_open || [];
+       let h = "<h3>🗿 Ruïne — ontdekking</h3>";
+       if (!items.length && !open.length) {{
+         h += '<p class="muted">Nog geen ontdekkingen beschikbaar (FUTURE/UNAVAILABLE). Kom later terug — de wereld groeit met echte vondsten.</p>';
+       }} else {{
+         h += "<ul>" + items.map((d) =>
+            '<li><b>' + escHtml(d.title || d.kind || "Vondst") + '</b> <span class="muted">[' + escHtml(d.kind || "?") + "]</span><br>" + escHtml(d.text || "") + "<br><span class='muted'>" + escHtml(d.evidence || "") + '</span> <a href="' + escHtml(d.link || "/symbiosis") + '">Open</a></li>').join("") + "</ul>";
+         h += open.length ? "<h3>Open onderzoeksvragen (" + open.length + ")</h3><ul>" + open.map((d) =>
+            "<li>" + escHtml(d.question || "") + ' <a href="' + escHtml(d.link || "/research") + '">Dossier</a></li>').join("") + "</ul>" : "";
+         h += '<p class="muted">Alleen bestaande vondsten. Niets opent zichzelf — verder via de echte pagina\u2019s of Luma.</p>';
+       }}
+       h += '<p><button data-act="journey">Bekijk Reis</button></p>'
+         + '<div id="flow-result" class="muted" role="status"></div>';
+       return h;
+     }}
+          function verdantData() {{
+       return ((window.PLAYDATA && PLAYDATA.verdant) || {{state: "DORMANT", signals: [], count: 0, mission: null, quests: []}});
+     }}
+     function nearVerdant() {{
+       return Math.hypot(player.x - 375, player.y - 1195) < 150;
+     }}
+     function renderVerdant() {{
+       const v = verdantData();
+       const awake = v.state === "AWAKENED";
+       let h = "<h3>🌱 Verdant — ecology-bioom [" + escHtml(v.state || "?") + "]</h3>";
+       if (!awake) {{
+         h += '<p class="muted">Dormant — ontwaakt pas bij echte records (INVENTory-conventie, solar-metingen of ecology-onderzoek). Niets is hier verzonnen.</p>';
+       }} else {{
+         h += "<p>Ontwaakt door echte data:</p><ul>" + (v.signals || []).map((s) =>
+           '<li><b>' + escHtml(s.label || "?") + '</b> <span class="muted">[' + escHtml(s.kind || "?") + (s.detail ? " · " + escHtml(s.detail) : "") + ']</span> <a href="' + escHtml(s.href || "/world") + '">Bron</a></li>').join("") + "</ul>";
+       }}
+       if (v.mission) {{
+         h += '<p><b>Missie-kans:</b> <a href="' + escHtml(v.mission.href || "/missions") + '">' + escHtml(v.mission.goal || "") + '</a> [' + escHtml(v.mission.status || "") + ']</p>';
+       }}
+       if (v.rep && v.rep.source_id) {{
+         h += '<p><b>Representatie in de bioom:</b> ' + escHtml(v.rep.label || v.rep.source_id) + ' <span class="muted">— loop erheen en druk op E om te inspecteren</span></p>';
+       }}
+       const vq = v.quests || [];
+       if (vq.length) {{
+         h += "<p><b>Quests:</b> " + vq.map((q) =>
+           escHtml(q.title) + ' [' + escHtml(q.state || "") + " " + escHtml(q.progress || "") + "]").join(" · ") + ' — <a href="/quests">Quests</a></p>';
+       }}
+       h += '<p class="muted">Ruimte voor planten, bodem, water en experimenten — zodra echte data die vult.</p>'
+         + '<p><button data-act="refresh">Ververs wereld</button></p>'
+         + '<div id="flow-result" class="muted" role="status"></div>';
+       return h;
+     }}
+     function openVerdant() {{
+       dialogOpen = true;
+       dialogNpc = NPCS[0];
+       dialogView = "verdant";
+       const v = verdantData();
+       npcBadge.textContent = v.state === "AWAKENED" ? "🌱" : "";
+       document.getElementById("dialog-title-name").textContent = "🌱 Verdant";
+       const box = document.getElementById("dialog-choices");
+       box.innerHTML = "";
+       const b = document.createElement("button");
+       b.textContent = "Sluiten";
+       b.addEventListener("click", closeDialog);
+       box.appendChild(b);
+       dialogBody.innerHTML = renderVerdant();
+       dialog.hidden = false;
+       document.getElementById("dialog-close").focus();
+     }}
+     function openDiscovery() {{       dialogOpen = true;
+       dialogNpc = NPCS[0];
+       dialogView = "discovery";
+       npcBadge.textContent = discoveryCount() ? "?" : "";
+       document.getElementById("dialog-title-name").textContent = "🗿 Ruïne";
+       const box = document.getElementById("dialog-choices");
+       box.innerHTML = "";
+       const b = document.createElement("button");
+       b.textContent = "Sluiten";
+       b.addEventListener("click", closeDialog);
+       box.appendChild(b);
+       dialogBody.innerHTML = renderDiscovery();
+       dialog.hidden = false;
+       document.getElementById("dialog-close").focus();
+     }}
+     function renderNotifs() {{
+      const ns = ((window.PLAYDATA && PLAYDATA.notifications) || []);
+      const ev = ((window.PLAYDATA && PLAYDATA.events) || []);
+      let h = "<h3>Meldingen (" + ns.length + ")</h3>";
+      h += ns.length ? "<ul>" + ns.map((n) =>
+        '<li><b>' + escHtml(n.title) + '</b> <span class="muted">[' + escHtml(n.type) + ' ' + escHtml(n.created) + ']</span></li>').join("") + "</ul>"
+        : '<p class="muted">Geen meldingen.</p>';
+      h += "<h3>Gebeurtenissen (" + ev.length + ")</h3>";
+      h += ev.length ? "<ul>" + ev.map((e) =>
+        '<li><b>' + escHtml(e.type) + '</b> ' + escHtml(e.summary) + ' <span class="muted">' + escHtml(e.created) + '</span></li>').join("") + "</ul>"
+        : '<p class="muted">Geen gebeurtenissen.</p>';
+      return h;
+    }}
+     let printModel = 0;
+     let forgeFlow = null;
+     function forgeData() {{
+       return ((window.PLAYDATA && PLAYDATA.forge) || {{models: [], printers: [], missions: [], profiles: [], quests: [], fabrecords: []}});
+     }}
+     function forgeSteps() {{
+       const s = (forgeFlow && forgeFlow.steps) || {{}};
+       const mark = (done) => done ? "✓" : "○";
+       return '<p class="muted">Sessie: ' + mark(s.model) + ' Model · '
+         + mark(s.analyse) + ' Analyse · '
+         + mark(s.voorstel) + ' Voorstel · ' + mark(s.approval) + ' Approval · '
+         + mark(s.hardware) + ' Hardware · ' + mark(s.uitvoering) + ' Uitvoering · '
+         + mark(s.verificatie) + ' Verificatie</p>';
+     }}
+     function forgePrinterBlock() {{
+       const F = forgeData();
+       if ((F.printers || []).length) {{
+         return "<ul>" + F.printers.map((p) =>
+           '<li>🖨️ ' + escHtml(p.name || p.printer_id) + ' <span class="muted">[' + escHtml(p.status) + (p.adapter ? ", adapter" : ", geen adapter") + ']</span></li>').join("") + "</ul>";
+       }}
+       return '<div class="panel"><h3>🖨️ PRINTER</h3><p><b>A1 Mini</b><br>NIET VERBONDEN<br>'
+         + '<span class="muted">HARDWARE_REQUIRED — geen printer geregistreerd, geen adapter, fysiek printen onmogelijk.</span></p>'
+         + '<p><a href="/hardware">Meer informatie</a></p></div>';
+     }}
+    function renderLumaFlow() {{
+      const devs = ((window.PLAYDATA && PLAYDATA.devices) || []);
+      const inbox = ((((window.PLAYDATA && PLAYDATA.tools) || {{}}).inbox) || []);
+      const ev = ((window.PLAYDATA && PLAYDATA.evidence) || {{}});
+      const obs = ev.observations || [];
+      let h = "<h3>Analyseer — inbox &amp; observaties</h3>"
+        + '<p class="muted">Poll draait de bestaande sessie-flow (geen writes). Beschrijf draait de VLM of eerlijke fallback.</p>'
+        + '<p><select id="flow-device" aria-label="Camera">' + devs.map((d) => '<option value="' + escHtml(d.device_id) + '">' + escHtml(d.name || d.device_id) + '</option>').join("") + '</select> '
+        + '<button data-act="poll">Poll inbox nu</button></p>'
+        + "<h3>Inbox (" + inbox.length + ")</h3><ul>" + inbox.map((f) => "<li>" + escHtml(f) + "</li>").join("") + "</ul>"
+        + "<h3>Observaties (" + obs.length + ")</h3><ul>" + obs.map((o) =>
+          '<li>📷 ' + escHtml(o.media || o.id) + ' <span class="muted">' + escHtml(o.device || "") + '</span> '
+          + '<button data-act="describe" data-obs="' + escHtml(o.id) + '">Beschrijf</button></li>').join("") + "</ul>"
+        + '<div id="flow-result" class="muted" role="status"></div>'
+        + '<p class="muted">Resultaten verschijnen hier; ververs daarna de pagina voor nieuwe data.</p>';
+      return h;
+    }}
+    function renderPrintModels() {{
+      const F = forgeData();
+      let h = "<h3>Help mij iets te printen — kies model</h3>";
+      h += F.models.length ? "<ul>" + F.models.map((m, i) =>
+        '<li>🧊 ' + escHtml(m.filename || m.model_id) + ' <span class="muted">[' + escHtml(m.verdict || m.status) + ', ' + escHtml(String(m.size || 0)) + ' bytes]</span> '
+        + '<button data-act="pickmodel" data-i="' + i + '">Kies</button></li>').join("") + "</ul>"
+        : '<p class="muted">Geen modellen — registreer er een via <a href="/workshop/3d">3D-workbench</a>.</p>';
+      h += '<div id="flow-result" class="muted" role="status"></div>';
+      return h;
+    }}
+     function renderPrintDetail() {{
+       const F = forgeData();
+       const m = (F.models || [])[printModel];
+       if (!m) return renderPrintModels();
+       if (!forgeFlow || forgeFlow.modelId !== m.model_id) {{
+         forgeFlow = {{steps: {{model: true}}, modelId: m.model_id, filename: m.filename || ""}};
+       }}
+       const profs = F.profiles || [];
+       let h = "<h3>" + escHtml(m.filename || m.model_id) + "</h3>" + forgeSteps()
+         + '<p class="muted">Mesh-verdict: ' + escHtml(m.verdict || "?") + ' · status: ' + escHtml(m.status || "?") + '</p>';
+       h += "<h3>Printability</h3>";
+       if (forgeFlow.assessment) {{
+         h += '<p><b>' + escHtml(forgeFlow.assessment) + '</b> <span class="muted">' + escHtml(forgeFlow.assessNote || "") + '</span></p>';
+       }} else {{
+         h += '<p class="muted">Nog niet gecontroleerd in deze sessie.</p>';
+       }}
+       h += '<p><button data-act="inspect">Printability controleren</button> <span class="muted">bestaande inspectie + assess, geen writes</span></p>';
+       h += "<h3>Slicer/profile</h3>";
+       if (forgeFlow.slice) {{
+         h += '<p><b>' + escHtml(forgeFlow.gcodeRef || "") + '</b> <span class="muted">profiel ' + escHtml(forgeFlow.profile || "") + ' · safety ' + escHtml(forgeFlow.safety || "?") + ' · sha ' + escHtml((forgeFlow.gcodeSha || "").slice(0, 12)) + '…</span></p>';
+       }}
+       h += '<p><label>Profiel <select id="fp-profile">' + profs.map((p) => '<option>' + escHtml(p) + '</option>').join("") + '</select></label> '
+         + '<button data-act="slice">Test-slice uitvoeren</button></p>';
+       h += "<h3>Printerstatus</h3>" + forgePrinterBlock();
+       if (!(F.printers || []).length) {{
+         h += '<p class="muted">DIGITAL: modellen beschikbaar · HARDWARE: printer NIET VERBONDEN — registreer via <a href="/hardware">Hardware</a>.</p>';
+       }} else {{
+         h += '<p><label>Printer <select id="fp-printer">' + F.printers.map((p) => '<option value="' + escHtml(p.printer_id) + '">' + escHtml(p.name || p.printer_id) + '</option>').join("") + '</select></label></p>'
+           + '<p><button data-act="topreview">Printvoorstel bekijken</button> <span class="muted">maakt inert voorstel; print nooit automatisch</span></p>'
+           + '<p><button data-act="topropose">Print voorbereiden</button> <span class="muted">maakt inert voorstel; print nooit automatisch</span></p>';
+       }}
+       h += '<div id="flow-result" class="muted" role="status"></div>';
+       return h;
+     }}
+     function renderForgePreview() {{
+       const F = forgeData();
+       const fl = forgeFlow || {{steps: {{}}}};
+       if (!fl.slice || !fl.gcodeRef) return renderPrintDetail();
+       const printers = F.printers || [];
+       const sel = document.getElementById("fp-printer");
+       const pid = fl.printerId || (sel ? sel.value : "") || (printers[0] ? printers[0].printer_id : "");
+       fl.printerId = pid;
+       const printer = printers.find((p) => p.printer_id === pid);
+       let h = "<h3>🖨️ Printvoorstel</h3>" + forgeSteps()
+         + "<p><b>MODEL</b> " + escHtml(fl.filename || "?") + "</p>"
+         + "<p><b>PRINTABILITY</b> " + escHtml(fl.assessment || "niet gecontroleerd") + "</p>"
+         + "<p><b>SLICER</b> " + escHtml(fl.profile || "?") + " · safety " + escHtml(fl.safety || "?") + " · " + escHtml(fl.gcodeRef || "?") + "</p>"
+         + "<p><b>PRINTER</b> " + (printer ? escHtml(printer.name || printer.printer_id) + ' <span class="muted">[' + escHtml(printer.status) + (printer.adapter ? ", adapter" : ", geen adapter") + "]</span>" : "A1 Mini — NIET VERBONDEN [HARDWARE_REQUIRED]") + "</p>"
+         + "<p><b>RISICO / REQUIREMENTS</b> <span class='muted'>exacte YES vereist · fingerprint-binding · TTL · revalidate direct voor uitvoering · adapter met printer.start vereist · verificatie via telemetrie + camera</span></p>"
+         + "<p><b>PROPOSAL</b> Inert printer.execute-voorstel voor exact deze G-code. Niets beweegt tot YES + hardware.</p>"
+         + '<p><button data-act="forgeyes">YES</button> <button data-act="gotoprint">Annuleren</button></p>'
+         + '<div id="flow-result" class="muted" role="status"></div>';
+       return h;
+     }}
+     function renderForgeResult() {{
+       const fl = forgeFlow || {{steps: {{}}}};
+       let h = "<h3>🖨️ Voorstelstatus</h3>" + forgeSteps();
+       h += "<p><b>Voorstel:</b> " + escHtml(fl.proposalId || "?") + ' <span class="muted">' + escHtml(fl.approval || "niet approved") + "</span></p>";
+       h += "<p><b>Hardware:</b> " + escHtml(fl.hardwareNote || "ongecontroleerd") + "</p>";
+       h += "<p><b>Uitvoering:</b> " + escHtml(fl.execStatus || "niet uitgevoerd") + (fl.execNote ? ' <span class="muted">' + escHtml(fl.execNote) + "</span>" : "") + "</p>";
+       if (fl.verification) {{
+         h += "<p><b>Verificatie:</b> " + escHtml(fl.verification) + "</p>";
+       }} else if (fl.execStatus === "executed") {{
+         h += '<p><button data-act="forgeverify">Controleren</button> <span class="muted">onafhankelijke readback; uitvoering alleen is geen verificatie</span></p>';
+       }} else {{
+         h += '<p class="muted">Verificatie open — zonder uitvoering valt er niets te verifiëren.</p>';
+       }}
+       h += '<p><button data-act="forgequest">Missie-evidence bekijken</button> <button data-act="refresh">Ververs wereld</button> <span class="muted">laadt guide/fungi/meldingen bij</span></p>'
+         + '<div id="flow-result" class="muted" role="status"></div>';
+       return h;
+     }}
+     function renderForgeQuest() {{
+       const F = forgeData();
+       const quests = F.quests || [];
+       const fabs = F.fabrecords || [];
+       let h = "<h3>🧭 Missie-evidence</h3>" + forgeSteps();
+       h += quests.length ? "" : '<p class="muted">Geen fabricatiequests geladen — leg ze aan via <a href="/missions">Missies</a> (seeds).</p>';
+       for (const q of quests) {{
+         h += "<h3>" + escHtml(q.title) + ' <span class="muted">[' + escHtml(q.state) + " " + escHtml(q.progress || "") + "]</span></h3><ul>"
+           + (q.steps || []).map((s) => "<li>" + escHtml(s.glyph || "○") + " " + escHtml(s.label) + ' <span class="muted">[' + escHtml(s.state) + (s.readiness ? " · " + escHtml(s.readiness) : "") + "]</span></li>").join("") + "</ul>";
+       }}
+       h += "<h3>🧾 Fabrication-records (" + fabs.length + ")</h3>";
+       h += fabs.length ? "<ul>" + fabs.map((f) =>
+         "<li>" + escHtml(f.fabrication_id || f.job_id) + ' <span class="muted">[' + escHtml(f.status) + "]</span></li>").join("") + "</ul>"
+         : '<p class="muted">Nog geen fabrication-records — er is niets uitgevoerd.</p>';
+       h += '<p class="muted">Alleen bestaande records tellen: een voorstel voedt geen quest-completion. Ververs voor nieuwe data.</p>'
+         + '<p><button data-act="refresh">Ververs wereld</button></p>'
+         + '<div id="flow-result" class="muted" role="status"></div>';
+       return h;
+     }}
+    function renderPrintPropose() {{
+      const F = forgeData();
+      const m = (F.models || [])[printModel];
+      if (!m) return renderPrintModels();
+      const profs = F.profiles || [];
+      let h = "<h3>Print voorbereiden — " + escHtml(m.filename || m.model_id) + "</h3>"
+        + '<p class="muted">Vereist gcode-artefact + printer. Voorstel is inert; exacte YES gebeurt elders.</p>'
+        + '<p><label>Printer <select id="pp-printer">' + F.printers.map((p) => '<option value="' + escHtml(p.printer_id) + '">' + escHtml(p.name || p.printer_id) + '</option>').join("") + '</select></label></p>'
+        + '<p><label>gcode_ref <input id="pp-gcode" style="width:60%"></label></p>'
+        + '<p><label>gcode_sha256 <input id="pp-sha" style="width:60%"></label></p>'
+        + '<p><label>Profiel <select id="pp-profile">' + profs.map((p) => '<option>' + escHtml(p) + '</option>').join("") + '</select></label></p>'
+        + '<p><button data-act="propose">Voorstel indienen</button></p>'
+        + '<div id="flow-result" class="muted" role="status"></div>';
+      return h;
+    }}
+    async function postJSON(url, body, method) {{
+      const m = method || "POST";
+      const opts = {{method: m, headers: {{"Content-Type": "application/json"}}}};
+      if (m !== "GET") opts.body = body ? JSON.stringify(body) : "{{}}";
+      const r = await fetch(url, opts);
+      const t = await r.text();
+      let j = null;
+      try {{ j = JSON.parse(t); }} catch (e) {{}}
+      if (!r.ok) {{
+        const detail = (j && (j.detail || j.error)) || t;
+        throw new Error("HTTP " + r.status + " " + String(detail).slice(0, 200));
+      }}
+      return j;
+    }}
+    function obsMedia(oid) {{
+      const ev = ((window.PLAYDATA && PLAYDATA.evidence) || {{}});
+      for (const o of (ev.observations || [])) {{
+        if (o.id === oid) return o.media || "";
+      }}
+      return "";
+    }}
+    function flowResult(msg) {{
+      const el = document.getElementById("flow-result");
+      if (el) el.textContent = msg;
+    }}
+    function openDialog(npc, view) {{
+      dialogOpen = true;
+      dialogNpc = npc;
+      dialogView = view || "talk";
+      const full = npcMerged(npc);
+      npcBadge.textContent = full.badge || "";
+      document.getElementById("dialog-title-name").textContent = (full.glyph ? full.glyph + " " : "") + (full.name || "NPC");
+      const box = document.getElementById("dialog-choices");
+      box.innerHTML = "";
+      const choices = CHOICES[full.id] || CHOICES.luma;
+      choices.forEach((c) => {{
+        const b = document.createElement("button");
+        b.textContent = c.l;
+        b.setAttribute("data-view", c.v);
+        b.addEventListener("click", () => {{
+          if (c.v === "later") closeDialog();
+          else openDialog(dialogNpc, c.v);
+        }});
+        box.appendChild(b);
+      }});
+      if (dialogView === "panel" || dialogView === "abilities") dialogBody.innerHTML = renderPanel(npc, dialogView);
+      else if (dialogView === "mission") dialogBody.innerHTML = renderMission(npc);
+       else if (dialogView === "files") dialogBody.innerHTML = renderFiles();
+       else if (dialogView === "journey") dialogBody.innerHTML = renderJourney();
+       else if (dialogView === "discovery") dialogBody.innerHTML = renderDiscovery();
+      else if (dialogView === "lumaflow") dialogBody.innerHTML = renderLumaFlow();
+      else if (dialogView === "candidates") dialogBody.innerHTML = renderCandidates();
+      else if (dialogView === "candidate") dialogBody.innerHTML = renderCandidateDetail();
+      else if (dialogView === "proposal") dialogBody.innerHTML = renderProposal();
+      else if (dialogView === "worldchanged") dialogBody.innerHTML = renderWorldChanged();
+       else if (dialogView === "print") dialogBody.innerHTML = renderPrintModels();
+       else if (dialogView === "printdetail") dialogBody.innerHTML = renderPrintDetail();
+       else if (dialogView === "printpropose") dialogBody.innerHTML = renderPrintPropose();
+       else if (dialogView === "printpreview") dialogBody.innerHTML = renderForgePreview();
+       else if (dialogView === "forgeresult") dialogBody.innerHTML = renderForgeResult();
+       else if (dialogView === "quest") dialogBody.innerHTML = renderForgeQuest();
+      else dialogBody.innerHTML = renderTalk(npc);
+      dialog.hidden = false;
+      document.getElementById("dialog-close").focus();
+    }}
+    function closeDialog() {{
+      dialogOpen = false;
+      dialog.hidden = true;
+      stage.focus();
+    }}
+    function openNotifs() {{
+      notifsOpen = true;
+      notifsBody.innerHTML = renderNotifs();
+      notifs.hidden = false;
+      document.getElementById("notifs-close").focus();
+    }}
+    function closeNotifs() {{
+      notifsOpen = false;
+      notifs.hidden = true;
+      stage.focus();
+    }}
+    document.getElementById("dialog-close").addEventListener("click", closeDialog);
+    document.getElementById("notifs-close").addEventListener("click", closeNotifs);
+    document.getElementById("notif-open").addEventListener("click", () => {{ if (!notifsOpen) openNotifs(); }});
+    document.getElementById("guide-chip").addEventListener("click", (e) => {{
+      if (e.target.tagName !== "A") {{
+        const npc = NPCS[0];
+        openDialog(npc, "mission");
+      }}
+    }});
+    dialogBody.addEventListener("click", async (e) => {{
+      const btn = (e.target && e.target.closest) ? e.target.closest("button[data-act]") : null;
+      if (!btn) return;
+      const act = btn.getAttribute("data-act");
+      try {{
+        if (act === "poll") {{
+          const sel = document.getElementById("flow-device");
+          const dev = sel ? sel.value : "";
+          if (!dev) throw new Error("geen camera gekozen");
+          const res = await postJSON("/api/v1/cameras/" + encodeURIComponent(dev) + "/poll-inbox");
+          const ing = (res && res.ingested) || [];
+          flow = {{steps: {{}}, device_id: dev}};
+          if (ing.length) {{
+            flow.observation_id = ing[0].observation_id || "";
+            flow.filename = ing[0].filename || "";
+          }}
+          flowResult("Poll klaar: " + ing.length + " verwerkt, " + (((res && res.duplicates) || []).length) + " duplicaten, " + (((res && res.refused) || []).length) + " geweigerd. Ververs voor nieuwe data.");
+        }} else if (act === "describe") {{
+          const oid = btn.getAttribute("data-obs") || "";
+          const dev = btn.getAttribute("data-dev") || "";
+          const res = await postJSON("/api/v1/observations/" + encodeURIComponent(oid) + "/describe", {{}});
+          const an = (res && res.analysis) || {{}};
+          const labels = (an.labels || []).join(", ");
+          const det = (an.detected_objects || []).map((d) => (d.label || "") + " (" + d.confidence + ")").join(", ");
+          flow = flow || {{steps: {{}}}};
+          flow.observation_id = oid;
+          flow.device_id = dev;
+          flow.filename = flow.filename || obsMedia(oid);
+          flow.vlm_state = (res && res.vlm_state) || "?";
+          flow.labels = an.labels || [];
+          flow.description = an.description || "";
+          flow.candidates = [];
+          flow.steps = flow.steps || {{}};
+          if (flow.vlm_state === "REAL" && flow.labels.length) {{
+            const pc = await postJSON("/api/v1/observations/" + encodeURIComponent(oid) + "/propose-candidates", {{}});
+            flow.candidates = (pc && pc.candidates) || [];
+          }}
+          flow.steps.analyse = true;
+          dialogBody.innerHTML = renderCandidates();
+          flowResult("VLM " + flow.vlm_state + (labels ? ": " + labels : " (geen labels — geen proposal)") + (det ? " | " + det : ""));
+        }} else if (act === "goto") {{
+          openDialog(dialogNpc, btn.getAttribute("data-view") || "panel");
+        }} else if (act === "gotocands") {{
+          dialogBody.innerHTML = renderCandidates();
+        }} else if (act === "candidate") {{
+          const i = parseInt(btn.getAttribute("data-i") || "0", 10) || 0;
+          const item = ((flow && flow.candidates) || [])[i];
+          if (!item) throw new Error("kandidaat onbekend");
+          const detail = await postJSON("/api/v1/candidates/" + encodeURIComponent(item.candidate_id), null, "GET");
+          flow.candidate = detail;
+          flow.candidateLabel = item.label || "";
+          flow.candidateConfidence = (item.confidence === undefined ? "" : String(item.confidence));
+          dialogBody.innerHTML = renderCandidateDetail();
+        }} else if (act === "toproposal") {{
+          if (!flow || !flow.candidate) throw new Error("geen kandidaat gekozen");
+          const c = flow.candidate;
+          if (!flow.filename) flow.filename = obsMedia(flow.observation_id);
+          if (!flow.filename) throw new Error("bestandsnaam onbekend — ververs en analyseer opnieuw");
+          const facts = await postJSON("/api/v1/inbox/" + encodeURIComponent(flow.filename) + "/facts?device_id=" + encodeURIComponent(flow.device_id || ""), null, "GET");
+          const fp = (facts && facts.file_payload) || {{}};
+          flow.fileName = fp.name || flow.filename || "";
+          flow.fileSha = fp.sha256 || "";
+          flow.fileSize = fp.size_bytes || 0;
+          flow.filePayload = fp;
+          flow.objName = (flow.candidateLabel || c.title || "object").slice(0, 200);
+          flow.objDesc = ((c.summary || "") + " | VLM: " + (flow.labels || []).join(", ") + " | observatie " + (flow.observation_id || "")).slice(0, 900);
+          flow.objProposalId = ""; flow.fileProposalId = "";
+          dialogBody.innerHTML = renderProposal();
+        }} else if (act === "yes") {{
+          if (!flow || !flow.filePayload) throw new Error("geen voorstel voorbereid");
+          flowResult("Voorstellen aanmaken…");
+          const obj = await postJSON("/api/v1/writes/inventory", {{mutation: "create", entity_type: "object", fields: {{name: flow.objName, description: flow.objDesc}}, actor: "game-jelles"}});
+          flow.objProposalId = (obj && obj.proposal && obj.proposal.proposal_id) || "";
+          const fil = await postJSON("/api/v1/writes/inventory", {{mutation: "create", entity_type: "file", fields: flow.filePayload, actor: "game-jelles"}});
+          flow.fileProposalId = (fil && fil.proposal && fil.proposal.proposal_id) || "";
+          if (!flow.objProposalId || !flow.fileProposalId) throw new Error("voorstel niet opgeslagen");
+          flow.steps.voorstel = true;
+          flowResult("Beide voorstellen opgeslagen — nu approven + uitvoeren…");
+          const okO = await postJSON("/api/v1/writes/" + encodeURIComponent(flow.objProposalId) + "/approve", {{response: "YES", decided_by: "jelles"}});
+          const okF = await postJSON("/api/v1/writes/" + encodeURIComponent(flow.fileProposalId) + "/approve", {{response: "YES", decided_by: "jelles"}});
+          if ((okO && okO.status) !== "approved" || (okF && okF.status) !== "approved") throw new Error("YES geweigerd door bestaande gate");
+          flowResult("YES vastgelegd — uitvoeren…");
+          const exO = await postJSON("/api/v1/writes/" + encodeURIComponent(flow.objProposalId) + "/execute", {{}});
+          const exF = await postJSON("/api/v1/writes/" + encodeURIComponent(flow.fileProposalId) + "/execute", {{}});
+          if ((exO && exO.status) !== "executed" || (exF && exF.status) !== "executed") throw new Error("execute niet geslaagd — niets is geverifieerd");
+          flow.steps.uitvoering = true;
+          flow.execResult = {{obj: exO, file: exF}};
+          dialogBody.innerHTML = renderProposal();
+          flowResult("Uitgevoerd — controleer nu via [Controleren]. Uitvoering alleen is geen verificatie.");
+          const bar = document.createElement("p");
+          bar.innerHTML = '<button data-act="verify">Controleren</button>';
+          dialogBody.appendChild(bar);
+        }} else if (act === "verify") {{
+          if (!flow || !flow.objProposalId) throw new Error("niets uit te voeren controles");
+          flowResult("Onafhankelijke readback loopt…");
+          const vO = await postJSON("/api/v1/writes/" + encodeURIComponent(flow.objProposalId) + "/verify", {{}});
+          const vF = await postJSON("/api/v1/writes/" + encodeURIComponent(flow.fileProposalId) + "/verify", {{}});
+          const oO = vO && vO.verification && vO.verification.outcome;
+          const oF = vF && vF.verification && vF.verification.outcome;
+          if (oO === "passed" && oF === "passed") {{
+            flow.steps.verificatie = true;
+            const aO = (vO.result && vO.result.after) || {{}};
+            const aF = (vF.result && vF.result.after) || {{}};
+            flow.objEntity = aO.id || aO.entity_id || "?";
+            flow.fileEntity = aF.id || aF.entity_id || "?";
+            dialogBody.innerHTML = renderWorldChanged();
+          }} else {{
+            flowResult("Verificatie: object=" + oO + " file=" + oF + " — NIET verified. Geen wereldverandering geclaimd.");
+          }}
+        }} else if (act === "refresh") {{
+          window.location.reload();
+         }} else if (act === "pickmodel") {{
+           printModel = parseInt(btn.getAttribute("data-i") || "0", 10) || 0;
+           dialogBody.innerHTML = renderPrintDetail();
+         }} else if (act === "journey") {{
+           dialogBody.innerHTML = renderJourney();
+         }} else if (act === "jrefresh") {{
+           flowResult("Voortgang verversen (read-only)…");
+           try {{
+             const ml = await postJSON("/api/v1/missions", null, "GET");
+             const list = Array.isArray(ml) ? ml : [];
+             const tracks = [];
+             for (const m of list) {{
+               const st = String((m && m.status) || "");
+               if (st === "cancelled") continue;
+               const mid = String((m && (m.mission_id || m.id)) || "");
+               tracks.push({{id: mid, goal: String((m && m.goal) || ""), status: st, glyph: trackGlyph(st), needs: trackNeeds(st), href: "/missions/" + mid}});
+               if (tracks.length >= 12) break;
+             }}
+             tracks.sort((a, b) => (a.id < b.id ? -1 : 1));
+             if (window.PLAYDATA) PLAYDATA.tracker = tracks;
+             const ql = await postJSON("/api/v1/quests?limit=20", null, "GET");
+             const qs = ((ql && ql.quests) || []);
+             if (window.PLAYDATA) PLAYDATA.questlines = qs.slice(0, 20).map((q) => ({{quest_id: q.quest_id || "", title: q.title || "", state: q.state || "", progress: q.progress || "", glyph: q.state === "COMPLETED" ? "✓" : (q.state === "FAILED" || q.state === "BLOCKED") ? "!" : "○"}}));
+           }} catch (eJ) {{
+             flowResult("Verversen geweigerd: " + ((eJ && eJ.message) || ""));
+             return;
+           }}
+           dialogBody.innerHTML = renderJourney();
+           flowResult("Voortgang bijgewerkt uit bestaande records.");
+         }} else if (act === "mtick") {{
+           const mid = btn.getAttribute("data-id") || "";
+           if (!mid) throw new Error("missie onbekend");
+           flowResult("Tik loopt — drijft tot de eerstvolgende gate…");
+           const res = await postJSON("/api/v1/missions/" + encodeURIComponent(mid) + "/tick", {{}});
+           const st = String((res && (res.status || (res.mission && res.mission.status))) || "?");
+           flowResult("Tik klaar: missie-status " + st + ". Ververs de Reis voor het volledige beeld.");
+         }} else if (act === "myes") {{
+           const mid = btn.getAttribute("data-id") || "";
+           if (!mid) throw new Error("missie onbekend");
+           flowResult("Exacte YES vastleggen via bestaande gate…");
+           const res = await postJSON("/api/v1/missions/" + encodeURIComponent(mid) + "/approve", {{response: "YES", decided_by: "jelles"}});
+           const st = String((res && (res.status || (res.mission && res.status))) || "?");
+           if (st !== "approved") throw new Error("YES geweigerd door bestaande gate (" + st + ")");
+           flowResult("Missie approved — tik nu om te drijven.");
+           dialogBody.innerHTML = renderJourney();
+         }} else if (act === "gotoprint") {{
+           dialogBody.innerHTML = renderPrintModels();
+         }} else if (act === "worldrefresh") {{
+           const r = worldObj;
+           if (!r || !r.source_id) throw new Error("geen bronrecord om te verversen");
+           flowResult("Bronrecord ophalen (read-only)…");
+           const detail = await postJSON("/api/v1/world/entity/" + encodeURIComponent(r.entity_type || "") + "/" + encodeURIComponent(r.source_id), null, "GET");
+           worldObjDetail = detail;
+           dialogBody.innerHTML = renderWorldObj();
+           flowResult("Bronrecord geladen — dit is een afbeelding, geen kopie.");
+         }} else if (act === "inspect") {{
+           const F = forgeData();
+           const m = (F.models || [])[printModel];
+           if (!m) throw new Error("geen model gekozen");
+           forgeFlow = forgeFlow || {{steps: {{model: true}}}};
+           flowResult("Inspectie loopt…");
+           const insp = await postJSON("/api/v1/workshop/models/" + encodeURIComponent(m.model_id) + "/inspect", {{}});
+           const verdict = ((insp && insp.inspection) || {{}}).mesh_verdict || "?";
+           let assess = "?";
+           try {{
+             const ar = await postJSON("/api/v1/fab/assess?mesh_ref=" + encodeURIComponent(m.filename || ""), {{}});
+             assess = ((ar && ar.assessment) || {{}}).verdict || "?";
+             forgeFlow.assessNote = (ar && ar.next_step) || "";
+           }} catch (e2) {{
+             assess = "assess geweigerd";
+             forgeFlow.assessNote = (e2 && e2.message) || "";
+           }}
+           forgeFlow.assessment = verdict + " / " + assess;
+           forgeFlow.steps.analyse = true;
+           dialogBody.innerHTML = renderPrintDetail();
+           flowResult("Analyse: inspect=" + verdict + " assess=" + assess + ". Niets is gesliced of voorgesteld.");
+         }} else if (act === "slice") {{
+           const F = forgeData();
+           const m = (F.models || [])[printModel];
+           if (!m) throw new Error("geen model gekozen");
+           const printers = F.printers || [];
+           if (!printers.length) throw new Error("geen printer verbonden — slicen wacht op hardware");
+           const sel = document.getElementById("fp-printer");
+           const pid = (sel ? sel.value : "") || printers[0].printer_id;
+           const profSel = document.getElementById("fp-profile");
+           const prof = (profSel ? profSel.value : "") || (F.profiles || [])[0] || "draft-pla";
+           forgeFlow = forgeFlow || {{steps: {{model: true}}}};
+           flowResult("Test-slice loopt…");
+           const res = await postJSON("/api/v1/fab/slice", {{artifact_ref: m.filename || "", profile: prof, printer_id: pid}});
+           const sl = (res && res.slice) || {{}};
+           forgeFlow.slice = true;
+           forgeFlow.profile = prof;
+           forgeFlow.printerId = pid;
+           forgeFlow.gcodeRef = sl.gcode_ref || "";
+           forgeFlow.gcodeSha = sl.sha256 || "";
+           forgeFlow.safety = ((res && res.safety) || {{}}).verdict || "?";
+           if (!forgeFlow.gcodeRef || !forgeFlow.gcodeSha) throw new Error("slice leverde geen gcode-artefact");
+           dialogBody.innerHTML = renderPrintDetail();
+           flowResult("Slice klaar: " + forgeFlow.gcodeRef + " safety=" + forgeFlow.safety + ". Bekijk nu het voorstel.");
+         }} else if (act === "topreview") {{
+           dialogBody.innerHTML = renderForgePreview();
+         }} else if (act === "forgeyes") {{
+           const fl = forgeFlow || {{steps: {{}}}};
+           if (!fl.gcodeRef || !fl.gcodeSha || !fl.printerId) throw new Error("geen volledig voorstel — controleer en slice eerst");
+           flowResult("Voorstel aanmaken (inert)…");
+           const res = await postJSON("/api/v1/prints/propose", {{printer_id: fl.printerId, gcode_ref: fl.gcodeRef, gcode_sha256: fl.gcodeSha, profile: fl.profile || "draft-pla", actor: "game-jelles"}});
+           fl.proposalId = (res && res.proposal_id) || (res && res.proposal && res.proposal.proposal_id) || "";
+           if (!fl.proposalId) throw new Error("voorstel niet opgeslagen");
+           fl.steps.voorstel = true;
+           flowResult("Voorstel " + fl.proposalId + " opgeslagen — nu exacte YES…");
+           const ok = await postJSON("/api/v1/writes/" + encodeURIComponent(fl.proposalId) + "/approve", {{response: "YES", decided_by: "jelles"}});
+           if ((ok && ok.status) !== "approved") throw new Error("YES geweigerd door bestaande gate");
+           fl.approval = "approved (exacte YES)";
+           fl.steps.approval = true;
+           let hwNote = "geen adapter bekend";
+           try {{
+             const info = await postJSON("/api/v1/printers/" + encodeURIComponent(fl.printerId), null, "GET");
+             hwNote = info && info.adapter ? ("adapter " + info.adapter) : "printer bekend, geen adapter";
+             if (info && info.adapter) fl.steps.hardware = true;
+           }} catch (eH) {{
+             hwNote = "printer onleesbaar: " + ((eH && eH.message) || "");
+           }}
+           fl.hardwareNote = hwNote;
+           flowResult("YES vastgelegd — hardware-check en uitvoering…");
+           const ex = await postJSON("/api/v1/writes/" + encodeURIComponent(fl.proposalId) + "/execute", {{}});
+           fl.execStatus = (ex && ex.status) || "?";
+           const exRes = (ex && ex.result) || {{}};
+           fl.execNote = exRes.error || ("outcome=" + (exRes.outcome || "?"));
+           if (fl.execStatus === "executed") {{
+             fl.steps.hardware = true;
+             fl.steps.uitvoering = true;
+           }}
+           dialogBody.innerHTML = renderForgeResult();
+           if (fl.execStatus === "executed") {{
+             flowResult("Uitgevoerd — controleer nu via [Controleren]. Uitvoering alleen is geen verificatie.");
+           }} else {{
+             flowResult("Eerlijk gestopt: status=" + fl.execStatus + " — geen beweging, geen fake succes. " + (fl.execNote || ""));
+           }}
+         }} else if (act === "forgeverify") {{
+           const fl = forgeFlow || {{}};
+           if (!fl.proposalId) throw new Error("niets te controleren");
+           flowResult("Onafhankelijke readback loopt (telemetrie-helft)…");
+           const v = await postJSON("/api/v1/writes/" + encodeURIComponent(fl.proposalId) + "/verify", {{}});
+           const out = v && v.verification && v.verification.outcome;
+           if (out === "passed") {{
+             fl.steps.verificatie = true;
+             fl.verification = "passed (telemetrie-helft; camera-helft vereist een observatie via /observations)";
+             dialogBody.innerHTML = renderForgeResult();
+             flowResult("Geverifieerd wat verifieerbaar is. Ververs de wereld voor guide/fungi/meldingen.");
+           }} else {{
+             fl.verification = "niet verified: " + out;
+             dialogBody.innerHTML = renderForgeResult();
+             flowResult("Verificatie: " + out + " — NIET verified. Geen wereldverandering geclaimd.");
+           }}
+         }} else if (act === "forgequest") {{
+           try {{
+             const F = forgeData();
+             const qs = F.quests || [];
+             if (qs.length && qs[0].quest_id) {{
+               const fresh = await postJSON("/api/v1/quests/" + encodeURIComponent(qs[0].quest_id), null, "GET");
+               if (fresh && fresh.quest_id) {{
+                 const idx = (forgeData().quests || []).findIndex((q) => q.quest_id === fresh.quest_id);
+                 if (idx >= 0) forgeData().quests[idx] = fresh;
+               }}
+             }}
+           }} catch (eQ) {{
+             flowResult("Quest-verversing geweigerd: " + ((eQ && eQ.message) || ""));
+             dialogBody.innerHTML = renderForgeQuest();
+             return;
+           }}
+           dialogBody.innerHTML = renderForgeQuest();
+        }} else if (act === "topropose") {{
+          dialogBody.innerHTML = renderPrintPropose();
+        }} else if (act === "propose") {{
+          const pid = ((document.getElementById("pp-printer") || {{}}).value) || "";
+          const gcode = ((document.getElementById("pp-gcode") || {{}}).value) || "";
+          const sha = ((document.getElementById("pp-sha") || {{}}).value) || "";
+          const prof = ((document.getElementById("pp-profile") || {{}}).value) || "";
+          const res = await postJSON("/api/v1/prints/propose", {{printer_id: pid, gcode_ref: gcode, gcode_sha256: sha, profile: prof, actor: "game-jelles"}});
+          flowResult("Voorstel " + ((res && res.proposal_id) || (res && res.proposal && res.proposal.proposal_id) || "?") + " opgeslagen (inert). Exacte YES via /writes. Ververs voor nieuwe data.");
+        }}
+      }} catch (err) {{
+        flowResult("Geweigerd: " + ((err && err.message) ? err.message : String(err)));
+      }}
+    }});
+    window.addEventListener("keydown", (e) => {{
+      const k = e.key;
+      if (["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", " "].includes(k)) e.preventDefault();
+      keys[k.toLowerCase()] = true;
+      if (k === "Escape") {{
+        if (notifsOpen) closeNotifs();
+        else if (dialogOpen) closeDialog();
+        return;
+      }}
+       if ((k === "e" || k === "E") && !dialogOpen && !notifsOpen) {{
+         const target = nearestTarget();
+         if (target && target.rep) openWorldObj(target.rep);
+         else if (target && target.npc) openDialog(target.npc, "talk");
+         else if (nearVerdant()) openVerdant();
+         else if (nearDiscovery()) openDiscovery();
+       }} else if ((k === "n" || k === "N") && !dialogOpen) {{
+        if (notifsOpen) closeNotifs();
+        else openNotifs();
+      }}
+    }});
+    window.addEventListener("keyup", (e) => {{ keys[e.key.toLowerCase()] = false; }});
+    let last = 0, fps = 0, frames = 0, fpsAt = 0;
+    function step(t) {{
+      window.requestAnimationFrame(step);
+      const dt = Math.min(0.05, (t - last) / 1000 || 0.016);
+      last = t;
+      frames++; fpsAt += dt;
+      if (fpsAt >= 0.5) {{ fps = Math.round(frames / fpsAt); frames = 0; fpsAt = 0; }}
+      if (!dialogOpen && !notifsOpen) {{
+        let dx = 0, dy = 0;
+        if (keys["a"] || keys["arrowleft"]) dx -= 1;
+        if (keys["d"] || keys["arrowright"]) dx += 1;
+        if (keys["w"] || keys["arrowup"]) dy -= 1;
+        if (keys["s"] || keys["arrowdown"]) dy += 1;
+        if (dx && dy) {{ dx *= 0.7071; dy *= 0.7071; }}
+        const nx = player.x + dx * player.speed * dt;
+        if (!collide(nx, player.y, player.r)) player.x = nx;
+        const ny = player.y + dy * player.speed * dt;
+        if (!collide(player.x, ny, player.r)) player.y = ny;
+        player.x = Math.max(40 + player.r, Math.min(WORLD_W - 40 - player.r, player.x));
+        player.y = Math.max(40 + player.r, Math.min(WORLD_H - 40 - player.r, player.y));
+        if (dx || dy) player.bob += dt * 10;
+      }}
+      cam.x = Math.max(0, Math.min(WORLD_W - VIEW_W, player.x - VIEW_W / 2));
+      cam.y = Math.max(0, Math.min(WORLD_H - VIEW_H, player.y - VIEW_H / 2));
+       draw();
+       const target = (!dialogOpen && !notifsOpen) ? nearestTarget() : null;
+       const atRuin = (!dialogOpen && !notifsOpen) && nearDiscovery();
+       const atVerdant = (!dialogOpen && !notifsOpen) && nearVerdant();
+       const verdantState = (verdantData() || {{}}).state || "DORMANT";
+       if (target && target.rep) {{
+         prompt.textContent = "[E] Bekijk " + (target.rep.label || target.rep.source_id || "object");
+       }} else if (target && target.npc) {{
+         prompt.textContent = "[E] Praat met " + target.npc.name;
+       }} else if (atVerdant) {{
+         prompt.textContent = verdantState === "AWAKENED" ? "[E] Betreed Verdant (🌱)" : "[E] Bekijk Verdant (dormant)";
+       }} else if (atRuin) {{
+         prompt.textContent = discoveryCount() ? "[E] Onderzoek de ruïne (?)" : "[E] Bekijk de ruïne";
+       }} else {{
+         prompt.textContent = "";
+       }}
+      hud.textContent = "fps " + fps + " · x " + Math.round(player.x) + " y " + Math.round(player.y) + " · " + zoneAt();
+    }}
+    function draw() {{
+      const g = ctx.createLinearGradient(0, 0, 0, VIEW_H);
+      g.addColorStop(0, "#0d1420"); g.addColorStop(0.45, "#101410"); g.addColorStop(1, "#0b0f0b");
+      ctx.fillStyle = g; ctx.fillRect(0, 0, VIEW_W, VIEW_H);
+      ctx.fillStyle = "rgba(201,214,107,0.5)";
+      for (let i = 0; i < 40; i++) {{
+        const sx = ((i * 173) % WORLD_W - cam.x * 0.2 + WORLD_W) % WORLD_W;
+        const sy = (i * 97) % 220;
+        if (sx < VIEW_W) ctx.fillRect(sx, sy * 0.4, 2, 2);
+      }}
+      ctx.fillStyle = "#14201a";
+      for (let i = 0; i < 12; i++) {{
+        const tx = ((i * 271 + 120) % WORLD_W - cam.x * 0.5 + WORLD_W) % WORLD_W;
+        if (tx < -60 || tx > VIEW_W + 60) continue;
+        const th = 120 + (i * 37) % 90;
+        ctx.beginPath();
+        ctx.moveTo(tx, 300 - cam.y * 0.15); ctx.lineTo(tx + 26, 300 - cam.y * 0.15 - th); ctx.lineTo(tx + 52, 300 - cam.y * 0.15);
+        ctx.closePath(); ctx.fill();
+      }}
+      const ox = -cam.x, oy = -cam.y;
+      ctx.fillStyle = "#161c16";
+      ctx.fillRect(40 + ox, 40 + oy, WORLD_W - 80, WORLD_H - 80);
+      ctx.strokeStyle = "#2e3a2c"; ctx.lineWidth = 2;
+      for (let gx = 40; gx <= WORLD_W - 40; gx += 80) {{
+        ctx.beginPath(); ctx.moveTo(gx + ox, 40 + oy); ctx.lineTo(gx + ox, WORLD_H - 40 + oy); ctx.stroke();
+      }}
+      for (let gy = 40; gy <= WORLD_H - 40; gy += 80) {{
+        ctx.beginPath(); ctx.moveTo(40 + ox, gy + oy); ctx.lineTo(WORLD_W - 40 + ox, gy + oy); ctx.stroke();
+      }}
+      for (const d of DECOR) {{
+        if (d.label === "kleed") {{
+          ctx.fillStyle = "#1e2a24";
+          ctx.fillRect(d.x + ox, d.y + oy, d.w, d.h);
+        }} else if (d.label === "lamp") {{
+          const lx = d.x + d.w / 2 + ox, ly = d.y + d.h / 2 + oy;
+          const lg = ctx.createRadialGradient(lx, ly, 4, lx, ly, 130);
+          lg.addColorStop(0, "rgba(217,164,65,0.35)"); lg.addColorStop(1, "rgba(217,164,65,0)");
+          ctx.fillStyle = lg; ctx.fillRect(lx - 130, ly - 130, 260, 260);
+          ctx.fillStyle = "#d9a441"; ctx.fillRect(lx - 5, ly - 5, 10, 10);
+        }}
+      }}
+      ctx.fillStyle = "#3a2f22";
+      for (const rc of WALLS) ctx.fillRect(rc.x + ox, rc.y + oy, rc.w, rc.h);
+      ctx.fillStyle = "#1e2a24";
+      ctx.fillRect(DOOR.x + ox, DOOR.y + oy, DOOR.w, DOOR.h);
+      ctx.fillStyle = "#6b5844";
+      ctx.fillRect(DOOR.x + ox - 8, DOOR.y + oy - 10, 10, DOOR.h + 20);
+      ctx.fillRect(DOOR.x + DOOR.w + ox - 2, DOOR.y + oy - 10, 10, DOOR.h + 20);
+      ctx.fillStyle = "#8a9184"; ctx.font = "12px sans-serif";
+      ctx.fillText("bosrand ↓", DOOR.x + ox + 32, DOOR.y + oy + 25);
+      for (const rc of SOLIDS) {{
+        ctx.fillStyle = rc.label === "plant" ? "#2c4a2e" : "#4a3d2c";
+        ctx.fillRect(rc.x + ox, rc.y + oy, rc.w, rc.h);
+        ctx.strokeStyle = "#6b5844"; ctx.strokeRect(rc.x + ox, rc.y + oy, rc.w, rc.h);
+        if (rc.label === "plant") {{
+          ctx.fillStyle = "#7d9b6a";
+          ctx.beginPath(); ctx.arc(rc.x + rc.w / 2 + ox, rc.y + 30 + oy, 22, 0, 7); ctx.fill();
+        }}
+        if (rc.label === "werkbank") {{
+          ctx.fillStyle = "#8a9184"; ctx.font = "12px sans-serif";
+          ctx.fillText("werkbank", rc.x + ox + 12, rc.y + oy + 24);
+        }}
+        if (rc.label === "boom" || rc.label === "ruine") {{
+          ctx.fillStyle = rc.label === "boom" ? "#2c4a2e" : "#3d3a35";
+          ctx.beginPath(); ctx.arc(rc.x + rc.w / 2 + ox, rc.y + 34 + oy, 30, 0, 7); ctx.fill();
+          ctx.fillStyle = "#7d9b6a";
+          ctx.beginPath(); ctx.arc(rc.x + rc.w / 2 - 12 + ox, rc.y + 22 + oy, 12, 0, 7); ctx.fill();
+        }}
+      }}
+      const nowS = Date.now() / 1000;
+      ctx.fillStyle = "rgba(150,200,160,0.8)";
+      for (let i = 0; i < 14; i++) {{
+        const fx = ((i * 211 + 300) % (WORLD_W - 80) + 40 - cam.x + 2 * WORLD_W) % WORLD_W;
+        const fy = DIV_Y + 60 + ((i * 137) % (WORLD_H - DIV_Y - 140));
+        if (fx < -10 || fx > VIEW_W + 10) continue;
+        const tw = 0.5 + 0.5 * Math.sin(nowS * 2 + i * 1.7);
+        ctx.fillRect(fx, fy + Math.sin(nowS + i) * 6, 2 + tw, 2 + tw);
+      }}
+       ctx.font = "12px sans-serif";
+       ctx.fillStyle = "#8a9184";
+       ctx.fillText("Homebase — Werkplaats", 60 + ox, 66 + oy);
+       ctx.fillText("Workshop-plank (echte records)", 80 + ox, 80 + oy);
+       ctx.fillText("Bosrand (wilderness)", 60 + ox, DIV_Y + 80 + oy);
+       for (const s of SLOTS) {{
+         ctx.strokeStyle = "rgba(138,145,132,0.7)";
+         ctx.setLineDash([6, 5]);
+         ctx.strokeRect(s.x + ox, s.y + oy, s.w, s.h);
+         ctx.setLineDash([]);
+         ctx.fillStyle = "#8a9184";
+         ctx.fillText(s.label, s.x + ox + 10, s.y + oy + 22);
+       }}
+       const REP_STROKE = {{REAL: "#6b5844", OBSERVED: "#7d9b6a", VERIFIED: "#d9a441", PROPOSED: "#8a9184", UNAVAILABLE: "#5a5a5a", FUTURE: "#5a5a5a"}};
+       for (const rep of worldReps()) {{
+         const rx = rep.x + ox, ry = rep.y + oy;
+         const selected = worldObj && worldObj.id === rep.id;
+         ctx.fillStyle = "#1e2a24";
+         ctx.fillRect(rx - 32, ry - 20, 64, 40);
+         ctx.strokeStyle = selected ? "#ece7d8" : (REP_STROKE[rep.status] || "#6b5844");
+         ctx.lineWidth = selected ? 3 : 2;
+         ctx.strokeRect(rx - 32, ry - 20, 64, 40);
+         ctx.lineWidth = 2;
+         ctx.fillStyle = "#ece7d8"; ctx.font = "16px sans-serif";
+         ctx.fillText(rep.glyph || "•", rx - 9, ry + 5);
+         ctx.font = "10px sans-serif";
+         ctx.fillText(String(rep.label || "").slice(0, 12), rx - 30, ry + 32);
+         if (Math.hypot(player.x - rep.x, player.y - rep.y) < 70) {{
+           ctx.fillStyle = "#ece7d8"; ctx.font = "12px sans-serif";
+           ctx.fillText("[E]", rx - 8, ry + 48);
+         }}
+       }}
+       ctx.font = "12px sans-serif";
+       ctx.fillStyle = "#8a9184";
+       ctx.fillText("Ruïne — ontdekking", 700 + ox - 20, 1180 + oy - 12);
+       const verd = verdantData();
+       if (verd.state === "AWAKENED") {{
+         ctx.fillStyle = "rgba(44,74,46,0.85)";
+         ctx.fillRect(300 + ox, 1150 + oy, 150, 90);
+         ctx.strokeStyle = "#7d9b6a";
+         ctx.strokeRect(300 + ox, 1150 + oy, 150, 90);
+         ctx.fillStyle = "#a5c48a";
+         ctx.fillText("Verdant 🌱 ontwaakt", 300 + ox + 8, 1150 + oy + 22);
+         ctx.fillStyle = "#d9a441"; ctx.font = "bold 20px sans-serif";
+         ctx.fillText("?", 375 + ox - 6, 1150 + oy - 12);
+         ctx.font = "12px sans-serif";
+       }} else {{
+         ctx.fillStyle = "#5a5a5a";
+         ctx.fillText("Verdant — dormant", 300 + ox + 8, 1150 + oy + 102);
+       }}
+       if (discoveryCount() > 0) {{
+         ctx.fillStyle = "#d9a441"; ctx.font = "bold 20px sans-serif";
+         ctx.fillText("?", 760 + ox - 6, 1180 + oy - 26);
+         ctx.font = "12px sans-serif";
+       }}
+       for (const npc of NPCS) {{
+         const nx = npc.x + ox, ny = npc.y + oy;
+         const ng = ctx.createRadialGradient(nx, ny, 4, nx, ny, 70);
+         ng.addColorStop(0, "rgba(201,214,107,0.30)"); ng.addColorStop(1, "rgba(201,214,107,0)");
+         ctx.fillStyle = ng; ctx.fillRect(nx - 70, ny - 70, 140, 140);
+         ctx.strokeStyle = "rgba(201,214,107,0.5)";
+         ctx.beginPath(); ctx.arc(nx, ny, npc.radius, 0, 7); ctx.stroke();
+         ctx.fillStyle = npc.color;
+         ctx.beginPath(); ctx.arc(nx, ny, npc.r, 0, 7); ctx.fill();
+         ctx.fillStyle = "#101410"; ctx.font = "bold 20px sans-serif";
+         ctx.fillText(npc.glyph || "🎥", nx - 10, ny + 7);
+         ctx.fillStyle = "#ece7d8"; ctx.font = "bold 13px sans-serif";
+         ctx.fillText(npc.name || npc.id, nx - 16, ny - 28);
+        const badge = (npcData(npc.id).badge) || "";
+        if (badge) {{
+          ctx.fillStyle = "#d9a441"; ctx.font = "bold 16px sans-serif";
+          ctx.fillText(badge, nx - 5, ny - 46);
+        }}
+        if (Math.hypot(player.x - npc.x, player.y - npc.y) < npc.radius) {{
+          ctx.fillStyle = "#ece7d8"; ctx.font = "12px sans-serif";
+          ctx.fillText("[E]", nx - 8, ny + 34);
+        }}
+      }}
+      const bobY = Math.sin(player.bob) * 2;
+      const px = player.x + ox, py = player.y + oy + bobY;
+      const pg = ctx.createRadialGradient(px, py, 4, px, py, 60);
+      pg.addColorStop(0, "rgba(165,196,138,0.30)"); pg.addColorStop(1, "rgba(165,196,138,0)");
+      ctx.fillStyle = pg; ctx.fillRect(px - 60, py - 60, 120, 120);
+      ctx.fillStyle = "#a5c48a";
+      ctx.beginPath(); ctx.arc(px, py, player.r, 0, 7); ctx.fill();
+      ctx.fillStyle = "#101410";
+      ctx.beginPath(); ctx.arc(px - 5, py - 3, 2.5, 0, 7); ctx.arc(px + 5, py - 3, 2.5, 0, 7); ctx.fill();
+    }}
+    stage.tabIndex = 0;
+    window.requestAnimationFrame(step);
+    </script>"""
+    return _ui.shell("Play", "/play", main, "", _ui.living_bg())
 
 
 # =============================================================================

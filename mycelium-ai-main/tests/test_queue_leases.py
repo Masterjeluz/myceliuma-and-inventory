@@ -225,7 +225,8 @@ def test_completed_task_not_reclaimable(api):
     register(api)
     task_id = queue(api)
     claim("worker-1", T0)
-    _complete_task(task_id, TaskResult(success=True, result={}), now_str=T0)
+    _complete_task(task_id, TaskResult(success=True, result={}),
+                   completing_node_id="worker-1", now_str=T0)
     assert claim("worker-1", T0) is None
 
 

@@ -21,10 +21,14 @@ import os
 
 import httpx
 
+from .model_router import DEFAULT_EMBED_MODEL as _ROUTER_EMBED_MODEL
+
 DEFAULT_BASE_URL = "http://127.0.0.1:11434"
 BASE_URL_ENV_VAR = "OLLAMA_BASE_URL"
 MODEL_ENV_VAR = "OLLAMA_EMBED_MODEL"
-DEFAULT_MODEL = "nomic-embed-text"
+# Normal default owned by the central model router (value unchanged;
+# explicit-arg > OLLAMA_EMBED_MODEL env > this fallback is untouched).
+DEFAULT_MODEL = _ROUTER_EMBED_MODEL
 TIMEOUT_ENV_VAR = "OLLAMA_EMBED_TIMEOUT_SECONDS"
 DEFAULT_TIMEOUT_SECONDS = 30.0
 MAX_TIMEOUT_SECONDS = 30.0

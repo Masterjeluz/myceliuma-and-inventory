@@ -394,11 +394,11 @@ def derive_status(stored_status: str, last_seen: str,
 # -- telemetry validation (BIG #39 Hardware Reality Layer) ----------
 
 VALID_TELEMETRY_FIELDS = frozenset({
-    "hostname", "os", "platform", "cpu_percent", "cpu_count",
-    "memory_percent", "memory_total_mb", "memory_available_mb",
-    "disk_percent", "disk_total_gb", "disk_free_gb",
-    "uptime_seconds", "temperature_celsius", "load_average",
-    "network_interfaces", "boot_time",
+    "hostname", "os", "platform", "architecture", "cpu_percent",
+    "cpu_count", "memory_percent", "memory_total_mb",
+    "memory_available_mb", "disk_percent", "disk_total_gb",
+    "disk_free_gb", "uptime_seconds", "temperature_celsius",
+    "load_average", "network_interfaces", "boot_time",
 })
 
 VALID_HARDWARE_KINDS = frozenset({
@@ -460,7 +460,7 @@ def check_telemetry(values) -> dict:
             if not isinstance(value, list):
                 raise NodeRefusedError("network_interfaces must be a list")
             cleaned[key] = [str(v)[:80] for v in value[:20]]
-        elif key in ("hostname", "os", "platform"):
+        elif key in ("hostname", "os", "platform", "architecture"):
             if not isinstance(value, str):
                 raise NodeRefusedError(f"telemetry '{key}' must be text")
             cleaned[key] = value.strip()[:120]
@@ -691,3 +691,249 @@ def compute_node_health(record: dict) -> dict:
     }
 
     return {"health": health, "details": details}
+
+
+# -- display discovery contract (VERTICAL SLICE 1: physical digital world)
+#
+# A node may report read-only display information alongside its
+# heartbeat. This is ADVERTISED node-state, stored on the node row
+# (like telemetry/hardware) — never a display database, never a
+# second truth, never a write path to physical configuration.
+#
+# Honesty rules (fail-closed, never fake):
+# - every field the node cannot reliably determine stays None
+#   (unknown physical size, unknown position, unknown refresh).
+# - `id` is the only required field (connector identifier, e.g.
+#   "HDMI-1"); everything else is optional.
+# - the coordinator never derives, guesses or backfills values.
+
+VALID_DISPLAY_FIELDS = frozenset({
+    "id", "name", "width", "height", "refresh_rate",
+    "physical_width_mm", "physical_height_mm", "x", "y",
+    "scale", "orientation", "primary",
+})
+
+VALID_DISPLAY_ORIENTATIONS = frozenset({
+    "normal", "left", "right", "inverted", "unknown",
+})
+
+MAX_DISPLAYS = 16
+MAX_DISPLAY_ID_CHARS = 120
+MAX_DISPLAY_NAME_CHARS = 120
+MAX_DISPLAY_PIXELS = 16384
+MAX_DISPLAY_MM = 10000
+MAX_DISPLAY_OFFSET = 100000
+
+
+def _check_display_optional_int(value, field: str, low: int,
+                                high: int) -> int | None:
+    """One nullable bounded integer. None stays None (unknown);
+    bools are refused (never silently 0/1)."""
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise NodeRefusedError(
+            f"display '{field}' must be an integer or null")
+    if not low <= value <= high:
+        raise NodeRefusedError(
+            f"display '{field}' out of bounds ({low}..{high})")
+    return value
+
+
+def _check_display_optional_number(value, field: str, low: float,
+                                   high: float):
+    """One nullable bounded number (refresh rate, scale)."""
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise NodeRefusedError(
+            f"display '{field}' must be a number or null")
+    number = float(value)
+    if not low <= number <= high:
+        raise NodeRefusedError(
+            f"display '{field}' out of bounds ({low}..{high})")
+    return number
+
+
+def check_displays(values) -> list[dict]:
+    """Validate a node display report. Pure, fail-closed.
+
+    Returns cleaned display dicts; unknown values stay None.
+    Refuses unknown fields, duplicate ids, out-of-range numbers
+    and anything that is not a list of objects."""
+    if values is None:
+        return []
+    if not isinstance(values, (list, tuple)):
+        raise NodeRefusedError("displays must be a list")
+    if len(values) > MAX_DISPLAYS:
+        raise NodeRefusedError(
+            f"at most {MAX_DISPLAYS} displays")
+    cleaned: list[dict] = []
+    seen_ids: set[str] = set()
+    for entry in values:
+        if not isinstance(entry, dict):
+            raise NodeRefusedError(
+                "each display must be an object")
+        unknown = set(entry) - VALID_DISPLAY_FIELDS
+        if unknown:
+            raise NodeRefusedError(
+                "display carries unknown fields: "
+                f"{sorted(unknown)}")
+        raw_id = entry.get("id", "")
+        if (not isinstance(raw_id, str) or not raw_id.strip()
+                or len(raw_id.strip()) > MAX_DISPLAY_ID_CHARS):
+            raise NodeRefusedError(
+                "display 'id' must be 1..120 chars of text")
+        ident = raw_id.strip()
+        if ident in seen_ids:
+            raise NodeRefusedError(
+                f"duplicate display id '{ident[:40]}'")
+        seen_ids.add(ident)
+        raw_name = entry.get("name", "")
+        if raw_name is None:
+            name = ""
+        elif not isinstance(raw_name, str):
+            raise NodeRefusedError("display 'name' must be text")
+        else:
+            name = raw_name.strip()[:MAX_DISPLAY_NAME_CHARS]
+        orientation = str(entry.get("orientation", "unknown") or
+                          "unknown").strip().lower()
+        if orientation not in VALID_DISPLAY_ORIENTATIONS:
+            raise NodeRefusedError(
+                f"display orientation '{orientation}' unknown; "
+                f"expected one of {sorted(VALID_DISPLAY_ORIENTATIONS)}")
+        primary = entry.get("primary", False)
+        if primary is None:
+            primary = False
+        if not isinstance(primary, bool):
+            raise NodeRefusedError(
+                "display 'primary' must be boolean")
+        cleaned.append({
+            "id": ident,
+            "name": name,
+            "width": _check_display_optional_int(
+                entry.get("width"), "width", 1, MAX_DISPLAY_PIXELS),
+            "height": _check_display_optional_int(
+                entry.get("height"), "height", 1, MAX_DISPLAY_PIXELS),
+            "refresh_rate": _check_display_optional_number(
+                entry.get("refresh_rate"), "refresh_rate", 1, 1000),
+            "physical_width_mm": _check_display_optional_int(
+                entry.get("physical_width_mm"),
+                "physical_width_mm", 1, MAX_DISPLAY_MM),
+            "physical_height_mm": _check_display_optional_int(
+                entry.get("physical_height_mm"),
+                "physical_height_mm", 1, MAX_DISPLAY_MM),
+            "x": _check_display_optional_int(
+                entry.get("x"), "x",
+                -MAX_DISPLAY_OFFSET, MAX_DISPLAY_OFFSET),
+            "y": _check_display_optional_int(
+                entry.get("y"), "y",
+                -MAX_DISPLAY_OFFSET, MAX_DISPLAY_OFFSET),
+            "scale": _check_display_optional_number(
+                entry.get("scale"), "scale", 0.25, 8.0),
+            "orientation": orientation,
+            "primary": primary,
+        })
+    return cleaned
+
+
+#: Max nodes in one derived digital-world snapshot (bounded,
+#: sorted, deterministic — same contract as derive_fungi_network).
+MAX_DIGITAL_WORLD_NODES = 200
+
+DIGITAL_WORLD_HONESTY = (
+    "Afgeleide view van node-state (provenance: derived). "
+    "Displays zijn ADVERTISED door de node; onbekende waarden "
+    "blijven null/onbekend en worden nooit ingevuld. "
+    "UI-positie/schaal/selectie is lokale editor-state en "
+    "verandert nooit de fysieke configuratie."
+)
+
+
+def derive_digital_world(records) -> dict:
+    """Pure NODE -> DISPLAY view over node-registry records.
+
+    Input: node dicts as produced by _node_to_json (or any dicts
+    with node_id/hostname/telemetry/hardware/derived_status).
+    Output: bounded, node_id-sorted snapshot with per-node
+    identity/hardware/network/displays. No I/O, no storage, no
+    writes — rendering this view never touches node state.
+    Unknown display values pass through as None; invalid stored
+    display rows are dropped (never break the world on one bad
+    row, never invent a replacement)."""
+    items = list(records or [])[:MAX_DIGITAL_WORLD_NODES]
+    nodes: list[dict] = []
+    for record in items:
+        if not isinstance(record, dict):
+            continue
+        node_id = str(record.get("node_id", ""))
+        if not node_id:
+            continue
+        telemetry = record.get("telemetry", {})
+        if not isinstance(telemetry, dict):
+            telemetry = {}
+        hardware = record.get("hardware", [])
+        if not isinstance(hardware, list):
+            hardware = []
+        stored_displays = record.get("displays", [])
+        displays: list[dict] = []
+        if isinstance(stored_displays, (list, tuple)):
+            try:
+                displays = check_displays(list(stored_displays))
+            except NodeRefusedError:
+                displays = []
+        gpu_names = [
+            str(item.get("identifier", ""))
+            for item in hardware
+            if isinstance(item, dict)
+            and str(item.get("kind", "")) == "gpu"
+            and str(item.get("status", "")) == "connected"
+        ][:4]
+        advertised = record.get("capabilities", [])
+        if not isinstance(advertised, list):
+            advertised = []
+        from .remote_input import MOUSE_CAPABILITY
+        nodes.append({
+            "node_id": node_id,
+            "hostname": str(record.get("hostname", "")),
+            "tier": str(record.get("tier", "")),
+            "derived_status": str(record.get(
+                "derived_status", "unknown")),
+            "health_status": str(record.get(
+                "health_status", "UNKNOWN")),
+            "last_seen": str(record.get("last_seen", "")),
+            "identity": {
+                "node_id": node_id,
+                "hostname": str(record.get("hostname", "")),
+                "os": telemetry.get("os"),
+                "architecture": telemetry.get("architecture"),
+                "platform": telemetry.get("platform"),
+            },
+            "hardware": {
+                "cpu_count": telemetry.get("cpu_count"),
+                "memory_total_mb": telemetry.get("memory_total_mb"),
+                "gpu": gpu_names,
+            },
+            "network": {
+                "interfaces": telemetry.get("network_interfaces", []),
+                "connectivity": str(record.get(
+                    "derived_status", "unknown")),
+            },
+            "displays": displays,
+            "display_count": len(displays),
+            "capabilities": [str(cap) for cap in advertised[:50]],
+            "remote_mouse": (
+                "supported"
+                if MOUSE_CAPABILITY in {
+                    str(cap).strip().lower() for cap in advertised}
+                else "unsupported"),
+            "provenance": "derived",
+        })
+    nodes.sort(key=lambda item: item["node_id"])
+    return {
+        "nodes": nodes,
+        "node_count": len(nodes),
+        "display_count": sum(item["display_count"] for item in nodes),
+        "provenance": "derived",
+        "honesty": DIGITAL_WORLD_HONESTY,
+    }

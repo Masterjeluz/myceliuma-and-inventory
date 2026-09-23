@@ -25,8 +25,12 @@ from typing import Any
 import httpx
 from pydantic import BaseModel, ConfigDict, Field
 
+from .model_router import DEFAULT_LOCAL_MODEL
+
 DEFAULT_BASE_URL = "http://127.0.0.1:11434"
-DEFAULT_MODEL = "qwen3.5:4b"
+# Normal default owned by the central model router (value unchanged;
+# explicit-arg > OLLAMA_MODEL env > this fallback is untouched).
+DEFAULT_MODEL = DEFAULT_LOCAL_MODEL
 BASE_URL_ENV_VAR = "OLLAMA_BASE_URL"
 MODEL_ENV_VAR = "OLLAMA_MODEL"
 TIMEOUT_ENV_VAR = "OLLAMA_TIMEOUT_SECONDS"

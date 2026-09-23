@@ -39,11 +39,14 @@ from .cameras import camera_dir
 from .inventory_read import Provenance
 from .observations import check_image_ref
 from .ollama_advisor import LOOPBACK_HOSTS
+from .model_router import DEFAULT_VISION_MODEL as _ROUTER_VISION_MODEL
 
 DEFAULT_BASE_URL = "http://127.0.0.1:11434"
 BASE_URL_ENV_VAR = "OLLAMA_BASE_URL"
 VISION_MODEL_ENV_VAR = "VISION_MODEL"
-DEFAULT_VISION_MODEL = "qwen3-vl:4b"
+# Normal default owned by the central model router (value unchanged;
+# explicit-arg > VISION_MODEL env > this fallback is untouched).
+DEFAULT_VISION_MODEL = _ROUTER_VISION_MODEL
 TIMEOUT_ENV_VAR = "OLLAMA_TIMEOUT_SECONDS"
 DEFAULT_TIMEOUT_SECONDS = 120.0
 MAX_TIMEOUT_SECONDS = 120.0
@@ -155,8 +158,12 @@ def read_vision_media(media_ref: str) -> tuple[bytes, str]:
     if len(data) > MAX_MEDIA_BYTES:  # pragma: no cover - TOCTOU guard
         raise VisionRefusedError("Media grew past the cap; refusing")
     lowered = reference.lower()
-    mime = ("image/bmp" if lowered.endswith(".bmp")
-            else "image/png")
+    if lowered.endswith(".bmp"):
+        mime = "image/bmp"
+    elif lowered.endswith((".jpg", ".jpeg")):
+        mime = "image/jpeg"
+    else:
+        mime = "image/png"
     return data, mime
 
 

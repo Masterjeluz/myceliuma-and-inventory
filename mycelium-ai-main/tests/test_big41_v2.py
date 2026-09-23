@@ -342,7 +342,7 @@ def test_mesh_delegate_full_pull_cycle(tmp_path, monkeypatch):
         # Completion clears the running task.
         done = client.post(
             f"/api/v1/tasks/{body['task_id']}/complete",
-            json={"success": True,
+            json={"success": True, "node_id": "node-b",
                   "result": {"url": "https://example.com/x",
                              "text": "smoke"}})
         assert done.status_code == 204

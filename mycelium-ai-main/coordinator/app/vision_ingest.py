@@ -67,7 +67,7 @@ VALID_CAMERA_STATES = frozenset({
 MAX_MEDIA_BYTES = 10 * 1024 * 1024
 
 #: Allowed local media suffixes (mirrors check_image_ref).
-MEDIA_SUFFIXES = (".bmp", ".png")
+MEDIA_SUFFIXES = (".bmp", ".png", ".jpg", ".jpeg")
 
 TEST_ORIGIN_MARK = "test-origin: synthetic media, never a real capture"
 
@@ -109,6 +109,8 @@ def _mime_for(filename: str) -> str:
         return "image/bmp"
     if lowered.endswith(".png"):
         return "image/png"
+    if lowered.endswith((".jpg", ".jpeg")):
+        return "image/jpeg"
     return "application/octet-stream"
 
 

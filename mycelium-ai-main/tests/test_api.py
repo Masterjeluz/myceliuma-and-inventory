@@ -15,5 +15,5 @@ def test_node_can_claim_matching_task(tmp_path, monkeypatch):
         claimed = client.post("/api/v1/tasks/claim/test-worker", params={"node_token": "api-token-12345678"})
         assert claimed.status_code == 200
         assert claimed.json()["kind"] == "system_inventory"
-        assert client.post(f"/api/v1/tasks/{claimed.json()['id']}/complete", json={"success": True, "result": {}}).status_code == 204
+        assert client.post(f"/api/v1/tasks/{claimed.json()['id']}/complete", json={"success": True, "result": {}, "node_id": "test-worker"}).status_code == 204
         assert client.get("/api/v1/tasks").json()[0]["status"] == "completed"

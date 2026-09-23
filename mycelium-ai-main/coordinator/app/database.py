@@ -79,7 +79,8 @@ def init_database() -> None:
             completed_at TEXT,
             assigned_at TEXT,
             lease_until TEXT,
-            attempt_count INTEGER NOT NULL DEFAULT 0
+            attempt_count INTEGER NOT NULL DEFAULT 0,
+            mission_id TEXT DEFAULT NULL
         );
         CREATE INDEX IF NOT EXISTS idx_tasks_status
             ON tasks(status, priority DESC, id ASC);
@@ -116,6 +117,11 @@ def _ensure_node_columns(db) -> None:
         ("compute_capabilities", "TEXT DEFAULT '[]'"),
         ("energy_state", "TEXT DEFAULT '{}'"),
         ("health", "TEXT DEFAULT ''"),
+        # VERTICAL SLICE 1 (physical digital world): read-only
+        # display report stored as node-state JSON (like hardware).
+        # No display table, no second truth — a VIEW derives from
+        # this column on read (derive_digital_world).
+        ("displays", "TEXT DEFAULT '[]'"),
     ):
         if column not in existing:
             db.execute(f"ALTER TABLE nodes ADD COLUMN {column} {ddl}")
@@ -138,6 +144,8 @@ def _ensure_task_columns(db) -> None:
         db.execute("ALTER TABLE tasks ADD COLUMN routing TEXT DEFAULT '{}'")
     if "routing_decision" not in existing:
         db.execute("ALTER TABLE tasks ADD COLUMN routing_decision TEXT DEFAULT '{}'")
+    if "mission_id" not in existing:
+        db.execute("ALTER TABLE tasks ADD COLUMN mission_id TEXT DEFAULT NULL")
 
 
 CHAT_DATABASE_ENV_VAR = "MYCELIUM_CHAT_DATABASE_PATH"

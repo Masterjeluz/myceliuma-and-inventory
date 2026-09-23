@@ -49,6 +49,7 @@ def collect_telemetry() -> dict:
         "hostname": socket.gethostname(),
         "os": platform.system(),
         "platform": platform.platform(),
+        "architecture": platform.machine(),
         "cpu_count": os.cpu_count() or 1,
         "boot_time": BOOT_TIME,
     }
@@ -253,6 +254,239 @@ def collect_compute_capabilities() -> list[dict]:
     return compute
 
 
+def parse_xrandr_query(text: str) -> list[dict]:
+    """Parse `xrandr --query` output into display reports. Pure.
+
+    Only connected outputs become entries. Anything unparsable
+    yields None fields (never guessed); outputs without an
+    active mode keep width/height None. No I/O, no fallback
+    data — used by collect_displays() and unit-tested with
+    captured samples."""
+    import re
+    displays: list[dict] = []
+    # e.g. "HDMI-1 connected primary 1920x1080+0+0 (normal ...) 477mm x 268mm"
+    # e.g. "eDP-1 connected 1920x1080+1920+0 (normal ...) 344mm x 193mm"
+    # e.g. "DP-1 disconnected (normal ...)"
+    header = re.compile(
+        r"^(?P<output>\S+)\s+(?P<state>connected|disconnected)\b"
+        r"(?P<rest>.*)$")
+    geometry = re.compile(
+        r"(?P<width>\d+)x(?P<height>\d+)\+(?P<x>-?\d+)\+(?P<y>-?\d+)")
+    phys = re.compile(r"(?P<wmm>\d+)mm\s*x\s*(?P<hmm>\d+)mm")
+    mode = re.compile(
+        r"^\s+(?P<width>\d+)x(?P<height>\d+)\s+(?P<rates>[\d.\s*+]+)")
+    current: dict | None = None
+    for line in (text or "").splitlines():
+        if not line.strip():
+            continue
+        match = header.match(line)
+        if match and not line.startswith((" ", "\t")):
+            if match.group("state") != "connected":
+                current = None
+                continue
+            rest = match.group("rest") or ""
+            geo = geometry.search(rest)
+            size = phys.search(rest)
+            rotation = re.search(r"\(([^)]*)\)", rest)
+            orientation = "unknown"
+            if rotation:
+                first = (rotation.group(1) or "").split()
+                if first and first[0] in (
+                        "normal", "left", "right", "inverted"):
+                    orientation = first[0]
+            output = match.group("output")
+            current = {
+                "id": output[:120],
+                "name": output[:120],
+                "width": int(geo.group("width"))
+                if geo else None,
+                "height": int(geo.group("height"))
+                if geo else None,
+                "refresh_rate": None,
+                "physical_width_mm": int(size.group("wmm"))
+                if size else None,
+                "physical_height_mm": int(size.group("hmm"))
+                if size else None,
+                "x": int(geo.group("x")) if geo else None,
+                "y": int(geo.group("y")) if geo else None,
+                "scale": None,
+                "orientation": orientation,
+                "primary": "primary" in rest.split(),
+            }
+            displays.append(current)
+            continue
+        if current is not None:
+            modeline = mode.match(line)
+            if modeline and current["refresh_rate"] is None:
+                try:
+                    width = int(modeline.group("width"))
+                    height = int(modeline.group("height"))
+                except ValueError:
+                    continue
+                if ("*" in line and width == current.get("width")
+                        and height == current.get("height")):
+                    rates = re.findall(r"(\d+(?:\.\d+)?)\*",
+                                       modeline.group("rates"))
+                    if rates:
+                        try:
+                            current["refresh_rate"] = float(rates[0])
+                        except ValueError:
+                            current["refresh_rate"] = None
+    return displays[:16]
+
+
+def _collect_displays_xrandr() -> list[dict] | None:
+    """Linux X11/XWayland discovery via xrandr. Returns None when
+    xrandr is unavailable (Wayland-native, headless, missing) so
+    the caller can report honestly empty. No shell, 5s timeout."""
+    import shutil
+    import subprocess
+    if shutil.which("xrandr") is None:
+        return None
+    try:
+        result = subprocess.run(
+            ["xrandr", "--query"], capture_output=True, text=True,
+            timeout=5)
+    except Exception:
+        return None
+    if result.returncode != 0:
+        return None
+    try:
+        return parse_xrandr_query(result.stdout or "")
+    except Exception:
+        return None
+
+
+def _collect_displays_windows() -> list[dict] | None:
+    """Windows discovery via EnumDisplayDevices/EnumDisplaySettings
+    (read-only, ctypes, no new dependency). Returns None when the
+    API is unreachable. Physical size/scale stay None — this API
+    does not reliably expose them, and we never guess."""
+    import ctypes
+    from ctypes import wintypes
+    try:
+        user32 = ctypes.windll.user32
+    except Exception:
+        return None
+    try:
+        class DISPLAY_DEVICEW(ctypes.Structure):
+            _fields_ = [
+                ("cb", wintypes.DWORD),
+                ("DeviceName", wintypes.WCHAR * 32),
+                ("DeviceString", wintypes.WCHAR * 128),
+                ("StateFlags", wintypes.DWORD),
+                ("DeviceID", wintypes.WCHAR * 128),
+                ("DeviceKey", wintypes.WCHAR * 128),
+            ]
+
+        class _DevmodeDisplay(ctypes.Structure):
+            _fields_ = [
+                ("dmPositionX", ctypes.c_long),
+                ("dmPositionY", ctypes.c_long),
+                ("dmDisplayOrientation", wintypes.DWORD),
+                ("dmDisplayFixedOutput", wintypes.DWORD),
+            ]
+
+        class _DevmodeUnion(ctypes.Union):
+            _fields_ = [("display", _DevmodeDisplay),
+                        ("raw", ctypes.c_byte * 16)]
+
+        class DEVMODEW(ctypes.Structure):
+            _fields_ = [
+                ("dmDeviceName", wintypes.WCHAR * 32),
+                ("dmSpecVersion", wintypes.WORD),
+                ("dmDriverVersion", wintypes.WORD),
+                ("dmSize", wintypes.WORD),
+                ("dmDriverExtra", wintypes.WORD),
+                ("dmFields", wintypes.DWORD),
+                ("u", _DevmodeUnion),
+                ("dmColor", ctypes.c_short),
+                ("dmDuplex", ctypes.c_short),
+                ("dmYResolution", ctypes.c_short),
+                ("dmTTOption", ctypes.c_short),
+                ("dmCollate", ctypes.c_short),
+                ("dmFormName", wintypes.WCHAR * 32),
+                ("dmLogPixels", wintypes.WORD),
+                ("dmBitsPerPel", wintypes.DWORD),
+                ("dmPelsWidth", wintypes.DWORD),
+                ("dmPelsHeight", wintypes.DWORD),
+                ("dmDisplayFlags", wintypes.DWORD),
+                ("dmDisplayFrequency", wintypes.DWORD),
+            ]
+
+        user32.EnumDisplayDevicesW.argtypes = [
+            wintypes.LPCWSTR, wintypes.DWORD,
+            ctypes.POINTER(DISPLAY_DEVICEW), wintypes.DWORD]
+        user32.EnumDisplayDevicesW.restype = wintypes.BOOL
+        user32.EnumDisplaySettingsW.argtypes = [
+            wintypes.LPCWSTR, wintypes.DWORD,
+            ctypes.POINTER(DEVMODEW)]
+        user32.EnumDisplaySettingsW.restype = wintypes.BOOL
+
+        ENUM_CURRENT_SETTINGS = 0xFFFFFFFF
+        DISPLAY_DEVICE_ATTACHED = 0x1
+        DISPLAY_DEVICE_PRIMARY = 0x4
+        displays: list[dict] = []
+        index = 0
+        while True:
+            device = DISPLAY_DEVICEW()
+            device.cb = ctypes.sizeof(device)
+            if not user32.EnumDisplayDevicesW(
+                    None, index, ctypes.byref(device), 0):
+                break
+            index += 1
+            if not (device.StateFlags & DISPLAY_DEVICE_ATTACHED):
+                continue
+            settings = DEVMODEW()
+            settings.dmSize = ctypes.sizeof(settings)
+            if not user32.EnumDisplaySettingsW(
+                    device.DeviceName, ENUM_CURRENT_SETTINGS,
+                    ctypes.byref(settings)):
+                continue
+            width = int(settings.dmPelsWidth) or None
+            height = int(settings.dmPelsHeight) or None
+            frequency = int(settings.dmDisplayFrequency)
+            ident = str(device.DeviceName or "").strip() or \
+                f"DISPLAY{len(displays) + 1}"
+            label = str(device.DeviceString or "").strip() or ident
+            displays.append({
+                "id": ident[:120],
+                "name": label[:120],
+                "width": width,
+                "height": height,
+                "refresh_rate": float(frequency)
+                if frequency and frequency > 1 else None,
+                "physical_width_mm": None,
+                "physical_height_mm": None,
+                "x": int(settings.u.display.dmPositionX),
+                "y": int(settings.u.display.dmPositionY),
+                "scale": None,
+                "orientation": "unknown",
+                "primary": bool(
+                    device.StateFlags & DISPLAY_DEVICE_PRIMARY),
+            })
+            if len(displays) >= 16:
+                break
+        return displays
+    except Exception:
+        return None
+
+
+def collect_displays() -> list[dict]:
+    """Read-only display discovery for this node. Linux tries
+    xrandr; Windows tries EnumDisplaySettings; anything else
+    reports []. Unknown fields stay None (never guessed, never
+    faked). Best-effort: any failure returns []."""
+    try:
+        if os.name == "nt":
+            found = _collect_displays_windows()
+            return found if found is not None else []
+        found = _collect_displays_xrandr()
+        return found if found is not None else []
+    except Exception:
+        return []
+
+
 def collect_energy_state() -> dict:
     """Collect energy/power state. Best effort."""
     energy = {"source": "unknown"}
@@ -450,6 +684,20 @@ def arguments() -> argparse.Namespace:
     parser.add_argument("--executor", action="append", default=[], help="Executor to advertise, exec:<kind>; can be supplied more than once")
     parser.add_argument("--model", action="append", default=[], help="Model to advertise as model_id:type, e.g. model:sim-vlm:vlm; can be supplied more than once")
     parser.add_argument("--poll-seconds", type=float, default=10.0)
+    parser.add_argument("--remote-mouse", action="store_true", default=False,
+                        help="Advertise desktop.mouse.move and poll for remote mouse moves (explicit opt-in; needs a real OS mouse backend)")
+    parser.add_argument("--remote-click", action="store_true", default=False,
+                        help="Advertise desktop.mouse.click (explicit opt-in; probed)")
+    parser.add_argument("--remote-keyboard", action="store_true", default=False,
+                        help="Advertise desktop.keyboard.type/press (explicit opt-in; probed)")
+    parser.add_argument("--remote-scroll", action="store_true", default=False,
+                        help="Advertise desktop.mouse.scroll, vertical only (explicit opt-in; probed)")
+    parser.add_argument("--remote-drag", action="store_true", default=False,
+                        help="Allow button down/up for drag (needs move+click backends; probed)")
+    parser.add_argument("--remote-clipboard", action="store_true", default=False,
+                        help="Advertise desktop.clipboard.write/read, text only (explicit opt-in; probed)")
+    parser.add_argument("--remote-mouse-poll-seconds", type=float, default=0.2,
+                        help="Poll cadence for remote input while opted in")
     return parser.parse_args()
 
 
@@ -474,11 +722,210 @@ def advertised_models(specs: list[str]) -> list[dict]:
     return models
 
 
+async def poll_remote_input_once(client, base_url: str,
+                                   node_id: str,
+                                   token: str | None,
+                                   tracker=None,
+                                   clipboard_text: str | None = None
+                                   ) -> dict | None:
+    """One pull for pending remote input. Returns a summary dict
+    ({move, actions, clipboard_request, released}) or None when
+    idle/unknown.
+
+    Only the allow-listed execute_remote_move/execute_remote_action
+    can run here; refusals are logged and swallowed (next poll
+    retries). A 410 means the session died: any held drag button
+    is released via the tracker. A 404 means no session: quiet.
+    """
+
+    def _tracker():
+        nonlocal tracker
+        if tracker is None:
+            try:
+                from .remote_mouse import ButtonTracker
+                tracker = ButtonTracker()
+            except ImportError:
+                tracker = None
+        return tracker
+
+    try:
+        from .remote_mouse import (
+            execute_remote_action, execute_remote_move,
+        )
+    except ImportError:
+        return None
+    payload: dict = {"node_id": node_id}
+    if token:
+        payload["node_token"] = token
+    if clipboard_text is not None:
+        payload["clipboard_text"] = clipboard_text
+    try:
+        response = await client.post(
+            f"{base_url}/remote-input/poll", json=payload)
+    except Exception as error:
+        logger.debug("remote input poll failed: %s", error)
+        return None
+    if response.status_code == 404:
+        return None
+    if response.status_code == 410:
+        # Session died (close/expiry/stale): release a held drag
+        # button so it never sticks. Never raises.
+        released = None
+        active = _tracker()
+        if active is not None:
+            try:
+                released = active.emergency_release()
+            except Exception as error:
+                logger.debug("button release failed: %s", error)
+        return {"move": None, "actions": [],
+                "clipboard_request": False, "released": released}
+    if response.status_code == 204 or not response.content:
+        return None
+    try:
+        data = response.json()
+    except Exception:
+        return None
+    if not data:
+        return None
+    summary: dict = {"move": None, "actions": [],
+                     "clipboard_request": bool(
+                         data.get("clipboard_request", False)),
+                     "released": None}
+    active = _tracker()
+    move = data.get("move")
+    if isinstance(move, dict):
+        try:
+            summary["move"] = execute_remote_move(
+                move.get("x"), move.get("y"))
+        except Exception as error:
+            logger.warning("remote move refused: %s", error)
+    for action in data.get("actions") or []:
+        if not isinstance(action, dict):
+            continue
+        params = {key: value for key, value in action.items()
+                  if key not in ("kind", "seq")}
+        try:
+            summary["actions"].append(execute_remote_action(
+                action.get("kind"), params, tracker=active))
+        except Exception as error:
+            logger.warning("remote action refused: %s", error)
+    return summary
+
+
+async def remote_input_loop(base_url: str, config: argparse.Namespace,
+                            token: str | None) -> None:
+    """Fast pull loop for remote input (existing HTTP pull,
+    higher cadence). Runs only with remote flags on a capable
+    node; every iteration is fail-closed and independent. Holds
+    the drag ButtonTracker and one pending clipboard text."""
+    try:
+        cadence = max(0.05, float(
+            getattr(config, "remote_mouse_poll_seconds", 0.2) or 0.2))
+    except (TypeError, ValueError):
+        cadence = 0.2
+    try:
+        from .remote_mouse import ButtonTracker
+        tracker = ButtonTracker()
+    except ImportError:
+        tracker = None
+    pending_clipboard: str | None = None
+    async with httpx.AsyncClient(timeout=10) as client:
+        while True:
+            try:
+                summary = await poll_remote_input_once(
+                    client, base_url, config.node_id, token,
+                    tracker=tracker,
+                    clipboard_text=pending_clipboard)
+                # Clipboard text is one-shot: sent once, then
+                # dropped (the browser re-requests when needed).
+                pending_clipboard = None
+                if isinstance(summary, dict) and summary.get(
+                        "clipboard_request"):
+                    try:
+                        from .remote_mouse import default_adapter
+                        adapter = default_adapter()
+                        if getattr(adapter,
+                                   "can_clipboard_read", False):
+                            try:
+                                pending_clipboard = \
+                                    adapter.clipboard_read()
+                            except Exception as error:
+                                logger.debug(
+                                    "clipboard read refused: %s",
+                                    error)
+                    except Exception as error:
+                        logger.debug("clipboard probe failed: %s",
+                                     error)
+            except Exception as error:
+                logger.debug("remote input loop error: %s", error)
+            await asyncio.sleep(cadence)
+
+
 async def run(config: argparse.Namespace) -> None:
     base_url = config.coordinator.rstrip("/") + "/api/v1"
     token = node_token_from(config)
+    capabilities = list(config.capability or [])
+    # REMOTE INPUT SLICES 1+2: explicit opt-in per family + probe.
+    # No probe means no capability advertisement (fail-closed):
+    # the coordinator and the UI then refuse that input family.
+    want_remote = {
+        "move": bool(getattr(config, "remote_mouse", False)),
+        "click": bool(getattr(config, "remote_click", False)),
+        "keyboard": bool(getattr(config, "remote_keyboard", False)),
+        "scroll": bool(getattr(config, "remote_scroll", False)),
+        "drag": bool(getattr(config, "remote_drag", False)),
+        "clipboard": bool(getattr(config, "remote_clipboard", False)),
+    }
+    remote_caps = {
+        "move": "desktop.mouse.move",
+        "click": "desktop.mouse.click",
+        "keyboard_type": "desktop.keyboard.type",
+        "keyboard_press": "desktop.keyboard.press",
+        "scroll": "desktop.mouse.scroll",
+        "clipboard_write": "desktop.clipboard.write",
+        "clipboard_read": "desktop.clipboard.read",
+    }
+    remote_active = False
+    if any(want_remote.values()):
+        try:
+            from .remote_mouse import probe_capabilities
+            probed = probe_capabilities()
+        except ImportError:
+            probed = {}
+        grants: list[str] = []
+        if want_remote["move"] and probed.get("move"):
+            grants.append(remote_caps["move"])
+        if want_remote["click"] and probed.get("click"):
+            grants.append(remote_caps["click"])
+        if want_remote["keyboard"] and probed.get("keyboard"):
+            grants.extend([remote_caps["keyboard_type"],
+                           remote_caps["keyboard_press"]])
+        if want_remote["scroll"] and probed.get("scroll"):
+            grants.append(remote_caps["scroll"])
+        if want_remote["drag"] and probed.get("drag"):
+            # Drag rides on move+click backends; the down/up
+            # markers are gated server-side on both. Advertise
+            # both so the gate can pass (no new capability).
+            grants.extend([remote_caps["move"],
+                           remote_caps["click"]])
+        if want_remote["clipboard"]:
+            if probed.get("clipboard_write"):
+                grants.append(remote_caps["clipboard_write"])
+            if probed.get("clipboard_read"):
+                grants.append(remote_caps["clipboard_read"])
+        for granted in grants:
+            if granted not in capabilities:
+                capabilities.append(granted)
+        remote_active = bool(grants)
+        if remote_active:
+            logger.info("remote input enabled (%s)",
+                        ", ".join(sorted(set(grants))))
+        else:
+            logger.warning(
+                "remote input requested but no OS backend "
+                "is available here; capabilities NOT advertised")
     registration = {"node_id": config.node_id, "hostname": socket.gethostname(), "tier": config.tier,
-                    "capabilities": config.capability, "cpu_cores": os.cpu_count() or 1,
+                    "capabilities": capabilities, "cpu_cores": os.cpu_count() or 1,
                     "memory_mb": detected_memory_mb(), "energy_source": config.energy_source,
                     "executors": config.executor, "models": advertised_models(config.model)}
     if token:
@@ -487,6 +934,10 @@ async def run(config: argparse.Namespace) -> None:
         response = await client.post(f"{base_url}/nodes/register", json=registration)
         response.raise_for_status()
         logger.info("registered %s on %s (%s)", config.node_id, platform.system(), config.tier)
+        remote_task = None
+        if remote_active:
+            remote_task = asyncio.create_task(
+                remote_input_loop(base_url, config, token))
         while True:
             try:
                 heartbeat = {"available": True}
@@ -497,6 +948,8 @@ async def run(config: argparse.Namespace) -> None:
                 heartbeat["hardware"] = collect_hardware()
                 heartbeat["compute_capabilities"] = collect_compute_capabilities()
                 heartbeat["energy_state"] = collect_energy_state()
+                # VERTICAL SLICE 1: read-only display report (never faked)
+                heartbeat["displays"] = collect_displays()
                 await client.post(f"{base_url}/nodes/{config.node_id}/heartbeat", json=heartbeat)
                 claim_url = f"{base_url}/tasks/claim/{config.node_id}"
                 if token:
@@ -510,6 +963,7 @@ async def run(config: argparse.Namespace) -> None:
                     success, result, error = execute_safe_task(task)
                     completion = await client.post(f"{base_url}/tasks/{task['id']}/complete", json={
                         "success": success, "result": result, "error": error,
+                        "node_id": config.node_id,
                     })
                     completion.raise_for_status()
             except httpx.HTTPError as error:

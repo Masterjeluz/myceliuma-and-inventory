@@ -868,4 +868,100 @@ def guide_items(limit: int = 12) -> list[dict]:
                     "href": "/nodes"}]))
     except Exception:
         pass
+    try:
+        items.extend(_verdant_items())
+    except Exception:
+        pass
+    try:
+        missing = _missing_sensor_item()
+        if missing is not None:
+            items.append(missing)
+    except Exception:
+        pass
     return items[: max(1, min(int(limit or 12), 20))]
+
+
+def _missing_sensor_item() -> dict | None:
+    """Eerlijke ontbrekende capability: geen enkele node adverteert
+    verbonden sensor-hardware → bodem/water-meten is FUTURE. Zodra
+    een sensor verschijnt, verdwijnt dit item vanzelf."""
+    try:
+        from . import main as _main
+        records = _main.list_nodes() or []
+    except Exception:
+        return None
+    for record in records:
+        hardware = record.get("hardware", []) or []
+        for item in hardware:
+            if not isinstance(item, dict):
+                continue
+            if str(item.get("kind", "")).lower() == "sensor" \
+                    and str(item.get("status", "")).lower() == \
+                    "connected":
+                return None
+    return _item(
+        "hardware", "📡",
+        "Geen sensor-hardware verbonden — bodem/water meten "
+        "is FUTURE.",
+        "Ecology-meting vereist een node met verbonden sensor; "
+        "alleen camera/snapshot bestaat echt.",
+        "Bekijk hardware", "/hardware",
+        evidence=[{"label": "node-hardware",
+                   "href": "/nodes"}])
+
+
+def _verdant_items() -> list[dict]:
+    """Verdant-signalen als Guide-items met hun natuurlijke kinds.
+
+    Geen nieuw kind, geen wereldontwaking-claim: solar-metingen als
+    energy-item, ecology-dossiers als research-items. Alleen lokale
+    stores (sync); INVENTory-termen blijven voorbehouden aan de
+    /play-Verdant (async bridge). Lege stores = geen items.
+    """
+    from .world import VERDANT_TERMS
+    found: list[dict] = []
+    try:
+        from .energy import list_records
+        solar = list_records(source="solar", limit=50) or []
+        if solar:
+            found.append(_item(
+                "energy", "☀",
+                f"{len(solar)} solar-meting(en) in Mycelium.",
+                "Echte metingen — de Verdant-bioom in /play "
+                "ontwaakt hierdoor mee.",
+                "Bekijk energy", "/energy",
+                unlocks=[{"label": "Verdant in /play",
+                           "href": "/play"}],
+                evidence=[{"label": "energy records",
+                           "href": "/energy"}]))
+    except Exception:
+        pass
+    try:
+        from .research_engine import list_dossiers
+        for dossier in list_dossiers(limit=10) or []:
+            try:
+                data = dossier.model_dump(mode="json")
+            except Exception:
+                continue
+            haystack = (f"{data.get('title', '')} "
+                        f"{data.get('question', '')} "
+                        f"{' '.join(data.get('open_questions', []) or [])}"
+                        ).lower()
+            if not any(term in haystack
+                       for term in VERDANT_TERMS):
+                continue
+            dossier_id = str(data.get("dossier_id", "") or "")
+            if not dossier_id:
+                continue
+            found.append(_item(
+                "research", "🌿",
+                f"Ecology-dossier: {str(data.get('title', ''))[:80]}.",
+                "Echt onderzoek — voedt de Verdant-bioom in /play.",
+                "Open dossier", f"/research/{dossier_id}",
+                evidence=[{"label": "dossier",
+                           "href": f"/research/{dossier_id}"}]))
+            if len(found) >= 3:
+                break
+    except Exception:
+        pass
+    return found

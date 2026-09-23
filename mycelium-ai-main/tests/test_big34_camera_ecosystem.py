@@ -64,11 +64,13 @@ def test_session_id_rules():
 def test_filenames_hostile(tmp_path, monkeypatch):
     for _ in make_client(tmp_path, monkeypatch):
         for bad in ([], ["../evil.png"], ["http://x/y.png"],
-                    ["a.png"] * 9, [""], ["a.jpg"], ["a.png", "a.png"],
+                    ["a.png"] * 9, [""], ["a.heic"], ["a.mp4"],
+                    ["a.png", "a.png"],
                     ["/abs.png"], ["..\\win.png"]):
             with pytest.raises(EcosystemRefusedError):
                 check_filenames(bad)
         assert check_filenames(["a.png", "b.bmp"]) == ["a.png", "b.bmp"]
+        assert check_filenames(["a.jpg", "b.jpeg"]) == ["a.jpg", "b.jpeg"]
 
 
 def test_session_unknown_device(tmp_path, monkeypatch):

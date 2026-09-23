@@ -173,7 +173,8 @@ def prune_captures(keep: int = CAMERA_RETENTION) -> int:
         return 0
     shots = sorted(entry for entry in entries
                    if entry.startswith("cam-")
-                   and entry.lower().endswith((".bmp", ".png")))
+                   and entry.lower().endswith(
+                       (".bmp", ".png", ".jpg", ".jpeg")))
     removed = 0
     for entry in shots[:max(0, len(shots) - keep)]:
         try:

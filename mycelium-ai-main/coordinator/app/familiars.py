@@ -142,6 +142,44 @@ def list_familiars() -> list[Familiar]:
     return [_row_to_familiar(row) for row in rows]
 
 
+NPC_FAMILIARS = (
+    # Game-NPC's als canonieke helper-identiteiten. Soort is bewust
+    # eerlijk gekozen: Luma bedient geen fysieke camera (dus geen
+    # "camera"-kind met snapshot-claim), Forge heeft nog geen
+    # gekoppelde machine (linked_id leeg tot een hw_-link bestaat).
+    {"name": "Luma", "kind": "digital"},
+    {"name": "Forge", "kind": "machine"},
+)
+
+
+def ensure_npc_familiars() -> dict[str, str]:
+    """Create (or reuse) familiar-records voor game-NPC's.
+
+    Idempotent op naam. Alleen identiteit + soort + status; geen
+    persoonlijkheid, geen permissions, geen capabilities buiten de
+    bestaande kind-allowlist.
+    """
+    try:
+        existing = {str(fam.name or "").strip().lower(): str(
+            fam.familiar_id) for fam in list_familiars() or []}
+    except Exception:
+        existing = {}
+    found: dict[str, str] = {}
+    for spec in NPC_FAMILIARS:
+        key = str(spec["name"]).strip().lower()
+        if key in existing:
+            found[spec["name"]] = existing[key]
+            continue
+        try:
+            familiar = new_familiar(str(spec["name"]),
+                                    str(spec["kind"]))
+            save_familiar(familiar)
+            found[spec["name"]] = familiar.familiar_id
+        except Exception:
+            continue
+    return found
+
+
 def familiar_can(familiar: Familiar, capability: str) -> bool:
     """Capability check against the kind allow-list and the
     stored set. No wildcards on either side."""

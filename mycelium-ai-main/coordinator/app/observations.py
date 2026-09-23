@@ -56,8 +56,8 @@ def check_image_ref(value: str) -> str:
         raise ValueError("image_ref must be a plain local filename")
     if ".." in text or "/" in text or "\\" in text:
         raise ValueError("image_ref must not contain a path")
-    if not text.lower().endswith((".bmp", ".png")):
-        raise ValueError("image_ref must be a .bmp or .png file")
+    if not text.lower().endswith((".bmp", ".png", ".jpg", ".jpeg")):
+        raise ValueError("image_ref must be a .bmp, .png, .jpg or .jpeg file")
     return text
 
 
