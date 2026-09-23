@@ -485,6 +485,16 @@ class MissionApproveBody(BaseModel):
     decided_by: str = Field(default="human", min_length=1, max_length=80)
 
 
+class MissionDispatchBody(BaseModel):
+    """Queue one dispatchable mission step (H1 auto-dispatch).
+
+    Never approves, never executes: the mission must already be
+    approved/running and the step kind dispatchable, otherwise the
+    dispatch refuses. Idempotent per (mission, step, url)."""
+
+    step_id: str = Field(min_length=3, max_length=80)
+
+
 class ChatMissionBody(BaseModel):
     goal: str = Field(min_length=1, max_length=500)
     steps: list[MissionStepBody] | None = Field(default=None, min_length=1,

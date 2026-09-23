@@ -102,6 +102,16 @@ persoonlijke computer-agent (verticale slice, live bewezen):
   `docs/living-solarpunk-world.md`
 - **Veiligheid**: geen shell/RCE, geen credentials-opslag, geen
   auto-approval/bypass, geen permanente autonomie, screenshots lokaal
+- **Integratiepass** (`/tasks`, `/tasks/{id}`, `/approvals`,
+  `/system`, `GET /api/v1/models/routes`,
+  `GET /api/v1/events/stream`): elke bestaande backend-waarheid is
+  vanuit de UI bereikbaar — queue-taken met missie/node/lease/attempts,
+  één menselijke approval-poort (missies + desktop + writes + voice),
+  read-only model-router-status (tool_execution weigert openlijk
+  auto-route), SSE-event-tail met poll-fallback, missie-detail met
+  gebonden taken, nodes/agents met lopende taak, `/play` met live
+  backend-strip (zelfde waarheid, geen tweede truth); zie
+  `tests/test_integration_pass.py` (flows A–H)
 
 Werkende keten: Chat → context → advies → missie → approval → stap →
 taak → desktop-agent → observatie → volgende stap → gesprekupdate.

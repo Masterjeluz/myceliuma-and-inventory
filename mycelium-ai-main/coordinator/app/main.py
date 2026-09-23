@@ -274,12 +274,19 @@ from .database import chat_connection, connection, dump, init_chat_database, ini
 from .mission_executor import ExecutorDeps, ExecutorError, MissionExecutor
 from .mission_templates import get_template, instantiate, list_templates
 from .missions import (
+    DISPATCHABLE_KINDS,
     MissionConflictError,
     bindings_for_mission,
+    dispatch_source_urls,
+    dispatchable_task,
     get_binding,
     list_events,
     list_missions,
     load_mission,
+    new_event,
+    save_event,
+    save_mission,
+    set_step,
 )
 from .git_context import (
     GitRefusedError,
@@ -334,7 +341,7 @@ from .routing import (
     requirements_from_payload,
     route_task,
 )
-from .schemas import AdviseRequest, AdviseResponse, AdvancedOpBody, CadDocumentBody, CadOpBody, CadPartBody, CampaignBody, CameraRegisterBody, CaptureCloseBody, CaptureOpenBody, ChatMissionBody, ChatRequest, ChatResponse, ClaimedTask, DecideApprovalBody, DesktopActionBody, DesktopClaimBody, DesktopDecisionBody, DesktopDispatchBody, DesktopResultBody,     DistEnvelopeBody, DroneCreateBody, DroneMissionApproveBody, DroneMissionBody,     FabGenerateBody, FabSliceBody, FamiliarCreateBody, FoodCreateBody, GarminImportBody, GitCommitBody, HealthMeasureBody, Heartbeat, InstagramImportBody,     InterfaceChatBody, IntegrationEnvelopeBody, IntegrationKeyBody, IntegrationTriggerBody, InventoryWriteBody, JobRunBody, LiveContextBody, LiveProposeBody, LiveSessionBody, MealCreateBody, MealItemBody, MemoryConsolidateBody, MemoryCreateBody, MemoryRetrieveBody, MemoryVerifyBody,     MissionApproveBody, MissionCreateBody, MissionRunBody, MissionStepBody, NodeRegistration, NodeRotateBody,     NotifyBody, OperatorBody, OutboxAckBody, OutboxEnqueueBody,     PhoneCameraBody,     PlanBody, RemoteInputSessionBody, RemoteInputMoveBody, RemoteInputActionBody, RemoteInputPollBody, PlanToProposalBody, PipelinePlanBody, PrintCancelBody, PrintProposeBody, PrinterRegisterBody, PrinterSelectBody, PromptEditBody, ResearchAdvanceBody, ResearchClaimBody, ResearchRecordBody, ResearchSourceBody, RobotActionBody, RobotApproveBody, RobotCreateBody, RobotSafetyBody, RobotTelemetryBody, SessionOpenBody,     StreamStartBody, SuggestStepsBody, WorkspaceForkBody, WorkspaceMissionAttachBody, WorkspaceResearchStartBody, SkillAcceptBody, SkillAdvanceBody, SkillCreateBody, SkillDiscoverBody, SkillEvidenceBody, SpoolCreateBody, SyncApplyBody, TaskAssignBody, TaskCreate, TaskFromProposalBody, TaskResult, TaskRouteBody,     TemplateMissionBody, TransformBody, TwinLinkBody, VisionAnalyzeBody, VisionProposeBody, VoiceApprovalRequestBody, VoiceApproveBody, VoiceChatBody,     VoiceSynthesizeBody, VoiceTranscribeBody, WriteDecisionBody, CommandBody, RecoverBody, AgendaImportBody, BootstrapBody, ResearchRunBody, ResearchExecuteBody, PresenceTriageBody, PresenceNotifyBody, MeshDelegateBody, MeshPreviewBody, HardwareLinkBody, CampaignCreateBody, HardwareVerifyBody, HardwareRevokeBody, FinanceRecordBody, FinanceStatusBody, EnergyRecordBody, QuestCreateBody, WorkflowDispatchBody
+from .schemas import AdviseRequest, AdviseResponse, AdvancedOpBody, CadDocumentBody, CadOpBody, CadPartBody, CampaignBody, CameraRegisterBody, CaptureCloseBody, CaptureOpenBody, ChatMissionBody, ChatRequest, ChatResponse, ClaimedTask, DecideApprovalBody, DesktopActionBody, DesktopClaimBody, DesktopDecisionBody, DesktopDispatchBody, DesktopResultBody,     DistEnvelopeBody, DroneCreateBody, DroneMissionApproveBody, DroneMissionBody,     FabGenerateBody, FabSliceBody, FamiliarCreateBody, FoodCreateBody, GarminImportBody, GitCommitBody, HealthMeasureBody, Heartbeat, InstagramImportBody,     InterfaceChatBody, IntegrationEnvelopeBody, IntegrationKeyBody, IntegrationTriggerBody, InventoryWriteBody, JobRunBody, LiveContextBody, LiveProposeBody, LiveSessionBody, MealCreateBody, MealItemBody, MemoryConsolidateBody, MemoryCreateBody, MemoryRetrieveBody, MemoryVerifyBody,     MissionApproveBody, MissionCreateBody, MissionDispatchBody, MissionRunBody, MissionStepBody, NodeRegistration, NodeRotateBody,     NotifyBody, OperatorBody, OutboxAckBody, OutboxEnqueueBody,     PhoneCameraBody,     PlanBody, RemoteInputSessionBody, RemoteInputMoveBody, RemoteInputActionBody, RemoteInputPollBody, PlanToProposalBody, PipelinePlanBody, PrintCancelBody, PrintProposeBody, PrinterRegisterBody, PrinterSelectBody, PromptEditBody, ResearchAdvanceBody, ResearchClaimBody, ResearchRecordBody, ResearchSourceBody, RobotActionBody, RobotApproveBody, RobotCreateBody, RobotSafetyBody, RobotTelemetryBody, SessionOpenBody,     StreamStartBody, SuggestStepsBody, WorkspaceForkBody, WorkspaceMissionAttachBody, WorkspaceResearchStartBody, SkillAcceptBody, SkillAdvanceBody, SkillCreateBody, SkillDiscoverBody, SkillEvidenceBody, SpoolCreateBody, SyncApplyBody, TaskAssignBody, TaskCreate, TaskFromProposalBody, TaskResult, TaskRouteBody,     TemplateMissionBody, TransformBody, TwinLinkBody, VisionAnalyzeBody, VisionProposeBody, VoiceApprovalRequestBody, VoiceApproveBody, VoiceChatBody,     VoiceSynthesizeBody, VoiceTranscribeBody, WriteDecisionBody, CommandBody, RecoverBody, AgendaImportBody, BootstrapBody, ResearchRunBody, ResearchExecuteBody, PresenceTriageBody, PresenceNotifyBody, MeshDelegateBody, MeshPreviewBody, HardwareLinkBody, CampaignCreateBody, HardwareVerifyBody, HardwareRevokeBody, FinanceRecordBody, FinanceStatusBody, EnergyRecordBody, QuestCreateBody, WorkflowDispatchBody
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 logger = logging.getLogger("mycelium.coordinator")
@@ -3850,6 +3857,12 @@ def _executor() -> MissionExecutor:
                 "verification": "no verification",
                 "verified": False}
 
+    def _dispatch_queue_dep(mission_id: str, step_id: str) -> dict:
+        """Executor injection for H1 auto-dispatch (sync, like the
+        other deps). Raises ValueError/MissionConflictError, never
+        HTTP — the executor maps those onto step outcomes."""
+        return dispatch_step_task(mission_id, step_id)
+
     return MissionExecutor(ExecutorDeps(
         propose_desktop=_propose_desktop,
         load_desktop=_load_desktop,
@@ -3864,6 +3877,7 @@ def _executor() -> MissionExecutor:
         slice_runner=_slice_runner,
         print_runner=_print_runner,
         research_runner=_research_runner,
+        dispatch_queue=_dispatch_queue_dep,
     ))
 
 
@@ -3975,6 +3989,110 @@ def mission_cancel(mission_id: str) -> dict:
     except ExecutorError as error:
         raise _mission_error(error)
     return _mission_to_json(mission)
+
+
+def dispatch_step_task(mission_id: str, step_id: str) -> dict:
+    """Queue one dispatchable mission step (H1 auto-dispatch).
+
+    Reuses create_task (queue), the conditional mission save
+    (race safety) and the mission event store. Never approves,
+    never executes: the mission must already be approved/running
+    and only DISPATCHABLE_KINDS map onto a queue task. Raises
+    ValueError (404 when unknown, else 422) or
+    MissionConflictError (409) for races and wrong statuses.
+    Idempotent: an existing queued/assigned task for the same
+    (mission, step, url) is returned, never duplicated.
+    """
+    mission = load_mission(mission_id)
+    if mission is None:
+        raise ValueError(f"Mission '{mission_id}' not found")
+    step = next((entry for entry in mission.steps
+                 if entry.step_id == step_id), None)
+    if step is None:
+        raise ValueError(
+            f"Step '{step_id}' not found in mission '{mission_id}'")
+    if mission.status not in ("approved", "running"):
+        raise MissionConflictError(
+            f"Mission '{mission_id}' is {mission.status}; dispatch "
+            "needs an approved or running mission")
+    if step.kind not in DISPATCHABLE_KINDS:
+        raise ValueError(
+            f"Step '{step_id}' (kind '{step.kind}') is never "
+            "auto-dispatched")
+    urls = dispatch_source_urls(step)
+    if not urls:
+        raise ValueError(
+            f"Step '{step_id}' has no source URLs to dispatch")
+    with connection() as db:
+        rows = db.execute(
+            "SELECT id, payload FROM tasks WHERE mission_id=? "
+            "AND status IN ('queued','assigned')",
+            (mission.mission_id,)).fetchall()
+    live: dict[str, int] = {}
+    for row in rows:
+        try:
+            payload = load(row["payload"] or "{}")
+        except ValueError:
+            continue
+        if (isinstance(payload, dict)
+                and payload.get("mission_step_id") == step_id
+                and isinstance(payload.get("url"), str)):
+            live[str(payload["url"])] = int(row["id"])
+    task_ids: list[int] = []
+    created_ids: list[int] = []
+    for target in urls:
+        if target in live:
+            task_ids.append(live[target])
+            continue
+        spec = dispatchable_task(step, url=target)
+        if spec is None:  # pragma: no cover - urls validated above
+            continue
+        made = create_task(TaskCreate(
+            kind=str(spec["kind"]),
+            payload=dict(spec["payload"]),
+            required_capabilities=list(
+                spec["required_capabilities"]),
+            mission_id=mission.mission_id))
+        task_ids.append(int(made["id"]))
+        created_ids.append(int(made["id"]))
+    old_status, old_step = mission.status, mission.current_step
+    mission = set_step(
+        mission, step_id, status="dispatched",
+        started_at=step.started_at or now())
+    save_mission(mission, expected=(old_status, old_step))
+    if created_ids:
+        save_event(new_event(
+            mission.conversation_id, "task_dispatched",
+            f"Stap {step.sequence + 1} gedispatched: "
+            f"{len(created_ids)} queue-task(s) "
+            f"({', '.join(str(task_id) for task_id in created_ids)}).",
+            mission_id=mission.mission_id, step_id=step_id,
+            metadata={"task_ids": created_ids}))
+    wanted = (dispatchable_task(step) or {}).get(
+        "required_capabilities", []) or ["research.fetch"]
+    return {"mission_id": mission.mission_id, "step_id": step_id,
+            "task_ids": task_ids,
+            "eligible_nodes": eligible_nodes_for(str(wanted[0]))}
+
+
+@app.post("/api/v1/missions/{mission_id}/dispatch")
+def mission_dispatch(mission_id: str,
+                     body: MissionDispatchBody) -> dict:
+    """Queue one dispatchable step of an approved/running mission.
+
+    Operator- or tick-triggered staging only: creates queued
+    tasks, marks the step dispatched, never approves, never
+    executes. H3 closes the step after task completion."""
+    try:
+        return dispatch_step_task(mission_id.strip(),
+                                  body.step_id.strip())
+    except MissionConflictError as error:
+        raise HTTPException(status_code=409, detail=str(error))
+    except ValueError as error:
+        text = str(error)
+        if "not found" in text.lower():
+            raise HTTPException(status_code=404, detail=text)
+        raise HTTPException(status_code=422, detail=text)
 
 
 @app.post("/api/v1/missions/{mission_id}/tick")

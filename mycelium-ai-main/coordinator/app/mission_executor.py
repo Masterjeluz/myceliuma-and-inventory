@@ -74,6 +74,7 @@ class ExecutorDeps:
     slice_runner: Callable[[Any, Any], Awaitable[dict]] | None = None
     print_runner: Callable[[Any, Any], Awaitable[dict]] | None = None
     research_runner: Callable[[Any, Any], Awaitable[dict]] | None = None
+    dispatch_queue: Callable[[str, str], dict] | None = None
 
 
 class ExecutorError(RuntimeError):
@@ -295,6 +296,8 @@ class MissionExecutor:
                 mission_id=mission.mission_id, step_id=step.step_id))
             step = next(entry for entry in mission.steps
                         if entry.step_id == step.step_id)
+        if step.parameters.get("dispatch") is True:
+            return await self._run_dispatch(mission, step)
         if step.kind == "readout":
             return await self._run_readout(mission, step)
         if step.kind == "desktop":
@@ -324,6 +327,34 @@ class MissionExecutor:
             mission, step, f"Onbekend stap-type '{step.kind}'")
 
     # -- step kinds ----------------------------------------------------
+
+    async def _run_dispatch(self, mission: Mission,
+                            step: MissionStep) -> Mission:
+        """Queue a dispatchable step through the injected
+        dispatch_queue capability (H1 auto-dispatch). The step
+        becomes dispatched and tick waits; claim/execute/complete
+        stay on the existing queue lifecycle and H3 closes the
+        step later. Without wiring, or for non-dispatchable
+        steps, the step BLOCKs — never the inline runner."""
+        if self.deps.dispatch_queue is None:
+            return self._block_step(
+                mission, step,
+                "Dispatch geblokkeerd: geen queue-capability "
+                "gekoppeld.")
+        try:
+            result = self.deps.dispatch_queue(
+                mission.mission_id, step.step_id)
+        except MissionConflictError as error:
+            return self._block_step(
+                mission, step, f"Dispatch-race: {error}")
+        except ValueError as error:
+            return self._block_step(
+                mission, step, f"Dispatch geweigerd: {error}")
+        if not isinstance(result, dict):
+            return self._block_step(
+                mission, step,
+                "Dispatch gaf onleesbaar resultaat; scope gebroken")
+        return self._load_or_raise(mission.mission_id)
 
     async def _run_readout(self, mission: Mission,
                            step: MissionStep) -> Mission:

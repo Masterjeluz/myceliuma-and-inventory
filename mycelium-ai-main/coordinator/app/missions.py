@@ -105,11 +105,29 @@ READOUT_SOURCES = frozenset({
     "git-status", "git-branch", "git-diff", "project", "inventory",
 })
 
+#: Step kinds that may ever auto-dispatch onto the node task queue
+#: (H1). Closed on purpose: only kinds whose queue counterpart has
+#: a live, read-only auto-executor in the claim loop
+#: (research.fetch_url). Desktop/input, writes, camera, fabrication,
+#: slice, physical print, analysis and readout never dispatch —
+#: they keep their existing inline runners and gates.
+DISPATCHABLE_KINDS = frozenset({"research"})
+
+#: Default capability advertised work for dispatched research tasks.
+#: Mirrors the proven research worker loop (PASS 3); steps may pin
+#: their own validated required_capabilities instead.
+DISPATCH_FETCH_CAPABILITY = "research.fetch"
+
+#: Payload budget for one dispatched fetch (matches the proven
+#: research worker loop; the executor caps reads server-side too).
+DISPATCH_FETCH_MAX_CHARS = 4096
+
 VALID_EVENT_TYPES = frozenset({
     "mission_created", "mission_approved", "mission_paused",
     "mission_resumed", "mission_cancelled", "mission_completed",
     "mission_failed", "mission_blocked",
     "step_started", "step_completed", "step_failed", "step_blocked",
+    "task_dispatched",
     "action_proposed", "action_result", "observation", "note",
     "write_proposed", "write_approved", "write_executed",
     "write_result", "verification_started", "verification_passed",
@@ -327,14 +345,19 @@ def _check_step_definition(index: int, data: dict) -> MissionStep:
                     f"Step {index}: research steps carry exactly one "
                     "of question / research_run_id")
             unknown = set(parameters) - {"question",
-                                         "research_run_id",
-                                         "max_sources", "project_ref",
-                                         "source_urls"}
+                                          "research_run_id",
+                                          "max_sources", "project_ref",
+                                          "source_urls", "dispatch"}
             if unknown:
                 raise ValueError(
                     f"Step {index}: research steps carry only "
-                    f"question/research_run_id/max_sources/project_ref/source_urls; "
+                    f"question/research_run_id/max_sources/project_ref/source_urls/dispatch; "
                     f"unexpected: {sorted(unknown)}")
+            if "dispatch" in parameters and not isinstance(
+                    parameters["dispatch"], bool):
+                raise ValueError(
+                    f"Step {index}: research 'dispatch' must be "
+                    "true or false")
             for key in ("max_sources", "project_ref"):
                 value = parameters.get(key, "")
                 if value and (not isinstance(value, str)
@@ -361,6 +384,53 @@ def _check_step_definition(index: int, data: dict) -> MissionStep:
         required_capabilities=[cap.strip() for cap in capabilities],
         requires_approval=bool(requires_approval),
     )
+
+
+def dispatchable_task(step: MissionStep,
+                      url: str | None = None) -> dict | None:
+    """Pure: one queue-task spec for a dispatchable step, else None.
+
+    No I/O, reads only the step. Only research steps with explicit
+    source URLs map onto the live research.fetch_url claim-loop
+    executor; every other kind returns None so callers keep the
+    existing inline runner. The optional url selects which source
+    URL this spec covers (default: the first); payload always
+    carries mission_step_id for idempotent re-dispatch.
+    """
+    if step.kind not in DISPATCHABLE_KINDS:
+        return None
+    urls = [str(item or "").strip()
+            for item in (step.parameters.get("source_urls", "") or [])
+            if str(item or "").strip()][:6]
+    if not urls:
+        return None
+    target = str(url if url is not None else urls[0]).strip()
+    if not target or target not in urls:
+        return None
+    capabilities = [str(cap or "").strip()
+                    for cap in (step.required_capabilities or [])
+                    if str(cap or "").strip()][:10]
+    question = str(step.parameters.get("question", "") or "")[:500]
+    return {
+        "kind": "research.fetch_url",
+        "required_capabilities": capabilities or [
+            DISPATCH_FETCH_CAPABILITY],
+        "payload": {
+            "url": target[:2000],
+            "max_chars": DISPATCH_FETCH_MAX_CHARS,
+            "mission_step_id": step.step_id,
+            "question": question,
+        },
+    }
+
+
+def dispatch_source_urls(step: MissionStep) -> list[str]:
+    """Pure: validated source URLs of a research step (max 6)."""
+    if step.kind not in DISPATCHABLE_KINDS:
+        return []
+    return [str(item or "").strip()
+            for item in (step.parameters.get("source_urls", "") or [])
+            if str(item or "").strip()][:6]
 
 
 def new_mission(mission_id: str, conversation_id: str, goal: str,
