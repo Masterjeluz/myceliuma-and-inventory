@@ -4,8 +4,8 @@ Approved/running missions with a dispatchable research step
 (parameters.dispatch is True + explicit source_urls) stage
 research.fetch_url queue tasks; the step becomes dispatched and
 tick waits. Claim/complete/lease/ownership gates are untouched.
-H3 (result -> step close-out) is NOT implemented: a completed
-task leaves the step dispatched on purpose.
+H3 (result -> step close-out) closes the step once every linked
+task completed successfully (see tests/test_mission_closeout.py).
 
 Real coordinator routes + tmp DBs throughout; no network (fetch
 execution is never invoked — receipts are simulated by the
@@ -210,9 +210,14 @@ def test_dispatch_full_queue_chain(tmp_path, monkeypatch):
         rows = {row["id"]: row
                 for row in client.get("/api/v1/tasks").json()}
         assert rows[task_id]["status"] == "completed"
-        # H3 is out of scope: the step stays dispatched on purpose.
+        # H3 close-out: a completed H1 task closes its step.
         state = mission_state(client, mission_id)
-        assert state["steps"][0]["status"] == "dispatched"
+        assert state["steps"][0]["status"] == "completed"
+        events = client.get(
+            f"/api/v1/missions/{mission_id}/events").json()
+        assert any(row.get("event_type") == "step_completed"
+                   and row.get("step_id") == step_id
+                   for row in events)
         assert state["status"] in ("approved", "running")
 
 

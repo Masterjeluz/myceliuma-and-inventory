@@ -1304,6 +1304,11 @@ def _complete_task(task_id: int, result: TaskResult, completing_node_id: str | N
         except Exception as error:
             logger.warning("research_fetch_ingest_skipped task_id=%s "
                            "cause=%s", task_id, error)
+        try:
+            _closeout_dispatched_step(task_id)
+        except Exception as error:
+            logger.warning("mission_closeout_skipped task_id=%s "
+                           "cause=%s", task_id, error)
 
 
 def _ingest_research_fetch(task_id: int, result: TaskResult,
@@ -1383,6 +1388,100 @@ def _ingest_research_fetch(task_id: int, result: TaskResult,
                f"Node {node_id or '?'} fetched {canonical[:120]} "
                f"for run {run_id}",
                task_id=str(task_id), node_id=node_id or "")
+
+
+def _closeout_dispatched_step(task_id: int) -> None:
+    """H3 close-out: a successfully completed H1-dispatched task may
+    close its mission step. Only tasks carrying
+    payload["mission_step_id"] plus a valid task.mission_id qualify;
+    everything else keeps exact current behavior (return silently).
+    The mission is reloaded before any change; only a step still in
+    status "dispatched" may move to "completed", via the existing
+    conditional save_mission(expected=...) so concurrent completions
+    never silently overwrite each other (MissionConflictError is
+    caught and logged, never raised). The existing "step_completed"
+    mission event is written exactly once. When several tasks link
+    to one step, the step closes only after every linked task reads
+    "completed"; a single failed sibling keeps the step dispatched.
+    Never advances the mission, never approves, never executes —
+    the executor/tick stays responsible for further progress. Never
+    breaks task completion (all unexpected paths log and return)."""
+    with connection() as db:
+        row = db.execute(
+            "SELECT mission_id, payload, status FROM tasks WHERE id=?",
+            (task_id,)).fetchone()
+    if row is None:
+        return
+    if row["status"] != "completed":
+        return
+    mission_id = str(row["mission_id"] or "").strip()
+    if not mission_id:
+        return
+    try:
+        payload = load(row["payload"] or "{}")
+    except ValueError:
+        logger.warning("mission_closeout_skipped task_id=%s "
+                       "cause=unreadable payload", task_id)
+        return
+    if not isinstance(payload, dict):
+        return
+    step_id = str(payload.get("mission_step_id", "") or "").strip()
+    if not step_id:
+        return
+    mission = load_mission(mission_id)
+    if mission is None:
+        logger.warning("mission_closeout_skipped task_id=%s "
+                       "cause=unknown mission '%s'", task_id, mission_id)
+        return
+    step = next((entry for entry in mission.steps
+                 if entry.step_id == step_id), None)
+    if step is None:
+        logger.warning("mission_closeout_skipped task_id=%s "
+                       "cause=unknown step '%s' for mission '%s'",
+                       task_id, step_id, mission_id)
+        return
+    if step.status != "dispatched":
+        return
+    with connection() as db:
+        siblings = db.execute(
+            "SELECT id, payload, status FROM tasks WHERE mission_id=?",
+            (mission.mission_id,)).fetchall()
+    linked: list = []
+    for sibling in siblings:
+        try:
+            sibling_payload = load(sibling["payload"] or "{}")
+        except ValueError:
+            continue
+        if (isinstance(sibling_payload, dict)
+                and str(sibling_payload.get("mission_step_id", "")
+                        or "").strip() == step_id):
+            linked.append(sibling)
+    if not linked:
+        return
+    if any(str(entry["status"]) != "completed" for entry in linked):
+        return
+    old_status, old_step = mission.status, mission.current_step
+    result_text = (step.result_text
+                   or f"Dispatched task {task_id} completed "
+                   "(research.fetch_url).")[:4000]
+    updated = set_step(mission, step_id, status="completed",
+                       result_text=result_text,
+                       completed_at=now())
+    try:
+        save_mission(updated, expected=(old_status, old_step))
+    except MissionConflictError as error:
+        logger.warning("mission_closeout_conflict task_id=%s "
+                       "mission_id=%s step_id=%s cause=%s",
+                       task_id, mission_id, step_id, error)
+        return
+    save_event(new_event(
+        mission.conversation_id, "step_completed",
+        f"Stap {step.sequence + 1} voltooid via queue-task "
+        f"{task_id}: {step.description}",
+        mission_id=mission.mission_id, step_id=step_id,
+        metadata={"task_id": task_id}))
+    logger.info("mission_step_closed task_id=%s mission_id=%s "
+                "step_id=%s", task_id, mission_id, step_id)
 
 
 def expire_leases(now_str: str | None = None) -> dict[str, int]:
