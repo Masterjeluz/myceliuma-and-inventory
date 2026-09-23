@@ -1266,3 +1266,17 @@ class ResearchExecuteBody(BaseModel):
     source_urls: list[str] = Field(default_factory=list,
                                    max_length=6)
     test_pages: dict[str, list[str]] = Field(default_factory=dict)
+
+
+class ResearchPlanBody(BaseModel):
+    """Propose an inert mission plan from a completed research run/dossier.
+
+    The created mission begins in 'pending_approval' and requires an explicit
+    human YES to start. Never approves, dispatches, or executes on its own.
+    """
+
+    conversation_id: str | None = Field(default=None, max_length=80)
+    goal: str | None = Field(default=None, max_length=500)
+    dispatch: bool = True
+    max_steps: int = Field(default=10, ge=1, le=20)
+    source_urls: list[str] = Field(default_factory=list, max_length=6)
