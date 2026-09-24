@@ -41,6 +41,8 @@ Rules (tested, all fail-closed):
   are separate verifications that must both pass.
 """
 
+import httpx
+import paho.mqtt.client as mqtt
 import time
 from typing import Any
 
