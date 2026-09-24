@@ -1,0 +1,1106 @@
+# MYCELIUM AI — AUTOPILOT ROADMAP V1
+
+## 0. Doel
+
+Maak van de huidige Mycelium AI + INVENTory codebase een daadwerkelijk bruikbaar systeem waarin:
+
+* de bestaande backend-functionaliteit bereikbaar is via UI;
+* Research → Mission → Node execution daadwerkelijk end-to-end werkt;
+* Mycelium als persoonlijke AI/coördinator bruikbaar wordt;
+* INVENTory als wereldmodel bruikbaar wordt;
+* projecten, research, missions, objects en relaties samenkomen;
+* de game/living-world laag uiteindelijk een Terraria/Ori-achtige interactieve interface krijgt;
+* agents zelfstandig verder kunnen bouwen zonder voortdurende menselijke begeleiding.
+
+De agents moeten niet proberen alles tegelijk te bouwen.
+
+**Werk altijd vanuit de huidige code als source of truth.**
+
+---
+
+# 1. ABSOLUTE REGELS
+
+## 1.1 Geen destructieve refactors
+
+Agents mogen:
+
+* nieuwe bestanden toevoegen;
+* bestaande functies uitbreiden;
+* kleine gerichte wijzigingen maken;
+* tests toevoegen;
+* UI koppelingen toevoegen;
+* adapters bouwen.
+
+Agents mogen NIET zonder expliciete reden:
+
+* bestaande subsystemen volledig herschrijven;
+* databases verwijderen;
+* bestaande API's breken;
+* bestaande veiligheidslagen omzeilen;
+* authentication/approval gates verwijderen;
+* willekeurige shell/RCE-functionaliteit introduceren;
+* productiecode vervangen omdat een agent het "mooier" vindt.
+
+---
+
+## 1.2 Bestaande veiligheidsarchitectuur blijft leidend
+
+Bestaande gates blijven intact:
+
+* human approval;
+* `YES` approval;
+* mission status gates;
+* lease;
+* claim;
+* attempt limits;
+* ownership;
+* capability checks;
+* provenance;
+* dispatchable kinds;
+* fail-closed gedrag.
+
+Agents mogen deze mechanismen verbeteren, maar nooit omzeilen.
+
+---
+
+## 1.3 Elke agent werkt in kleine verticale slices
+
+Elke opdracht moet:
+
+1. bestaande code inspecteren;
+2. één duidelijk probleem kiezen;
+3. implementeren;
+4. tests schrijven;
+5. relevante bestaande tests draaien;
+6. `git diff --check`;
+7. commit maken;
+8. korte changelog/reportsamenvatting schrijven.
+
+Geen enorme ongeteste wijzigingen.
+
+---
+
+# 2. HUIDIGE BASIS
+
+Belangrijke recente commits:
+
+```text
+d8bfb64 feat(research): bridge dossiers to mission plans
+3bb36ab feat(missions): close dispatched steps on task completion
+062da4d feat(missions): auto-dispatch research steps
+c427f05 feat(core): integrate workspaces forge remote input and node capabilities
+0f9919a feat(nodes): external worker, scout, linux installer and tick loop
+68ea281 refactor(agent): format agent UI without behavior changes
+eec38dd feat(inventory): expand search type selector
+24633be BIG #45 - finish living ecosystem connections
+b049831 BIG #44 - build the living solarpunk world
+5a023f7 BIG #43 - build the living game layer
+ab51bca BIG #42 - ecosystem hardening + first V2 workflows
+4f5da99 BIG #41 - build Mycelium V2 foundation
+cfa1673 BIG #40 - build presence ecosystem
+75e5caa BIG #39 - build hardware reality layer
+e1c31cc BIG #38 - build living automation
+```
+
+Current remote:
+
+```text
+https://github.com/Masterjeluz/myceliuma-and-inventory.git
+```
+
+Current recovery branch:
+
+```text
+backup-before-v1
+```
+
+Current recovery stash:
+
+```text
+RECOVERY_CHECKPOINT_BEFORE_AGENT_LOSS
+```
+
+Latest verified Research/Mission test set:
+
+```text
+39 passed
+```
+
+Recent Research → Mission implementation:
+
+```text
+research dossier
+    ↓
+research_plan.py
+    ↓
+pending_approval mission
+    ↓
+human YES
+    ↓
+approved/running
+    ↓
+research.fetch_url
+    ↓
+worker claim
+    ↓
+worker completion
+    ↓
+mission step close-out
+    ↓
+next mission step
+```
+
+A status guard was also added to prevent dispatching terminal steps.
+
+---
+
+# 3. AUTOPILOT ARCHITECTURE
+
+Gebruik meerdere gespecialiseerde agents.
+
+Niet:
+
+```text
+AGENT → "bouw Mycelium"
+```
+
+Wel:
+
+```text
+                    ┌──────────────┐
+                    │   ORCHESTRATOR│
+                    └──────┬───────┘
+                           │
+        ┌──────────────────┼──────────────────┐
+        │                  │                  │
+   BACKEND AGENT       UI AGENT          TEST AGENT
+        │                  │                  │
+        └──────────────┬───┴──────────────────┘
+                       │
+                 INTEGRATION AGENT
+                       │
+                 RELEASE AGENT
+```
+
+Agents werken onafhankelijk aan afgebakende gebieden.
+
+---
+
+# 4. WORKSTREAM A — CODEBASE INVENTORY
+
+## Doel
+
+Maak eerst een volledige machineleesbare kaart van de huidige code.
+
+Output:
+
+```text
+AUTOPILOT_CODEBASE_MAP.md
+AUTOPILOT_BACKEND_GAPS.md
+AUTOPILOT_UI_GAPS.md
+AUTOPILOT_API_MAP.md
+AUTOPILOT_TEST_MAP.md
+AUTOPILOT_WORK_QUEUE.md
+```
+
+Inventariseer:
+
+* bestaande API endpoints;
+* UI routes;
+* backend modules;
+* database-tabellen;
+* missions;
+* research;
+* nodes;
+* workers;
+* inventory;
+* workspaces;
+* forge;
+* chat;
+* memory;
+* projects;
+* game layer;
+* hardware;
+* presence;
+* automation;
+* sensors;
+* events;
+* provenance;
+* tests.
+
+Voor ieder onderdeel:
+
+```text
+BESTAAT
+DEELS BESTAAND
+BACKEND ONLY
+UI ONLY
+NIET GEKOPPELD
+BROKEN
+ONGETEST
+```
+
+Geen code wijzigen tijdens deze fase.
+
+---
+
+# 5. WORKSTREAM B — SYSTEM HEALTH
+
+Maak eerst de bestaande backend betrouwbaar.
+
+Prioriteit:
+
+1. startup;
+2. database;
+3. API;
+4. mission engine;
+5. research;
+6. node execution;
+7. worker;
+8. event system;
+9. UI API connectivity.
+
+Doel:
+
+```text
+fresh checkout
+→ install
+→ start
+→ health check
+→ tests
+→ basic UI
+```
+
+moet reproduceerbaar zijn.
+
+Maak één:
+
+```text
+scripts/smoke_test.*
+```
+
+die automatisch controleert:
+
+* server start;
+* database bereikbaar;
+* API reageert;
+* health endpoint;
+* belangrijkste routes;
+* minimale mission;
+* minimale research;
+* minimale task;
+* minimale worker-flow.
+
+---
+
+# 6. WORKSTREAM C — RESEARCH → MISSION
+
+De bestaande bridge wordt verder afgemaakt.
+
+### Prioriteit 1
+
+Fix/verify:
+
+* terminal-step dispatch guard;
+* complete E2E test;
+* research dossier → mission;
+* approval;
+* dispatch;
+* claim;
+* completion;
+* close-out;
+* next step.
+
+### Prioriteit 2
+
+Onderzoeken:
+
+* concurrent dispatch;
+* concurrent plan;
+* unique/idempotency;
+* `run_id` propagation;
+* provenance;
+* failed task recovery.
+
+### Prioriteit 3
+
+Operator tooling:
+
+```text
+Research
+→ Plan Mission
+→ Review
+→ Approve
+→ Run
+→ Observe
+```
+
+Geen automatische approval.
+
+---
+
+# 7. WORKSTREAM D — MISSION UI
+
+Bouw eerst een simpele functionele interface.
+
+Geen mooie game UI.
+
+Benodigde schermen:
+
+### Mission Dashboard
+
+Toon:
+
+* missions;
+* status;
+* current step;
+* progress;
+* tasks;
+* failures;
+* provenance;
+* timestamps.
+
+### Mission Detail
+
+Toon:
+
+```text
+MISSION
+ ├── Step 1
+ │    ├── task
+ │    ├── node
+ │    └── result
+ │
+ ├── Step 2
+ │
+ └── Step 3
+```
+
+Acties:
+
+* approve;
+* dispatch;
+* run;
+* retry indien veilig;
+* inspect;
+* stop.
+
+---
+
+# 8. WORKSTREAM E — RESEARCH UI
+
+Functionele flow:
+
+```text
+Nieuwe onderzoeksvraag
+        ↓
+Research Run
+        ↓
+Sources
+        ↓
+Claims
+        ↓
+Findings
+        ↓
+Open Questions
+        ↓
+Propose Mission
+```
+
+Gebruiker moet kunnen zien:
+
+* wat onderzocht is;
+* welke bronnen gebruikt zijn;
+* welke claims bestaan;
+* wat onzeker is;
+* welke missie voorgesteld wordt.
+
+---
+
+# 9. WORKSTREAM F — INVENTORY UI
+
+INVENTory moet uiteindelijk beantwoorden:
+
+> "Wat heb ik?"
+
+en:
+
+> "Wat kan ik ermee?"
+
+Basis:
+
+```text
+Objects
+Materials
+Components
+Tools
+Machines
+Projects
+Ideas
+Relations
+Events
+Sources
+```
+
+UI:
+
+```text
+WORLD
+├── Inventory
+├── Projects
+├── Ideas
+├── Tools
+├── Materials
+└── Machines
+```
+
+Object detail:
+
+```text
+OBJECT
+├── photo
+├── name
+├── type
+├── components
+├── materials
+├── location
+├── provenance
+├── projects
+└── possible uses
+```
+
+---
+
+# 10. WORKSTREAM G — PROJECT GRAPH
+
+Maak relaties first-class.
+
+Voorbeeld:
+
+```text
+Object
+   ↓ used_in
+Project
+   ↓ requires
+Component
+   ↓ made_from
+Material
+   ↓ discovered_by
+Research
+```
+
+Daarnaast:
+
+```text
+Idea
+ ↓ evolved_into
+Project
+```
+
+UI moet deze relaties zichtbaar kunnen maken.
+
+---
+
+# 11. WORKSTREAM H — MYCELIUM CHAT
+
+Chat wordt de centrale interface.
+
+Een gesprek moet context kunnen krijgen uit:
+
+```text
+Chat
+├── Memory
+├── Research
+├── Inventory
+├── Projects
+├── Missions
+├── World
+└── Nodes
+```
+
+Chat moet uiteindelijk kunnen zeggen:
+
+```text
+"Gebruik project X"
+"Bekijk mijn inventory"
+"Wat weet ik hierover?"
+"Start research"
+"Maak een mission proposal"
+"Laat me zien welke onderdelen ontbreken"
+```
+
+Maar acties die externe/fysieke gevolgen hebben blijven gated.
+
+---
+
+# 12. WORKSTREAM I — CHAT FORKING / ZOOM
+
+Bouw het eerder gewenste model:
+
+```text
+Conversation
+     │
+     ├── branch A
+     │
+     ├── branch B
+     │
+     └── branch C
+```
+
+Functionaliteit:
+
+* gesprek inzoomen;
+* oudere context bekijken;
+* fork maken;
+* branch hernoemen;
+* branch terugkoppelen;
+* relevante branch aan project koppelen;
+* research vanuit branch starten;
+* mission vanuit branch voorstellen.
+
+Belangrijk:
+
+Een fork mag context delen zonder automatisch dezelfde state te muteren.
+
+---
+
+# 13. WORKSTREAM J — FORGE / CODE AGENT
+
+Forge wordt de gecontroleerde ontwikkelomgeving.
+
+Agent moet:
+
+```text
+Issue
+ ↓
+Plan
+ ↓
+Code
+ ↓
+Test
+ ↓
+Diff
+ ↓
+Commit
+```
+
+kunnen uitvoeren.
+
+Maar:
+
+* geen onbeperkte RCE;
+* geen secrets;
+* geen willekeurige filesystem access;
+* allowlisted acties;
+* duidelijke provenance.
+
+---
+
+# 14. WORKSTREAM K — NODE NETWORK
+
+Maak bestaande node-systemen daadwerkelijk bruikbaar.
+
+Node lifecycle:
+
+```text
+REGISTER
+ ↓
+CAPABILITY DISCOVERY
+ ↓
+HEARTBEAT
+ ↓
+TASK AVAILABLE
+ ↓
+CLAIM
+ ↓
+EXECUTE
+ ↓
+RESULT
+ ↓
+COMPLETE
+```
+
+Dashboard:
+
+```text
+NODE
+status
+CPU
+RAM
+capabilities
+last heartbeat
+current task
+energy source
+```
+
+---
+
+# 15. WORKSTREAM L — LIVING WORLD
+
+Pas wanneer backend + basis UI stabiel zijn.
+
+Maak een wereldmodel:
+
+```text
+WORLD
+├── locations
+├── objects
+├── projects
+├── machines
+├── plants
+├── resources
+├── people
+├── nodes
+└── events
+```
+
+Events:
+
+```text
+created
+moved
+built
+discovered
+researched
+modified
+consumed
+produced
+connected
+```
+
+---
+
+# 16. WORKSTREAM M — GAME UI
+
+Nu pas de Terraria/Ori-achtige laag.
+
+De game UI is **geen tweede backend**.
+
+Het is een visualisatie van de bestaande world model.
+
+Concept:
+
+```text
+                 WORLD
+                   │
+          ┌────────┴────────┐
+          │                 │
+       GAME VIEW          PANELS
+          │                 │
+       player             inventory
+       world              missions
+       objects            research
+       machines           projects
+       nodes              chat
+```
+
+Gameplayachtige elementen:
+
+* side scrolling;
+* interactieve wereld;
+* objecten;
+* machines;
+* workshop;
+* research nodes;
+* project stations;
+* inventory;
+* skill/craft tree;
+* world map.
+
+Maar alle state komt uit Mycelium/INVENTory.
+
+---
+
+# 17. WORKSTREAM N — ORI/TERRARIA PRESENTATION
+
+Pas nadat de interactieve world layer werkt:
+
+### Visual hierarchy
+
+```text
+WORLD
+  ↓
+LOCATION
+  ↓
+OBJECT
+  ↓
+PROJECT
+  ↓
+ACTION
+```
+
+Gebruik game UI voor:
+
+* ontdekken;
+* navigeren;
+* context;
+* visualisatie;
+* project progression;
+* crafting;
+* world state.
+
+Gebruik gewone panels voor:
+
+* debugging;
+* research;
+* logs;
+* configuration;
+* mission approval.
+
+---
+
+# 18. WORKSTREAM O — AUTOMATION
+
+Pas nadat observability goed werkt.
+
+Automatiseringen:
+
+```text
+Research completed
+      ↓
+new finding
+      ↓
+possible project
+      ↓
+mission proposal
+```
+
+of:
+
+```text
+Inventory object detected
+      ↓
+classification
+      ↓
+possible uses
+      ↓
+project suggestions
+```
+
+Maar:
+
+```text
+AI suggestion ≠ human approval
+```
+
+voor consequential actions.
+
+---
+
+# 19. WORKSTREAM P — OBSERVABILITY
+
+Maak één centrale activity stream.
+
+Bijvoorbeeld:
+
+```text
+MYCELIUM ACTIVITY
+
+14:03 Research started
+14:04 Source fetched
+14:05 Claim created
+14:06 Mission proposed
+14:07 Mission approved
+14:08 Node assigned
+14:10 Task completed
+14:10 Project updated
+```
+
+Iedere belangrijke actie krijgt:
+
+* timestamp;
+* actor;
+* source;
+* object;
+* action;
+* result;
+* provenance.
+
+---
+
+# 20. WORKSTREAM Q — RECOVERY
+
+Iedere autonome agent moet veilig kunnen stoppen.
+
+Bij fout:
+
+```text
+STOP
+↓
+TEST
+↓
+REPORT
+↓
+COMMIT GOOD STATE
+```
+
+Nooit:
+
+```text
+failure
+→ keep hacking
+→ overwrite everything
+```
+
+Agents mogen een workstream blokkeren en doorgaan met een andere.
+
+---
+
+# 21. AGENT PRIORITEIT
+
+Gebruik deze volgorde:
+
+```text
+P0  Codebase map
+P0  Startup/smoke tests
+P0  Backend health
+P0  Mission/research E2E
+P1  Mission UI
+P1  Research UI
+P1  Inventory UI
+P1  Project graph
+P1  Chat integration
+P2  Node dashboard
+P2  Forge
+P2  Chat forks
+P2  Automation
+P3  World model visualization
+P3  Game UI
+P3  Terraria/Ori presentation
+P4  polish
+```
+
+**Een lagere prioriteit mag niet een blocker van een hogere prioriteit omzeilen.**
+
+---
+
+# 22. AUTOPILOT WORK QUEUE
+
+Agents trekken werk uit:
+
+```text
+AUTOPILOT_WORK_QUEUE.md
+```
+
+Elke taak bevat:
+
+```markdown
+## TASK-ID
+
+### Goal
+...
+
+### Scope
+...
+
+### Allowed files
+...
+
+### Dependencies
+...
+
+### Acceptance criteria
+...
+
+### Tests
+...
+
+### Risk
+LOW / MEDIUM / HIGH
+
+### Status
+TODO / ACTIVE / BLOCKED / DONE
+```
+
+Agents mogen zelfstandig TODO → ACTIVE → DONE uitvoeren.
+
+Bij BLOCKED:
+
+```text
+BLOCKED
+```
+
+en naar een andere onafhankelijke taak.
+
+---
+
+# 23. DEFINITION OF DONE
+
+Een taak is pas DONE wanneer:
+
+* code werkt;
+* relevante tests bestaan;
+* relevante tests passeren;
+* bestaande tests niet breken;
+* `git diff --check` pass;
+* geen security gate verwijderd;
+* geen bestaande API onbedoeld gebroken;
+* commit gemaakt;
+* changelog bijgewerkt.
+
+---
+
+# 24. NACHTMODUS
+
+Autonomous mode:
+
+```text
+while work_available:
+
+    select_highest_priority_safe_task()
+
+    inspect_current_code()
+
+    implement_small_slice()
+
+    run_targeted_tests()
+
+    run_regression_tests()
+
+    if pass:
+        git diff --check
+        commit
+        update_work_queue()
+
+    if fail:
+        revert_unwanted_changes
+        document_failure
+        choose_next_independent_task()
+```
+
+Agents moeten **niet wachten op menselijke bevestiging voor normale codewijzigingen**.
+
+Wel blokkeren bij:
+
+* destructive migration;
+* data deletion;
+* security downgrade;
+* approval bypass;
+* public deployment;
+* secrets;
+* irreversible external actions.
+
+---
+
+# 25. NIGHTLY RELEASE CHECKPOINT
+
+Elke autonome cyclus eindigt met:
+
+```text
+AUTOPILOT_CHECKPOINT.md
+```
+
+Met:
+
+```text
+START COMMIT:
+END COMMIT:
+
+TASKS COMPLETED:
+- ...
+
+TESTS:
+- ...
+
+NEW FEATURES:
+- ...
+
+KNOWN FAILURES:
+- ...
+
+BLOCKED TASKS:
+- ...
+
+NEXT PRIORITIES:
+- ...
+
+REGRESSION STATUS:
+PASS / FAIL
+```
+
+---
+
+# 26. EINDDOEL
+
+De gewenste eindtoestand:
+
+```text
+                    MYCELIUM
+                       │
+        ┌──────────────┼──────────────┐
+        │              │              │
+      CHAT          RESEARCH       INVENTORY
+        │              │              │
+        └──────────────┼──────────────┘
+                       │
+                    PROJECTS
+                       │
+                    MISSIONS
+                       │
+                  COORDINATOR
+                       │
+             ┌─────────┼─────────┐
+             │         │         │
+           NODE      FORGE     SENSORS
+             │         │         │
+             └─────────┼─────────┘
+                       │
+                  WORLD MODEL
+                       │
+                  GAME / WORLD UI
+                       │
+               TERRARIA / ORI STYLE
+```
+
+De gamewereld is uiteindelijk slechts de **zichtbare laag van het echte Mycelium-systeem**.
+
+Niet andersom.
+
+---
+
+# 27. SUCCESCRITERIUM
+
+Het project is pas echt "bruikbaar" wanneer een gebruiker zonder terminal:
+
+1. Mycelium opent;
+2. een vraag stelt;
+3. research uitvoert;
+4. bronnen/resultaten ziet;
+5. een mission voorstel krijgt;
+6. dit goedkeurt;
+7. Mycelium de mission uitvoert;
+8. nodes werk laten uitvoeren;
+9. resultaten terugziet;
+10. een project aanmaakt;
+11. inventory/objecten koppelt;
+12. relaties kan bekijken;
+13. vanuit chat verder kan werken;
+14. de voortgang in de world/game UI kan zien.
+
+De terminal blijft voor development.
+
+De UI wordt voor gebruik.
+
+---
+
+# 28. BELANGRIJKSTE STRATEGIE
+
+Niet proberen direct de droomversie te bouwen.
+
+Bouw:
+
+```text
+BACKEND TRUTH
+      ↓
+API
+      ↓
+FUNCTIONAL UI
+      ↓
+INTEGRATED WORLD
+      ↓
+GAME UI
+      ↓
+POLISH
+```
+
+Elke laag moet daadwerkelijk werken voordat de volgende laag erop wordt gebouwd.

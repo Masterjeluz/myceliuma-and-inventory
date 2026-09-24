@@ -37,3 +37,4 @@ git-backups/
 inventory/.git/
 inventory/INVENTory/.git/
 mycelium-ai-main/.git/
+.aider*
