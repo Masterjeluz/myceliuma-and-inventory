@@ -263,8 +263,8 @@ class WindowsWebcamAdapter(CameraAdapter, UnavailableAdapterMixin):
         return "no reviewed Windows capture runtime; capture needs MediaFoundation/DirectShow"
 
     def snapshot(self, device: CameraDevice) -> CameraObservation:
-        # Placeholder for actual Windows capture implementation
-        # This currently raises CameraUnavailable as the runtime is not implemented.
+        # This method should ideally implement actual Windows capture logic.
+        # For now, it explicitly raises CameraUnavailable as the runtime is not implemented.
         # To enable real capture, a MediaFoundation/DirectShow implementation is required.
         raise CameraUnavailable(self.unavailable_reason())
 
