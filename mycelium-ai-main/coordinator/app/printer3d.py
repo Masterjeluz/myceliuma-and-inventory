@@ -293,6 +293,49 @@ class SimulatedPrinterAdapter(PrinterAdapter):
                                                + ")"})
 
 
+class BambuPrinterAdapter(PrinterAdapter):
+    """Bambu Lab A1 Mini (AMS) printer adapter.
+    Real driver, but transport and API integration are not yet implemented.
+    Raises PrinterUnavailable until fully connected."""
+
+    name = "bambu-a1-mini-ams"
+    capabilities = ["printer.status", "printer.telemetry",
+                    "printer.upload", "printer.start",
+                    "printer.pause", "printer.stop",
+                    "printer.cancel"]
+
+    def __init__(self, host: str, access_code: str):
+        # TODO: Implement actual connection logic here.
+        # For now, it's a stub that will always raise Unavailable.
+        self._host = host
+        self._access_code = access_code
+        if not host or not access_code:
+            raise PrinterRefusedError("Bambu adapter needs host and access_code")
+
+    def status(self, device: PrinterDevice) -> dict:
+        raise PrinterUnavailable(
+            f"Bambu printer '{device.printer_id}' is not connected; "
+            "actual API interaction not yet implemented.")
+
+    def execute(self, device: PrinterDevice,
+                job: PrintJob) -> PrintResult:
+        raise PrinterUnavailable(
+            f"Bambu printer '{device.printer_id}' is not connected; "
+            "actual API interaction not yet implemented. Refusing to move hardware.")
+
+    def cancel(self, device: PrinterDevice,
+               job: PrintJob) -> PrintJob:
+        raise PrinterUnavailable(
+            f"Bambu printer '{device.printer_id}' is not connected; "
+            "actual API interaction not yet implemented.")
+
+    @classmethod
+    def requirements(cls) -> str:
+        return ("Bambu Lab A1 Mini (AMS) requires network access to the printer "
+                "via its API, using a host and access code. The actual "
+                "API client and interaction logic are pending implementation.")
+
+
 def _result(device: PrinterDevice, job: PrintJob, status: str,
             error: str = "") -> PrintResult:
     return PrintResult(
