@@ -44,13 +44,18 @@ Rules (tested, all fail-closed):
 import httpx
 import paho.mqtt.client as mqtt
 import time
-from typing import Any
+from typing import Any, Optional # Import Optional
 import queue # Added for BambuPrinterAdapter's message queue
 import threading # Added for BambuPrinterAdapter's message queue processing
+import json # Import json
+import logging # Import logging
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from .inventory_read import Provenance
+
+# Initialize logger
+logger = logging.getLogger(__name__)
 
 PRINTER_CAPABILITIES = frozenset({
     "printer.status",
@@ -275,15 +280,30 @@ class SimulatedPrinterAdapter(PrinterAdapter):
     def request_cancel(self, job_id: str) -> None:
         self._cancelled.add(job_id)
 
+    # Define _result function for SimulatedPrinterAdapter
+    def _result(self, device: PrinterDevice, job: PrintJob, status: str, *, error: str = "") -> PrintResult:
+        return PrintResult(
+            job_id=job.job_id,
+            printer_id=device.printer_id,
+            status=status,
+            gcode_sha256=job.gcode_sha256,
+            started_at=job.started_at or now(),
+            ended_at=now(),
+            error=error,
+            telemetry={},
+            actor=job.actor,
+            provenance=Provenance(source_type="simulation", creator_id="simulated-adapter")
+        )
+
     def execute(self, device: PrinterDevice,
                 job: PrintJob) -> PrintResult:
         if job.job_id in self._cancelled:
-            return _result(device, job, "cancelled",
+            return self._result(device, job, "cancelled",
                            error="cancelled before start (simulated)")
         if self._fail:
-            return _result(device, job, "failed",
+            return self._result(device, job, "failed",
                            error="simulated failure (test)")
-        return _result(device, job, "completed")
+        return self._result(device, job, "completed")
 
     def cancel(self, device: PrinterDevice,
                job: PrintJob) -> PrintJob:
@@ -710,4 +730,3 @@ def list_stored_printers() -> list[PrinterDevice]:
         ).fetchall()
     return [PrinterDevice.model_validate(load(row["record"]))
             for row in rows]
-
