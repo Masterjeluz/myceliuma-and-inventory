@@ -260,11 +260,12 @@ class WindowsWebcamAdapter(CameraAdapter, UnavailableAdapterMixin):
     capabilities = ["camera.webcam"]
 
     def unavailable_reason(self) -> str:
-        return ("no reviewed Windows capture runtime; snapshot "
-                "needs a MediaFoundation/DirectShow implementation "
-                "with device open, frame grab and timeout handling")
+        return "no reviewed Windows capture runtime; capture needs MediaFoundation/DirectShow"
 
     def snapshot(self, device: CameraDevice) -> CameraObservation:
+        # Placeholder for actual Windows capture implementation
+        # This currently raises CameraUnavailable as the runtime is not implemented.
+        # To enable real capture, a MediaFoundation/DirectShow implementation is required.
         raise CameraUnavailable(self.unavailable_reason())
 
     @classmethod
@@ -340,7 +341,15 @@ class Insta360Adapter(CameraAdapter, UnavailableAdapterMixin):
             "applies; or (b) file-mode -> operator connects storage "
             "-> reviewed media-ingest copies named files into the "
             "camera dir with hash verification. BIG #6 ships neither; "
-            "both need explicit review before bytes flow.")
+            "both need explicit review before bytes flow. For now, "
+            "this adapter has no capabilities.")
+
+    def snapshot(self, device: CameraDevice) -> CameraObservation:
+        raise CameraUnavailable(self.unavailable_reason())
+
+    @classmethod
+    def requirements(cls) -> str:
+        return cls.unavailable_reason()
 
 
 class SyntheticTestAdapter(TestCameraAdapter):
