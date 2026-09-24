@@ -311,6 +311,8 @@ class Insta360Adapter(CameraAdapter, UnavailableAdapterMixin):
                 "file-mode needs a reviewed media-ingest path")
 
     def snapshot(self, device: CameraDevice) -> CameraObservation:
+        # This method should ideally implement actual Insta360 capture logic.
+        # For now, it explicitly raises CameraUnavailable.
         raise CameraUnavailable(self.unavailable_reason())
 
     @staticmethod
@@ -343,13 +345,6 @@ class Insta360Adapter(CameraAdapter, UnavailableAdapterMixin):
             "camera dir with hash verification. BIG #6 ships neither; "
             "both need explicit review before bytes flow. For now, "
             "this adapter has no capabilities.")
-
-    def snapshot(self, device: CameraDevice) -> CameraObservation:
-        raise CameraUnavailable(self.unavailable_reason())
-
-    @classmethod
-    def requirements(cls) -> str:
-        return cls.unavailable_reason()
 
 
 class SyntheticTestAdapter(TestCameraAdapter):
