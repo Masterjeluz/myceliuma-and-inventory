@@ -238,6 +238,11 @@ details.conn-cluster ul{margin:.2rem 0 .6rem 0}
 """
 
 NAV = [
+    ("✨ JOURNEY", [("/", "Home"), ("/world", "World"),
+                    ("/chat", "Chat"), ("/advise", "Advise 🌱"),
+                    ("/missions", "Mission"), ("/approvals", "Approval"),
+                    ("/tasks", "Task"), ("/activity", "Event"),
+                    ("/triage", "Triage 🌱")]),
     ("WORLD", [("/", "Living World"), ("/play", "Play"),
                ("/world", "World Graph"),
                ("/craft", "Craft Tree"), ("/guide", "Guide"),
@@ -249,10 +254,11 @@ NAV = [
                ("/memory", "Memory"), ("/knowledge", "Knowledge"),
                ("/conversations", "Conversations")]),
     ("MIND", [("/missions", "Missions"), ("/tasks", "Tasks"),
-               ("/chat", "Chat"),
+               ("/chat", "Chat"), ("/advise", "Advise 🌱"),
                ("/research", "Research"), ("/morning", "Morning"),
                ("/agenda", "Agenda"), ("/automation", "Automation")]),
-    ("ACTIVITY", [("/activity", "Activity"), ("/watcher", "Watcher"),
+    ("ACTIVITY", [("/activity", "Activity"), ("/triage", "Triage 🌱"),
+                   ("/watcher", "Watcher"),
                    ("/agents", "Agents"), ("/approvals", "Approvals")]),
     ("PHYSICAL", [("/forge", "Forge Studio"), ("/workshop", "Workshop"), ("/workshop/3d", "3D"),
                    ("/fabrication", "Fabrication"),
@@ -275,6 +281,95 @@ def nav_html(active: str) -> str:
                 f'<a href="{esc(href)}"{current}>{esc(label)}</a>')
     return "<nav class=\"sidenav\" aria-label=\"Workshop areas\">" + \
         "".join(parts) + "</nav>"
+
+
+# -- vertical slice: one coherent journey ------------------------------------
+# HOME → READY? → WORLD → CHAT → ADVISE → MISSION → APPROVAL → TASK → EVENT.
+# Presentational only: every step links to an existing page/route, the
+# `now` marker only reflects the `active` path passed by the caller.
+
+JOURNEY_STEPS = (
+    ("Home", "/"),
+    ("Ready?", "/#ready"),
+    ("World", "/world"),
+    ("Chat", "/chat"),
+    ("Advise", "/advise"),
+    ("Mission", "/missions"),
+    ("Approval", "/approvals"),
+    ("Task", "/tasks"),
+    ("Event", "/activity"),
+)
+
+
+def journey_strip(active: str = "") -> str:
+    """Game-trail nav over existing pages. No new routes, no state."""
+    bits = []
+    for label, href in JOURNEY_STEPS:
+        cls = "now" if href == active or (
+            label == "Home" and active in ("", "/")) else ""
+        bits.append(
+            f"<span class=\"step {cls}\">{esc(label)} · "
+            f"<a href=\"{esc(href)}\">open</a></span>")
+    trail = "<span class=\"arrow\">→</span>".join(bits)
+    return (
+        "<div class=\"panel living\" aria-label=\"Mycelium journey\">"
+        "<h2>🌱 The journey</h2>"
+        f"<div class=\"path\">{trail}</div>"
+        "<p class=\"muted\">Home checks readiness, the world gives "
+        "context, chat asks, advise answers, a mission plans, your YES "
+        "approves, a task delegates, events show the result. Nothing "
+        "skips your approval.</p></div>")
+
+
+def readiness_strip(cells: list) -> str:
+    """Honest REAL / SIMULATED / UNAVAILABLE chips from caller data.
+
+    This helper never fetches: callers pass (label, state, detail,
+    href) tuples built best-effort from existing stores. Unknown
+    stays unknown.
+    """
+    cards = []
+    for label, state, detail, href in cells:
+        key = str(state or "UNKNOWN").strip().upper().replace(" ", "_")
+        link = (f"<br><a href=\"{esc(href)}\">Open →</a>"
+                if href else "")
+        cards.append(
+            f"<div class=\"hud-cell\"><small>{esc(label)}</small><br>"
+            f"{visual_state(key)}<br>"
+            f"<small class=\"muted\">{esc(detail)}</small>{link}</div>")
+    return (
+        "<div class=\"panel hud\" id=\"ready\" role=\"status\" "
+        "aria-label=\"System readiness\">"
+        "<h2>🌍 System ready?</h2>"
+        "<div class=\"hud-row\">" + "".join(cards) + "</div>"
+        "<p class=\"muted\">REAL = live record/loopback behind it · "
+        "SIMULATED = test adapter, never physical · UNAVAILABLE = "
+        "not configured or unreachable. Details stay one click away."
+        "</p></div>")
+
+
+def advise_form(q: str = "", question: str = "",
+                type_: str = "", mode: str = "lexical") -> str:
+    """Advise form posting to the existing /web/advise bridge."""
+    modes = "".join(
+        f"<option value='{m}'"
+        + (" selected" if m == mode else "") + f">{m}</option>"
+        for m in ("lexical", "semantic", "hybrid"))
+    return (
+        "<div class=\"panel\"><h2>🔮 Ask for advice</h2>"
+        "<p class=\"muted\">Reads INVENTory (loopback only), asks the "
+        "local model, stores nothing. Unavailable Ollama answers "
+        "honestly — the question is never fabricated.</p>"
+        "<form method=\"post\" action=\"/web/advise\" "
+        "aria-label=\"Advise\">"
+        f"<input type=\"text\" name=\"q\" placeholder=\"Search, e.g. camper…\" "
+        f"value=\"{esc(q)}\" style=\"width:30%\" aria-label=\"Search\"> "
+        f"<input type=\"text\" name=\"question\" placeholder=\"Question…\" "
+        f"value=\"{esc(question)}\" style=\"width:40%\" aria-label=\"Question\"> "
+        f"<input type=\"text\" name=\"type\" placeholder=\"type (optional)\" "
+        f"value=\"{esc(type_)}\" style=\"width:12%\" aria-label=\"Type\"> "
+        f"<select name=\"mode\" aria-label=\"Mode\">{modes}</select> "
+        "<button type=\"submit\">Advise</button></form></div>")
 
 
 def status_dot(status: str) -> str:

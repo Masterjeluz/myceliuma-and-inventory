@@ -99,10 +99,20 @@ def payload(**overrides):
 
 
 def test_advise_success_delegates(client):
+    # Contract-first: the search for the question must always run and
+    # exactly one advice turn must complete. An extra browse() call is
+    # legitimate when semantic retrieval is available (i.e. local
+    # Ollama answers embedding requests), so assert membership rather
+    # than an exact internal call sequence. Deterministic with Ollama
+    # up and down.
     res = client.post("/api/v1/advise", json=payload())
     assert res.status_code == 200
-    assert client.fake_reader.calls == [("search", "moer", None)]
+    assert ("search", "moer", None) in client.fake_reader.calls
     assert len(client.fake_advisor.calls) == 1
+    body = res.json()
+    assert body["question"] == "Wat kan ik maken?"
+    assert body["records_used"] == 1
+    assert body["retrieval_mode"] in ("lexical", "semantic", "hybrid")
     question, records = client.fake_advisor.calls[0]
     assert question == "Wat kan ik maken?"
     assert len(records) == 1

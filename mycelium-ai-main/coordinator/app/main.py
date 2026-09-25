@@ -1785,7 +1785,8 @@ def tasks_page(status: str = "") -> str:
         for row in rows[:100]) or _ui.empty(
             "No tasks yet — queue one below or via POST /api/v1/tasks.")
     main = f"""<h1>Tasks — delegation units</h1>
-    <p class="muted">TASK = one delegatable unit. Queued → assigned (lease 300s, max 3 attempts) → completed/failed. MISSION = the plan it belongs to. Nodes pull; the coordinator never pushes.</p>
+    {_ui.journey_strip("/tasks")}
+    <p class="muted">TASK = one delegatable unit. Queued → assigned (lease 300s, max 3 attempts) → completed/failed. MISSION = the plan it belongs to. Nodes pull; the coordinator never pushes. Try <code>system_inventory</code> first — any node with that capability can claim it.</p>
     <div class="panel"><p>{chips}</p>
     <form method="post" action="/web/tasks">
     <input type="text" name="kind" placeholder="kind, e.g. system_inventory" style="width:26%" aria-label="Task kind">
@@ -1795,6 +1796,10 @@ def tasks_page(status: str = "") -> str:
     <form method="post" action="/web/maintenance/sweep" style="display:inline">
     <button type="submit">Sweep expired leases</button></form>
     <p class="muted">mission_id is traceability only and must reference a real mission; the task never executes on creation.</p></div>
+    <div class="panel"><h2>🖥️ Run a node to claim it</h2>
+    <p class="muted">Nodes pull; the coordinator never pushes. A queued task with empty capabilities can be claimed by any fresh node. Copy, paste, run:</p>
+    <p><code>python -m node_client.main --coordinator http://127.0.0.1:8000 --node-id seed-01 --tier seed --poll-seconds 5</code></p>
+    <p class="muted">Use a <b>fresh --node-id</b> per machine — re-registering an existing id upserts it and can confuse a stale registration. Nodes go STALE after 60s without heartbeat; tasks lease 300s with max 3 attempts. Add <code>--capability &lt;name&gt;</code> (repeatable) to claim tasks that require capabilities. Full mesh view: <a href="/nodes">Nodes</a>.</p></div>
     <div class="grove">{cards}</div>"""
     return _ui.shell("Tasks", "/tasks", main, _ui.command_bar())
 
@@ -1974,7 +1979,8 @@ def approvals_page() -> str:
         for m in missions_waiting[:20]) or "<li>None.</li>"
     total = len(desktop) + len(writes) + len(voice) + len(missions_waiting)
     main = f"""<h1>Approvals — the human gate</h1>
-    <p class="muted"><b>{total}</b> waiting. Approval is permission, never verification, never execution. Nothing here auto-approves.</p>
+    {_ui.journey_strip("/approvals")}
+    <p class="muted"><b>{total}</b> waiting. Approval is permission, never verification, never execution. Nothing here auto-approves. Missions approve with exact YES on their <a href="/missions">mission page</a>; desktop/write gates decide in <a href="/agents">Agents</a>/<a href="/writes">Writes</a>.</p>
     <div class="panel"><h2>Missions ({len(missions_waiting)})</h2><ul>{missions_html}</ul></div>
     <div class="panel"><h2>Desktop actions ({len(desktop)})</h2><ul>{desktop_html}</ul></div>
     <div class="panel"><h2>Write proposals ({len(writes)})</h2><ul>{writes_html}</ul></div>
@@ -9195,6 +9201,152 @@ async def _run_write_step(mission, step) -> dict:
             "verified": verified}
 
 
+def _journey_readiness() -> list:
+    """Best-effort readiness cells for the journey strip.
+
+    Reuses existing stores only: coordinator_status, INVENTory browse,
+    Ollama env config, stored printers/devices. Never raises, never
+    calls the network: Ollama liveness is proven at /advise, not here.
+    """
+    import os as _os
+    cells = []
+    try:
+        status = coordinator_status()
+        nodes = status.get("nodes", {}) or {}
+        pending = status.get("pending_approvals", {}) or {}
+        waiting = sum(int(pending.get(key, 0) or 0) for key in pending)
+        cells.append(("Coordinator",
+                      "REAL",
+                      f"{nodes.get('online', 0)}/{nodes.get('total', 0)} nodes awake · "
+                      f"{waiting} waiting approvals",
+                      "/api/v1/status"))
+    except Exception:
+        cells.append(("Coordinator", "UNAVAILABLE",
+                      "status unavailable", "/api/v1/status"))
+    return cells
+
+
+async def _journey_readiness_async() -> list:
+    """Extend sync cells with the INVENTory + Ollama + device truth."""
+    import os as _os
+    cells = _journey_readiness()
+    try:
+        browsed = await _world_reader().browse("projects")
+        total = len(browsed.results or [])
+        cells.append(("INVENTory", "REAL",
+                      f"reachable · {total} projects browsed",
+                      "/world"))
+    except Exception:
+        cells.append(("INVENTory", "UNAVAILABLE",
+                      "unreachable — start it on :8080", "/world"))
+    try:
+        from .ollama_advisor import (BASE_URL_ENV_VAR, MODEL_ENV_VAR,
+                                     DEFAULT_BASE_URL, DEFAULT_MODEL)
+        base = _os.environ.get(BASE_URL_ENV_VAR, DEFAULT_BASE_URL)
+        model = _os.environ.get(MODEL_ENV_VAR, DEFAULT_MODEL)
+        cells.append(("Ollama advice", "REAL",
+                      f"{base} · {model} · live check at /advise",
+                      "/advise"))
+    except Exception:
+        cells.append(("Ollama advice", "UNAVAILABLE",
+                      "advisor config unavailable", "/advise"))
+    try:
+        printers = list_stored_printers()
+        cells.append(("Printers", "SIMULATED",
+                      f"{len(printers)} stored · physical needs exact-YES",
+                      "/fabrication"))
+    except Exception:
+        cells.append(("Printers", "UNAVAILABLE", "store unavailable",
+                      "/fabrication"))
+    try:
+        devices = list_devices()
+        cells.append(("Cameras", "SIMULATED" if devices else "UNAVAILABLE",
+                      f"{len(devices)} registered · file-inbox ingest",
+                      "/cameras"))
+    except Exception:
+        cells.append(("Cameras", "UNAVAILABLE", "registry unavailable",
+                      "/cameras"))
+    return cells
+
+
+@app.get("/advise", response_class=HTMLResponse)
+async def advise_page(q: str = "", question: str = "",
+                      type: str | None = None,
+                      mode: str = "lexical") -> str:
+    """Advise through the UI: same backend as POST /api/v1/advise.
+
+    Read-only composition (world context + local model), nothing
+    stored, nothing approved. Ollama/INVENTory failures render
+    honestly with their REAL/UNAVAILABLE state.
+    """
+    from . import ui as _ui
+    type_clean = (type or "").strip()[:40] or None
+    mode_clean = mode if mode in ("lexical", "semantic",
+                                  "hybrid") else "lexical"
+    result_html = ""
+    if (q or "").strip() or (question or "").strip():
+        try:
+            answered = await advise(AdviseRequest(
+                q=(q or "").strip()[:200] or None,
+                question=(question or "").strip()[:500] or "...",
+                type=type_clean, mode=mode_clean))
+            sources = "".join(
+                f"<li><code>{_ui.esc(source.entity_id)}</code> "
+                f"{_ui.esc(source.source_type)} · "
+                f"{'verified' if source.human_verified else 'unverified'}"
+                f"</li>" for source in answered.sources[:10])
+            from urllib.parse import quote_plus as _quote
+            _goal = ((q or "").strip() or (question or "").strip())[:200]
+            _mission_link = (
+                f" · <a href=\"/missions?goal={_quote(_goal)}\">"
+                f"🚀 Start mission from this advice →</a>"
+                if _goal else "")
+            result_html = (
+                f"<div class=\"panel living\"><h2>Advice "
+                f"{_ui.visual_state('REAL')}</h2>"
+                f"<p>{_ui.link_entities(answered.advice)}</p>"
+                f"<p class=\"muted\">model "
+                f"{_ui.esc(answered.model)} · "
+                f"{answered.records_used} records · "
+                f"{_ui.esc(answered.retrieval_mode)}</p>"
+                f"<ul>{sources or '<li>No sources.</li>'}</ul>"
+                f"<p><a href=\"/chat\">Discuss in chat →</a> · "
+                f"<a href=\"/missions\">Plan a mission →</a>"
+                f"{_mission_link}</p></div>")
+        except HTTPException as error:
+            state = ("UNAVAILABLE" if error.status_code == 502
+                     else "BLOCKED")
+            result_html = (
+                f"<div class=\"panel\"><h2>Advice "
+                f"{_ui.visual_state(state)}</h2>"
+                f"<p>{_ui.esc(str(error.detail)[:300])}</p>"
+                f"<p class=\"muted\">The question was kept, nothing "
+                f"was fabricated. Retry when the backend is back.</p>"
+                f"</div>")
+    cells = await _journey_readiness_async()
+    main = (f"<h1>🔮 Advise</h1>{_ui.journey_strip('/advise')}"
+            f"{_ui.readiness_strip(cells)}"
+            f"{_ui.advise_form(q, question, type or '', mode_clean)}"
+            f"{result_html}")
+    return _ui.shell("Advise", "/advise", main, "",
+                     _ui.command_bar())
+
+
+@app.post("/web/advise")
+async def web_advise(request: Request) -> RedirectResponse:
+    """Thin form bridge onto GET /advise (same pattern as /web/command)."""
+    from urllib.parse import urlencode as _urlencode
+    fields = await _form_fields(request)
+    params = _urlencode({
+        "q": fields.get("q", "").strip()[:200],
+        "question": fields.get("question", "").strip()[:500],
+        "type": fields.get("type", "").strip()[:40],
+        "mode": (fields.get("mode", "lexical").strip()[:20]
+                 or "lexical"),
+    })
+    return RedirectResponse(f"/advise?{params}", status_code=303)
+
+
 @app.get("/", response_class=HTMLResponse)
 async def dashboard(entity_id: str = "") -> str:
     """Living World home: the world graph at the center,
@@ -9243,8 +9395,25 @@ async def dashboard(entity_id: str = "") -> str:
         f"<span class=\"muted\">#{row['id']} · {_ui.esc(row['status'])}"
         f"{' → ' + _ui.esc(row['assigned_node_id']) if row['assigned_node_id'] else ''}</span></li>"
         for row in task_rows)
-    main = f"""<h1>Living World</h1>
+    try:
+        _ready_cells = await _journey_readiness_async()
+    except Exception:
+        _ready_cells = []
+    main = f"""<h1>🌱 Living World</h1>
+    {_ui.journey_strip("/")}
+    {_ui.readiness_strip(_ready_cells) if _ready_cells else ""}
     <p class="muted">The graph is the center. Everything around it supports it. Memory lives at <a href="/memory">/memory</a>. New: <a href="/guide">Guide</a> · <a href="/craft">Craft Tree</a> · <a href="/symbiosis">Symbiosis</a> — one living workshop, no loose pages.</p>
+    {_ui.advise_form("", "", "", "lexical")}
+    <div class="panel"><h2>⚔️ Start one quest</h2>
+    <p class="muted">One template, same guardrails: propose → your exact YES in <a href="/approvals">Approvals</a> → queue a <code>system_inventory</code> task in <a href="/tasks">Tasks</a> → watch <a href="/activity">Activity</a>.</p>
+    <form method="post" action="/web/missions/from-template">
+    <select name="template_id" aria-label="Template">
+    <option value="investigate_inventory">Investigate INVENTory</option>
+    <option value="inspect_project">Explore project</option>
+    <option value="research_topic">Research topic (web)</option>
+    </select>
+    <input type="text" name="goal" placeholder="Goal, e.g. what lives in my world?" style="width:50%" aria-label="Goal">
+    <button type="submit">Start quest</button></form></div>
     {_guide_panel()}
     {_ui.graph_panel(_json.dumps(graph), "/", entity_id, 1, "missions,nodes", error) if entity_id else ""}
     <h2>Grow from a seed</h2><p class="flowline">{seed_chips}</p>
@@ -9634,6 +9803,46 @@ async def _world_craft_html(entity_id: str) -> str:
         f"{_ui.esc(entity_id)}\">Open craft tree →</a></p></div>")
 
 
+def _world_quest_trails_html() -> str:
+    """Open quest trails beside the graph (quest-trails slice).
+
+    Read-only composition over existing quest derivation: open
+    (non-terminal) quests with their live step states, rendered
+    with the existing quest-trail helper. Mission halo nodes
+    already render inside the graph itself via the missions
+    overlay; this panel makes their quest framing visible.
+    Empty when no open quest exists — never filler."""
+    from . import ui as _ui
+    try:
+        from .quests import list_quest_details
+        details = [detail for detail in list_quest_details(limit=10)
+                   if detail.get("state") not in ("COMPLETED", "FAILED")]
+    except Exception:
+        return ""
+    if not details:
+        return ""
+    cards = []
+    for detail in details[:4]:
+        trail = _ui.quest_steps([
+            {"status": step.get("state", "open"),
+             "description": str(step.get("label", ""))[:80]}
+            for step in detail.get("steps", [])[:6]])
+        cards.append(
+            f"<div class=\"sprout\"><b>🧭 "
+            f"{_ui.esc(detail.get('title', '')[:80])}</b> "
+            f"{_ui.chip(detail.get('state', ''))}"
+            f"<span class=\"muted\"> "
+            f"{_ui.esc(detail.get('progress', ''))}</span><br>"
+            f"{trail}"
+            f"<a href=\"/quests\">Open quest →</a></div>")
+    return ("<div class=\"panel\"><h2>Quest trails</h2>"
+            "<p class=\"muted\">Live quest states over missions, tasks "
+            "and records — halos in the graph above, trails here. "
+            "Full detail lives in <a href=\"/quests\">Quests</a>.</p>"
+            "<div class=\"grove\">" + "".join(cards) +
+            "</div></div>")
+
+
 def _world_campaign_html() -> str:
     """Campaigns as world progression (BIG #44): title,
     current, next, blocked, progress — all from live campaign
@@ -9882,6 +10091,7 @@ async def world_page(entity_id: str = "", depth: int = 1,
     <p class="muted">Every node is real: world entities from INVENTory, overlays from Mycelium. Select to inspect — the context rail opens here, no page jump — or open a neighborhood to grow.</p>
     {_ui.graph_panel(_json.dumps(graph), "/world", entity_id, depth, show, error)}
     {_world_campaign_html()}
+    {_world_quest_trails_html()}
     {_world_objects_html()}
     {_symbiosis_panel}
     {_connections_panel}
@@ -10611,13 +10821,88 @@ def activity_page() -> str:
         f"<li>{_ui.esc(item.title)} <span class=\"muted\">[{_ui.esc(item.severity)}]</span></li>"
         for item in list_notifications_for_report(limit=15))
     main = f"""<h1>Activity — the world breathing</h1>
-    <p class="muted">Every line is a real event with provenance. Mycelium voice up front, technical detail one click away in <a href="/activity">events</a> and <a href="/morning">Morning</a>.</p>
+    {_ui.journey_strip("/activity")}
+    <p class="muted">Every line is a real event with provenance. Mycelium voice up front, technical detail one click away in <a href="/activity">events</a> and <a href="/morning">Morning</a>. Live tail: <a href="/api/v1/events/stream?once=true">SSE snapshot</a> · poll: <a href="/api/v1/events">/api/v1/events</a>.</p>
     <div class="panel"><h2>Stream</h2><table><tr><th>Event</th><th>What</th><th>When</th></tr>
     {"".join(items) or "<tr><td colspan='3'>Quiet.</td></tr>"}</table></div>"""
     context = _ui.context_block("Notifications",
                                 f"<ul>{notes or '<li>None.</li>'}</ul>")
     return _ui.shell("Activity", "/activity", _ui.living_bg() + main,
                      context,
+                     _ui.command_bar())
+
+
+@app.get("/triage", response_class=HTMLResponse)
+def triage_page() -> str:
+    """One triage table over existing queues: open knowledge
+    candidates, recent camera observations, queued research runs.
+
+    Read-only aggregation; every action posts to its existing
+    /web/* gate (candidates support/reject here, promote in
+    /knowledge, observations propose in /cameras, research queue
+    in /research). Nothing new is created by this page."""
+    from . import ui as _ui
+    from .knowledge import (ACTIVE_STATES, list_candidates,
+                            support_count)
+    try:
+        candidates = [entry for entry in list_candidates(limit=100)
+                      if entry.state in ACTIVE_STATES][:20]
+    except Exception:
+        candidates = []
+    try:
+        observations = _recent_observations(10)
+    except Exception:
+        observations = []
+    try:
+        queued = _queue_list(limit=20)
+    except Exception:
+        queued = []
+    cand_rows = "".join(
+        f"<div class=\"sprout\"><b>{_ui.esc(entry.title[:100])}</b><br>"
+        f"{_ui.chip(entry.candidate_type)}{_ui.chip(entry.state)}"
+        f"<span class=\"chip\">♥ {support_count(entry)}</span><br>"
+        f"<small>{_ui.esc(entry.summary[:160])}</small><br>"
+        f"<form method=\"post\" action=\"/web/candidates/"
+        f"{_ui.esc(entry.candidate_id)}/support\" "
+        f"style=\"display:inline\">"
+        f"<input type=\"hidden\" name=\"supporter\" value=\"web\">"
+        f"<button type=\"submit\">Support</button></form> "
+        f"<form method=\"post\" action=\"/web/candidates/"
+        f"{_ui.esc(entry.candidate_id)}/reject\" "
+        f"style=\"display:inline\">"
+        f"<button type=\"submit\">Reject</button></form> "
+        f"<a class=\"chip\" href=\"/knowledge\">Promote in "
+        f"Knowledge →</a></div>"
+        for entry in candidates) or _ui.empty(
+            "No open candidates. Full queue lives in Knowledge.")
+    obs_rows = "".join(
+        f"<li><code>{_ui.esc(obs.observation_id)}</code> "
+        f"<span class=\"muted\">{_ui.esc(str(getattr(obs, 'device_id', '')))} · "
+        f"{_ui.esc(str(getattr(obs, 'kind', '')))} · "
+        f"{_ui.esc(str(getattr(obs, 'created_at', ''))[:16])}</span> "
+        f"<form method=\"post\" action=\"/web/observations/"
+        f"{_ui.esc(obs.observation_id)}/propose-candidates\" "
+        f"style=\"display:inline\">"
+        f"<input type=\"hidden\" name=\"device_id\" "
+        f"value=\"{_ui.esc(str(getattr(obs, 'device_id', '')))}\">"
+        f"<button type=\"submit\">Propose candidates</button></form></li>"
+        for obs in observations) or "<li>No observations yet.</li>"
+    queue_rows = "".join(
+        f"<li><b>{_ui.esc(str(item.get('question', ''))[:100])}</b> "
+        f"{_ui.chip(str(item.get('status', '')))}"
+        f"<span class=\"muted\">{_ui.esc(str(item.get('priority', '')))}"
+        + (f" · <a href=\"/research/{_ui.esc(str(item.get('dossier_id', '')))}\">"
+            f"dossier →</a>" if item.get("dossier_id") else "")
+        + "</span></li>"
+        for item in queued) or "<li>Research queue empty.</li>"
+    total = len(candidates) + len(observations) + len(queued)
+    main = f"""<h1>Triage — what needs you</h1>
+    {_ui.journey_strip("/activity")}
+    <p class=\"muted\"><b>{total}</b> open items. Support/reject posts to the existing candidate gates (you land in <a href=\"/knowledge\">Knowledge</a>); observation proposals land in <a href=\"/cameras\">Cameras</a>; research runs live in <a href=\"/research\">Research</a>.</p>
+    <h2>Candidates ({len(candidates)})</h2><div class=\"grove\">{cand_rows}</div>
+    <h2>Recent observations ({len(observations)})</h2><ul>{obs_rows}</ul>
+    <h2>Research queue ({len(queued)})</h2><ul>{queue_rows}</ul>"""
+    return _ui.shell("Triage", "/triage", main, "",
                      _ui.command_bar())
 
 
@@ -11209,6 +11494,7 @@ def chat_page(id: str | None = None) -> str:
     except (ValueError, KeyError):
         live_html = ""
     main = f"""<h1>Mycelium Chat</h1>
+    {_ui.journey_strip("/chat")}
     {live_html}
     <p><label>Conversation: <select onchange="location='/chat?id='+this.value" aria-label="Conversation">{options}</select></label>
     <a href="/chat">+ new conversation</a></p>
@@ -11325,6 +11611,8 @@ def agents_page() -> str:
     <p>Queue: <b>{queue_open}</b> open · <b>{queue_busy}</b> assigned — full view in <a href="/tasks">Tasks</a>, all gates in <a href="/approvals">Approvals</a></p>
     {current_html}</div>
     <h2>Desktop agents</h2><ul>{nodes_html}</ul>
+    <div class="panel"><h2>💻 Desktop discovery</h2>
+    <p class="muted">The local scanner maps this computer's projects (read-only): <a href="http://127.0.0.1:8787" target="_blank" rel="noopener">Mycelium Desktop Agent :8787</a> — cards per project with Git/backup/nested/duplicate badges plus stable IDs and relations (parent, nested children, same remote, possible copies).</p></div>
     <h2>Queue workers (task nodes)</h2><ul>{workers_html}</ul>
     <h2>Activity</h2><ul>{items or "<li>No actions yet</li>"}</ul>"""
     return _ui.shell("Agents", "/agents", main, "",
@@ -11344,9 +11632,10 @@ def _result_suffix(entry: dict) -> str:
 
 
 @app.get("/missions", response_class=HTMLResponse)
-def missions_page() -> str:
+def missions_page(goal: str = "") -> str:
     from . import ui as _ui
     from .missions import current_step_of as _current_step
+    goal_prefill = (goal or "").strip()[:500]
     cards = ""
     for m in [_mission_to_json(mission)
               for mission in list_missions()]:
@@ -11374,7 +11663,8 @@ def missions_page() -> str:
             f"<a href='/missions/{_ui.esc(m['mission_id'])}'>"
             "Open process</a></div>")
     main = f"""<h1>Missions — quests with guardrails</h1>
-    <p class="muted">Quests are missions wearing work clothes: same plan, same exact-YES approvals, same visible steps. No game button ever skips a safety gate.</p>
+    {_ui.journey_strip("/missions")}
+    <p class="muted">Quests are missions wearing work clothes: same plan, same exact-YES approvals, same visible steps. No game button ever skips a safety gate. Need advice first? <a href="/advise">Advise →</a> · waiting gates live in <a href="/approvals">Approvals</a>.</p>
     <div class="panel"><p>Autonomy exists only <b>inside</b> an approved plan. Approved is not executed — execution is a separate, visible step.</p>
     <form method="post" action="/web/missions/from-template">
     <select name="template_id" aria-label="Template">
@@ -11385,7 +11675,7 @@ def missions_page() -> str:
      <option value="inspect_desktop_project">View desktop project</option>
      <option value="research_topic">Research topic (web)</option>
     </select>
-    <input type="text" name="goal" placeholder="Goal" style="width:40%" aria-label="Goal">
+    <input type="text" name="goal" placeholder="Goal" value="{_ui.esc(goal_prefill)}" style="width:40%" aria-label="Goal">
     <button type="submit">Start from template</button></form>
     <p class="muted">Tip: start from <a href="/chat">chat</a> — a mission belongs to a conversation.</p></div>
     <div class="grove">{cards or _ui.empty("No missions yet — start one from Chat.")}</div>"""
@@ -11394,7 +11684,7 @@ def missions_page() -> str:
 
 
 @app.get("/missions/{mission_id}", response_class=HTMLResponse)
-def mission_page(mission_id: str) -> str:
+async def mission_page(mission_id: str) -> str:
     from . import ui as _ui
     mission = load_mission(mission_id)
     if mission is None:
@@ -11432,6 +11722,34 @@ def mission_page(mission_id: str) -> str:
         if record.get("entity_id"):
             first_entity = str(record["entity_id"])
             break
+    # Advice context: render ONLY existing context_records (world records
+    # the goal was planned against). No stored Q&A exists — advice is
+    # stateless by design — so records + a back-link are the full truth.
+    # Empty records render nothing, never invented content.
+    advice_html = ""
+    _records = list(mission.context_records or [])[:10]
+    if _records:
+        from urllib.parse import quote_plus as _quote
+        _items = "".join(
+            f"<li><b>{_ui.esc(str(record.get('title', ''))[:90] or record.get('entity_id', ''))}</b> "
+            f"<a href='/world?entity_id={_ui.esc(str(record.get('entity_id', '')))}'>"
+            f"<code>{_ui.esc(str(record.get('entity_id', ''))[:40])}</code></a> "
+            f"<span class=\"muted\">{_ui.esc(str(record.get('entity_type', '')))} · "
+            f"{_ui.esc(str(record.get('match_type', '')))}"
+            f"{' · ' + _ui.esc(str(record.get('why', ''))[:100]) if record.get('why') else ''}</span>"
+            + (f"<br><small>{_ui.esc(str(record.get('snippet', ''))[:220])}</small>"
+               if record.get("snippet") else "")
+            + "</li>"
+            for record in _records)
+        advice_html = (
+            f"<div class=\"panel\"><h2>🔮 Advice context</h2>"
+            f"<p class=\"muted\">World records this quest was planned "
+            f"against — the same context <a href=\"/advise?q="
+            f"{_quote(mission.goal[:200])}\">Advise</a> reads. "
+            f"Advice itself is stateless and stored nowhere.</p>"
+            f"<ul>{_items}</ul>"
+            f"<p><a href=\"/advise?q={_quote(mission.goal[:200])}\">"
+            f"Re-ask Advise about this goal →</a></p></div>")
     buttons = ""
     if mission.status == "pending_approval":
         buttons += (f"<form style='display:inline' method='post' action='/web/missions/{_ui.esc(mission_id)}/approve'>"
@@ -11459,6 +11777,8 @@ def mission_page(mission_id: str) -> str:
     <p class="muted">Proposed and approved are not executed. Execution shows as its own step with its own result.</p>
     <p>{buttons}</p>
     {f"<p class=\"muted\">World: <a href='/world?entity_id={_ui.esc(first_entity)}'>graph around first context entity</a></p>" if first_entity else ""}</div>
+    {advice_html}
+    {await _world_craft_html(first_entity) if first_entity else ""}
     <h2>Queue a task of this plan</h2><div class="panel">
     <form method="post" action="/web/missions/{_ui.esc(mission_id)}/tasks">
     <input type="text" name="kind" placeholder="kind, e.g. system_inventory" style="width:30%" aria-label="Task kind">
@@ -18548,6 +18868,15 @@ def play_page() -> str:
                           "nog geen open quest")
     quest_href = _ui.esc(live["quest"].get("href", "/quests") or
                          "/quests")
+    # Compact HUD objective: state + progress of the current quest,
+    # or nothing when there is no open quest (honest empty state
+    # stays in quest_title itself).
+    quest_meta = " ".join(part for part in (
+        str(live["quest"].get("state", "") or ""),
+        str(live["quest"].get("progress", "") or "")) if part)
+    quest_meta_html = (f" <span class=\"muted\">[{_ui.esc(quest_meta)}]"
+                       f"</span>" if quest_meta and
+                       live["quest"].get("title") else "")
     guide_label = _ui.esc(live["guide"].get("label", "") or
                           "Guide")
     guide_href = _ui.esc(live["guide"].get("href", "/guide") or
@@ -18605,7 +18934,7 @@ def play_page() -> str:
     main = f"""<h1>Play 🎮 <span class="muted">Homebase</span></h1>
     <p class="muted">Bewegen: <code>WASD</code>/<code>pijltjes</code> · Interactie: <code>E</code> · Meldingen: <code>N</code> · Sluiten: <code>Esc</code>. Positie is efemeer (alleen in je browser).</p>
     <div class="panel"><div id="play-hud" class="muted">laden…</div>
-    <p>{_ui.esc(live["world"].get("glyph", "🌱"))} <b>{world_line}</b> · 🧭 <a href="{quest_href}">{quest_title}</a></p>
+    <p>{_ui.esc(live["world"].get("glyph", "🌱"))} <b>{world_line}</b> · 🧭 <a href="{quest_href}">{quest_title}</a>{quest_meta_html}</p>
     <p><span id="guide-chip" class="muted">🧭 Guide: {guide_what} — <a href="{guide_href}">{guide_label}</a></span> · <span id="notif-chip" class="muted">🔔 <button id="notif-open">Meldingen ({notif_n})</button></span></p></div>
     <div class="panel"><h2>Live backend <span class="muted">(zelfde waarheid, elke 20s)</span></h2>
     <div id="live-strip" class="muted">live status laden…</div>

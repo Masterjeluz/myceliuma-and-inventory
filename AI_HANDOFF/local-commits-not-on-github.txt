@@ -1,0 +1,10 @@
+6697e9a (no commit message provided)
+edb0a98 feat: BambuPrinterAdapter implementatie toegevoegd
+f19e7ec checkpoint: printer3d.py restored, tests passing
+776eecc (no commit message provided)
+afa0217 docs: Documenteer camera pipeline activatie
+e557587 fix: Implementeer placeholder voor snapshot in WindowsWebcamAdapter
+1d562eb fix: Camera adapters mogelijk maken voor snapshots
+d687145 test: Voeg tests toe voor Bambu adapter met mock MQTT
+e6200ae feat: Importeer httpx en paho-mqtt voor printercommunicatie
+cc7834a feat: Voeg BambuPrinterAdapter toe

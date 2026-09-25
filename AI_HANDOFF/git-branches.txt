@@ -1,0 +1,2 @@
+  backup-before-v1 3bb36ab feat(missions): close dispatched steps on task completion
+* main             6697e9a [origin/main: ahead 10] (no commit message provided)

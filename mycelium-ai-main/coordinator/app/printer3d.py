@@ -25,8 +25,11 @@ Rules (tested, all fail-closed):
   filtered like every other capability surface.
 - Only ``SimulatedPrinterAdapter`` (deterministic in-memory
   state machine, explicitly simulated) and
-  ``UnavailablePrinterAdapter`` exist. No real transport, no
-  serial, no network, no vendor SDK.
+  ``UnavailablePrinterAdapter`` execute. ``BambuPrinterAdapter``
+  is experimental scaffolding only: it needs the optional
+  ``paho-mqtt`` package plus real hardware, and raises
+  ``PrinterUnavailable`` until fully connected. No serial,
+  no vendor SDK ships in the core.
 - Execution needs ALL of: bound non-stale approval, unchanged
   G-code fingerprint, a safety assessment that is not unsafe,
   an allow-listed profile, a registered adapter. Anything else
@@ -42,7 +45,15 @@ Rules (tested, all fail-closed):
 """
 
 import httpx
-import paho.mqtt.client as mqtt
+try:
+    import paho.mqtt.client as mqtt
+    PAHO_MQTT_AVAILABLE = True
+except ImportError:  # pragma: no cover - exercised via sys.modules block
+    mqtt = None
+    PAHO_MQTT_AVAILABLE = False
+MQTT_MISSING_MESSAGE = ("paho-mqtt is not installed, so the Bambu MQTT "
+                        "transport is unavailable (install paho-mqtt "
+                        "for hardware use).")
 import time
 from typing import Any, Optional # Import Optional
 import queue # Added for BambuPrinterAdapter's message queue
@@ -84,6 +95,17 @@ class PrinterRefusedError(ValueError):
 
 class PrinterUnavailable(RuntimeError):
     """No execution path. Fail-closed, never fake telemetry."""
+
+
+def _require_mqtt() -> None:
+    """Fail-closed guard for the optional Bambu MQTT transport.
+
+    Reads the module-global ``mqtt`` at call time so tests can
+    simulate a missing dependency without reimporting. Never
+    returns a fake client."""
+    if not PAHO_MQTT_AVAILABLE or mqtt is None:
+        raise PrinterUnavailable(
+            MQTT_MISSING_MESSAGE + " No motion, no telemetry.")
 
 
 class PrinterDevice(BaseModel):
@@ -329,6 +351,9 @@ class BambuPrinterAdapter(PrinterAdapter):
                     "printer.cancel"]
 
     def __init__(self, mqtt_host: str, mqtt_port: int, mqtt_username: Optional[str], mqtt_password: Optional[str], printer_serial: str, printer_token: str):
+        if not str(mqtt_host or "").strip() or not str(printer_serial or "").strip():
+            raise PrinterRefusedError(
+                "Bambu adapter needs mqtt_host and printer_serial")
         self.mqtt_host = mqtt_host
         self.mqtt_port = mqtt_port
         self.mqtt_username = mqtt_username
@@ -373,6 +398,7 @@ class BambuPrinterAdapter(PrinterAdapter):
             logger.error(f"Error processing message: {e}")
 
     def _connect_mqtt(self):
+        _require_mqtt()
         # Use a unique client ID to avoid conflicts
         client_id = f"coordinator_bambu_{self.printer_serial}_{time.time_ns()}"
         self.client = mqtt.Client(client_id=client_id)
@@ -495,6 +521,7 @@ class BambuPrinterAdapter(PrinterAdapter):
 
     def _send_command(self, command: dict, retries: int = 3) -> dict:
         """Sends a command to the printer via MQTT and returns the reply payload."""
+        _require_mqtt()
         if not self.is_connected or not self.client:
             return {"success": False, "message": "Not connected to MQTT."}
 
@@ -645,7 +672,7 @@ class BambuPrinterAdapter(PrinterAdapter):
 
     def __del__(self):
         """Ensure MQTT client is disconnected when the object is garbage collected."""
-        if self.client:
+        if getattr(self, "client", None):
             self.client.loop_stop()
             self.client.disconnect()
             logger.info("MQTT client disconnected.")

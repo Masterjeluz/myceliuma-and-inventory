@@ -1,0 +1,53 @@
+* 6697e9a (HEAD -> main) (no commit message provided)
+* edb0a98 feat: BambuPrinterAdapter implementatie toegevoegd
+* f19e7ec checkpoint: printer3d.py restored, tests passing
+* 776eecc (no commit message provided)
+* afa0217 docs: Documenteer camera pipeline activatie
+* e557587 fix: Implementeer placeholder voor snapshot in WindowsWebcamAdapter
+* 1d562eb fix: Camera adapters mogelijk maken voor snapshots
+* d687145 test: Voeg tests toe voor Bambu adapter met mock MQTT
+* e6200ae feat: Importeer httpx en paho-mqtt voor printercommunicatie
+* cc7834a feat: Voeg BambuPrinterAdapter toe
+* d8bfb64 (origin/main) feat(research): bridge dossiers to mission plans
+* 3bb36ab (backup-before-v1) feat(missions): close dispatched steps on task completion
+* 062da4d feat(missions): auto-dispatch research steps
+* c427f05 feat(core): integrate workspaces forge remote input and node capabilities
+* 0f9919a feat(nodes): external worker, scout, linux installer and tick loop
+* 68ea281 refactor(agent): format agent UI without behavior changes
+* eec38dd feat(inventory): expand search type selector
+* 24633be BIG #45 - finish living ecosystem connections
+* b049831 BIG #44 - build the living solarpunk world
+* 5a023f7 BIG #43 - build the living game layer
+* ab51bca BIG #42 - ecosystem hardening + first V2 workflows
+* 4f5da99 BIG #41 - build Mycelium V2 foundation
+* cfa1673 BIG #40 - build presence ecosystem
+* 75e5caa BIG #39 - build hardware reality layer
+* e1c31cc BIG #38 - build living automation
+* 786c331 BIG #37 - build conversation intelligence
+* 6893008 BIG #36 - build mobile Mycelium
+* 6422f25 BIG #35 - build 3D workshop ecosystem
+* d0475ad BIG #34 - build camera ecosystem
+* 98a9dab BIG #33 - build the living world
+* 8a2467b BIG #32 - record commit SHA in final report
+* 4f54e0d BIG #32 - build living knowledge and research network
+* 98a3631 BIG #31 - activate the living ecosystem
+* d0eec8f BIG #30 - build the living ecosystem
+* ec1ce38 BIG #29 - build Mycelium Research Engine
+* b5bd7b4 BIG #23-28 - build Mycelium v1
+* fc0f8de BIG #22 - build desktop agent hands
+* 2e86207 BIG #21 - build autonomous mission loop
+* bb59a4f BIG #20 - polish the living workshop visual system
+* 18bfa06 BIG #19 - build the living workshop UI
+* 6faee57 BIG #18 - integrate local n8n end to end
+* 12267b5 BIG #17 - add n8n integration plane
+* aef4371 BIG #16 - harden concurrency, fencing, approvals, auth, retention
+* 1b2796e feat: build living mycelium memory health research and physical world
+* bdd49ab feat: add living workshop and distributed state foundation
+* 1ec424b feat: add living workshop human interface foundation
+* 61daccc feat: add distributed node routing foundation
+* 80c2337 feat: add 3d and physical pipeline foundation
+* cc80dce feat: add vision ingestion and camera observation pipeline
+* ffa049c feat: add controlled writes and verification
+* bb6c315 feat: add semantic world model and camera foundation
+* c90f8ed docs: sync architecture status and roadmap after BIG 3
+* 7251a67 Checkpoint: Mycelium AI + INVENTory monorepo

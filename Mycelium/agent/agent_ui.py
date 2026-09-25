@@ -9,6 +9,7 @@ app = Flask(__name__)
 
 BASE = Path(__file__).parent
 DISCOVERY = BASE / "discovery.json"
+INDEX = BASE / "project_index.json"
 AGENT = BASE / "agent.py"
 
 HTML = """
@@ -52,8 +53,12 @@ button:hover {opacity: .85;}
   <div class=\"path\">{{ project.path }}</div>
   {% for t in project.types %}<span class=\"badge\">{{ t }}</span>{% endfor %}
   {% if project.git %}<span class=\"badge git\">🟢 Git repository</span>{% else %}<span class=\"badge\">⚪ Geen Git</span>{% endif %}
+  {% if project.stable_id %}<span class=\"badge info\" title=\"Stable ID (computer + path)\">🆔 {{ project.stable_id[:12] }}…</span>{% endif %}
   {% if project.is_backup_copy %}<span class=\"badge warn\">💾 Mogelijke backup/kopie</span>{% endif %}
   {% if project.is_nested %}<span class=\"badge info\">📦 Nested repository</span>{% endif %}
+  {% if project.parent_id %}<span class=\"badge info\">📦 Onderdeel van geïndexeerd project</span>{% endif %}
+  {% if project.nested_children %}<span class=\"badge info\">📦 {{ project.nested_children|length }} nested project(en)</span>{% endif %}
+  {% if project.possible_copies %}<span class=\"badge warn\">👯 {{ project.possible_copies|length }} mogelijke kopie(ën)</span>{% endif %}
   {% if project.duplicate_group %}<span class=\"badge warn\">👯 Dubbele locatie ({{ project.duplicate_candidates|length + 1 }}x)</span>{% endif %}
   <p class=\"meta\">{% if project.git_remote %}🔗 {{ project.git_remote }}<br>{% endif %}{% if project.last_modified %}🕒 {{ project.last_modified }}<br>{% endif %}{% if project.file_count is not none %}📄 {{ project.file_count }} bestanden<br>{% endif %}{% if project.recognized_files %}🧩 {{ project.recognized_files|join(', ') }}<br>{% endif %}{% if project.is_nested and project.parent_project %}📦 Onderdeel van: {{ project.parent_project }}<br>{% endif %}{% if project.duplicate_candidates %}👯 Ook gevonden in: {{ project.duplicate_candidates|join('; ') }}<br>{% endif %}{% if project.same_remote_candidates %}🔗 Zelfde remote elders: {{ project.same_remote_candidates|join('; ') }}{% endif %}</p>
 </div>
@@ -66,22 +71,72 @@ button:hover {opacity: .85;}
 </body>
 </html>
 """
-
 def load_discovery():
     if not DISCOVERY.exists():
         return {"computer": "unknown", "projects": [], "timestamp": "nooit"}
     return json.loads(DISCOVERY.read_text(encoding="utf-8"))
 
+
+def load_relations():
+    """Stable IDs + relations from project_index.json, keyed by path.
+
+    Best-effort: missing or invalid index means no relation badges,
+    never a broken page. The index only ever derives from our own
+    discovery.json (see project_index.py)."""
+    try:
+        if not INDEX.exists():
+            return {}
+        index = json.loads(INDEX.read_text(encoding="utf-8"))
+        by_path = {}
+        for entry in index.get("projects", []):
+            if not isinstance(entry, dict):
+                continue
+            path = entry.get("path")
+            if not isinstance(path, str):
+                continue
+            relations = entry.get("relations", {}) or {}
+            by_path[path] = {
+                "stable_id": entry.get("id", ""),
+                "parent_id": relations.get("parent_id"),
+                "nested_children": relations.get("nested_children_ids", []) or [],
+                "possible_copies": relations.get("possible_copy_ids", []) or [],
+            }
+        return by_path
+    except Exception:
+        return {}
+
+
 @app.route("/")
 def index():
     data = load_discovery()
-    projects = data.get("projects", [])
+    raw_projects = data.get("projects", [])
+    relations = load_relations()
+    projects = []
+    for project in raw_projects:
+        merged = dict(project)
+        info = relations.get(project.get("path", ""))
+        if info:
+            merged.update(info)
+        else:
+            merged.setdefault("stable_id", "")
+            merged.setdefault("parent_id", None)
+            merged.setdefault("nested_children", [])
+            merged.setdefault("possible_copies", [])
+        projects.append(merged)
     return render_template_string(HTML, computer=data.get("computer", "unknown"), projects=projects, git_count=sum(1 for p in projects if p.get("git")), timestamp=data.get("timestamp", "onbekend"))
+
 
 @app.post("/scan")
 def scan():
     subprocess.run([sys.executable, str(AGENT)], check=True)
+    try:
+        # Keep relations fresh: the index purely derives from the
+        # discovery.json just written. Best-effort, never fails scan.
+        subprocess.run([sys.executable, "-c",
+                        "import project_index; project_index.main()"],
+                       check=False, cwd=str(BASE))
+    except Exception:
+        pass
     return redirect("/")
-
 if __name__ == "__main__":
     app.run(host="127.0.0.1", port=8787, debug=False)

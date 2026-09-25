@@ -1,0 +1,61 @@
+6697e9a HEAD@{0}: commit: (no commit message provided)
+edb0a98 HEAD@{1}: commit: feat: BambuPrinterAdapter implementatie toegevoegd
+f19e7ec HEAD@{2}: commit: checkpoint: printer3d.py restored, tests passing
+776eecc HEAD@{3}: reset: moving to HEAD~1
+ebb36a7 HEAD@{4}: reset: moving to HEAD~1
+8499a43 HEAD@{5}: commit: fix: Verwijder onnodige WindowsDesktopBackend klasse
+ebb36a7 HEAD@{6}: reset: moving to HEAD~1
+0991425 HEAD@{7}: commit: fix: Importeer DesktopBackend en ctypes in printer3d.py
+ebb36a7 HEAD@{8}: commit: feat: BambuPrinterAdapter implementeert MQTT-verbinding
+776eecc HEAD@{9}: commit: (no commit message provided)
+afa0217 HEAD@{10}: commit: docs: Documenteer camera pipeline activatie
+e557587 HEAD@{11}: commit: fix: Implementeer placeholder voor snapshot in WindowsWebcamAdapter
+1d562eb HEAD@{12}: commit: fix: Camera adapters mogelijk maken voor snapshots
+d687145 HEAD@{13}: commit: test: Voeg tests toe voor Bambu adapter met mock MQTT
+e6200ae HEAD@{14}: commit: feat: Importeer httpx en paho-mqtt voor printercommunicatie
+cc7834a HEAD@{15}: commit: feat: Voeg BambuPrinterAdapter toe
+d8bfb64 HEAD@{16}: reset: moving to HEAD
+d8bfb64 HEAD@{17}: commit: feat(research): bridge dossiers to mission plans
+3bb36ab HEAD@{18}: commit: feat(missions): close dispatched steps on task completion
+062da4d HEAD@{19}: commit: feat(missions): auto-dispatch research steps
+c427f05 HEAD@{20}: commit: feat(core): integrate workspaces forge remote input and node capabilities
+0f9919a HEAD@{21}: commit: feat(nodes): external worker, scout, linux installer and tick loop
+68ea281 HEAD@{22}: commit: refactor(agent): format agent UI without behavior changes
+eec38dd HEAD@{23}: commit: feat(inventory): expand search type selector
+24633be HEAD@{24}: reset: moving to HEAD
+24633be HEAD@{25}: commit: BIG #45 - finish living ecosystem connections
+b049831 HEAD@{26}: commit: BIG #44 - build the living solarpunk world
+5a023f7 HEAD@{27}: commit: BIG #43 - build the living game layer
+ab51bca HEAD@{28}: commit: BIG #42 - ecosystem hardening + first V2 workflows
+4f5da99 HEAD@{29}: commit: BIG #41 - build Mycelium V2 foundation
+cfa1673 HEAD@{30}: commit: BIG #40 - build presence ecosystem
+75e5caa HEAD@{31}: commit: BIG #39 - build hardware reality layer
+e1c31cc HEAD@{32}: commit: BIG #38 - build living automation
+786c331 HEAD@{33}: commit: BIG #37 - build conversation intelligence
+6893008 HEAD@{34}: commit: BIG #36 - build mobile Mycelium
+6422f25 HEAD@{35}: commit: BIG #35 - build 3D workshop ecosystem
+d0475ad HEAD@{36}: commit: BIG #34 - build camera ecosystem
+98a9dab HEAD@{37}: commit: BIG #33 - build the living world
+8a2467b HEAD@{38}: commit: BIG #32 - record commit SHA in final report
+4f54e0d HEAD@{39}: commit: BIG #32 - build living knowledge and research network
+98a3631 HEAD@{40}: commit: BIG #31 - activate the living ecosystem
+d0eec8f HEAD@{41}: commit: BIG #30 - build the living ecosystem
+ec1ce38 HEAD@{42}: commit: BIG #29 - build Mycelium Research Engine
+b5bd7b4 HEAD@{43}: commit: BIG #23-28 - build Mycelium v1
+fc0f8de HEAD@{44}: commit: BIG #22 - build desktop agent hands
+2e86207 HEAD@{45}: commit: BIG #21 - build autonomous mission loop
+bb59a4f HEAD@{46}: commit: BIG #20 - polish the living workshop visual system
+18bfa06 HEAD@{47}: commit: BIG #19 - build the living workshop UI
+6faee57 HEAD@{48}: commit: BIG #18 - integrate local n8n end to end
+12267b5 HEAD@{49}: commit: BIG #17 - add n8n integration plane
+aef4371 HEAD@{50}: commit: BIG #16 - harden concurrency, fencing, approvals, auth, retention
+1b2796e HEAD@{51}: commit: feat: build living mycelium memory health research and physical world
+bdd49ab HEAD@{52}: commit: feat: add living workshop and distributed state foundation
+1ec424b HEAD@{53}: commit: feat: add living workshop human interface foundation
+61daccc HEAD@{54}: commit: feat: add distributed node routing foundation
+80c2337 HEAD@{55}: commit: feat: add 3d and physical pipeline foundation
+cc80dce HEAD@{56}: commit: feat: add vision ingestion and camera observation pipeline
+ffa049c HEAD@{57}: commit: feat: add controlled writes and verification
+bb6c315 HEAD@{58}: commit: feat: add semantic world model and camera foundation
+c90f8ed HEAD@{59}: commit: docs: sync architecture status and roadmap after BIG 3
+7251a67 HEAD@{60}: commit (initial): Checkpoint: Mycelium AI + INVENTory monorepo

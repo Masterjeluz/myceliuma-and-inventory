@@ -1,0 +1,2 @@
+origin	https://github.com/Masterjeluz/myceliuma-and-inventory.git (fetch)
+origin	https://github.com/Masterjeluz/myceliuma-and-inventory.git (push)

@@ -1,0 +1,7 @@
+ .gitignore                                        |    1 +
+ AUTOPILOT_ROADMAP.md.txt                          | 1106 +++++++++++++++++++++
+ docs/NEXT-AI-CONTEXT.md                           |    0
+ mycelium-ai-main/coordinator/app/printer3d.py     |  380 ++++++-
+ mycelium-ai-main/coordinator/app/vision_ingest.py |   12 +-
+ mycelium-ai-main/tests/test_bambu_adapter.py      |   88 ++
+ 6 files changed, 1563 insertions(+), 24 deletions(-)
