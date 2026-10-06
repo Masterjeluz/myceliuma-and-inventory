@@ -25,12 +25,17 @@ INVENTory onthoudt de wereld; Ollama/Qwen adviseert lokaal.
 
 Zie [mycelium-ai-main/README.md](mycelium-ai-main/README.md) (coordinator
 + node) en [docs/ROADMAP.md](mycelium-ai-main/docs/ROADMAP.md) (richting).
-Verificatie per gebied: `pytest -v` in `mycelium-ai-main/` (822 passed)
-en `inventory/` (178 passed, 1 pre-existing faal op een gitignored
-lokale database-grootte).
+Verificatie per gebied: `pytest -v` in `mycelium-ai-main/` (1953 tests,
+173 files) en `inventory/` (183 tests, 13 files), telling 2026-10-06 via
+`def test_`. Oudere "822/178"-zinnen hieronder zijn vervallen.
+Teststrategie (FAST/FEATURE/FULL): zie [docs/TESTING.md](docs/TESTING.md);
+actuele kaart: [docs/CURRENT_STATE.md](docs/CURRENT_STATE.md).
 
 ## Principes
 
-Local-first · mens beslist (exact YES, geen bypass) · fail-closed ·
-provenance altijd · AI-advies is geen waarheid · geen shell/RCE ·
-geen permanente autonomie · cloud is additief, nooit verplicht.
+Local-first · mens beslist (exact YES, geen bypass — behalve de
+expliciete TOWN_AUTONOMY-dial voor research.fetch_url/
+system_inventory/desktop_screenshot, default uit) ·
+fail-closed · provenance altijd · AI-advies is geen waarheid ·
+geen shell/RCE · geen permanente autonomie (alleen de dial hierboven) ·
+cloud is additief, nooit verplicht.

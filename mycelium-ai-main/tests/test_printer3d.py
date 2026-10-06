@@ -221,3 +221,373 @@ def test_simulated_failure_is_failed():
                            safety_verdict="safe")
     assert result.outcome == "failed"
     assert "simulated" in result.error
+
+
+# -- runtime connect (operator-triggered adapter attach) -------------------
+
+BAMBU_ENV_KEYS = ("BAMBU_MQTT_HOST", "BAMBU_MQTT_PORT",
+                  "BAMBU_MQTT_USERNAME", "BAMBU_MQTT_ACCESS_CODE",
+                  "BAMBU_PRINTER_SERIAL")
+
+FAKE_REPORT = {"print": {"gcode_state": "IDLE",
+                         "gcode_file": "moon.gcode.3mf",
+                         "subtask_name": "moon",
+                         "nozzle_temper": 24.0,
+                         "bed_temper": 22.0,
+                         "mc_percent": 0,
+                         "mc_remaining_time": 0,
+                         "layer_num": 0,
+                         "total_layer_num": 100,
+                         "print_error": 0}}
+
+
+class FakeBambuClient:
+    """Fake paho client: connects, then delivers one canned
+    report through the real adapter callbacks. ``publish`` explodes:
+    the connect path must never move hardware."""
+
+    def __init__(self, serial="TESTSERIAL", silent=False):
+        import threading as _threading
+        self.serial = serial
+        self.silent = silent
+        self.calls: list = []
+        self.published: list = []
+        self.on_connect = None
+        self.on_disconnect = None
+        self.on_message = None
+        self._threading = _threading
+
+    def username_pw_set(self, username, password):
+        self.calls.append(("auth", username))
+
+    def tls_set(self, **kwargs):
+        self.calls.append(("tls", sorted(kwargs)))
+
+    def subscribe(self, topic):
+        self.calls.append(("subscribe", topic))
+        return (0, 0)
+
+    def connect_async(self, host, port, keepalive=60):
+        self.calls.append(("connect", host, port))
+
+    def loop_start(self):
+        def _fire():
+            import time as _time
+            _time.sleep(0.05)
+            if self.on_connect is not None:
+                self.on_connect(self, None, None, 0)
+            if not self.silent and self.on_message is not None:
+                import json as _json
+                msg = type("Msg", (), {
+                    "topic": f"device/{self.serial}/report",
+                    "payload": _json.dumps(
+                        FAKE_REPORT).encode()})()
+                self.on_message(self, None, msg)
+        self._threading.Thread(target=_fire, daemon=True).start()
+
+    def loop_stop(self):
+        self.calls.append(("loop_stop",))
+
+    def disconnect(self):
+        self.calls.append(("disconnect",))
+
+    def publish(self, *args, **kwargs):
+        self.published.append((args, kwargs))
+        raise AssertionError("motion publish during connect")
+
+
+def _set_bambu_env(monkeypatch, **overrides):
+    for key in BAMBU_ENV_KEYS:
+        monkeypatch.delenv(key, raising=False)
+    base = {"BAMBU_MQTT_HOST": "192.168.1.50",
+            "BAMBU_MQTT_PORT": "8883",
+            "BAMBU_MQTT_ACCESS_CODE": "fake-code-123",
+            "BAMBU_PRINTER_SERIAL": "TESTSERIAL"}
+    base.update(overrides)
+    for key, value in base.items():
+        if value is not None:
+            monkeypatch.setenv(key, value)
+
+
+def _conn_device(printer_id="prt-conn1"):
+    from coordinator.app.printer3d import new_printer
+    return new_printer(printer_id, "Connprinter",
+                       ["printer.status", "printer.telemetry",
+                        "printer.start"])
+
+
+def test_connect_attaches_adapter_on_valid_telemetry(monkeypatch):
+    from coordinator.app.printer3d import (
+        BambuPrinterAdapter,
+        adapter_for_printer,
+        connect_printer,
+        register_printer,
+        unregister_printer,
+    )
+    _set_bambu_env(monkeypatch)
+    device = _conn_device()
+    register_printer(device)
+    try:
+        result = connect_printer(
+            "prt-conn1", timeout=5,
+            client_factory=lambda: FakeBambuClient())
+        assert result["reachable"] is True
+        assert result["adapter"] == "bambu-a1-mini-ams"
+        assert result["state"] == "idle"
+        adapter = adapter_for_printer("prt-conn1")
+        assert isinstance(adapter, BambuPrinterAdapter)
+        # Fresh adapter, never connected: the check used its own
+        # short-lived session (disconnected in finally).
+        assert adapter.is_connected is False
+    finally:
+        unregister_printer("prt-conn1")
+
+
+def test_connect_offline_registers_nothing(monkeypatch):
+    from coordinator.app.printer3d import (
+        PrinterUnavailable,
+        adapter_for_printer,
+        connect_printer,
+        register_printer,
+        unregister_printer,
+    )
+    _set_bambu_env(monkeypatch)
+    register_printer(_conn_device("prt-conn2"))
+    try:
+        with pytest.raises(PrinterUnavailable):
+            connect_printer(
+                "prt-conn2", timeout=1,
+                client_factory=lambda: FakeBambuClient(
+                    silent=True))
+        assert adapter_for_printer("prt-conn2") is None
+    finally:
+        unregister_printer("prt-conn2")
+
+
+def test_connect_unknown_printer_refuses(monkeypatch):
+    from coordinator.app.printer3d import (
+        PrinterRefusedError,
+        connect_printer,
+    )
+    _set_bambu_env(monkeypatch)
+    with pytest.raises(PrinterRefusedError, match="unknown"):
+        connect_printer("prt-nope", timeout=1,
+                        client_factory=lambda: FakeBambuClient())
+
+
+def test_connect_missing_env_names_vars_not_values(monkeypatch):
+    from coordinator.app.printer3d import (
+        PrinterRefusedError,
+        adapter_for_printer,
+        connect_printer,
+        register_printer,
+        unregister_printer,
+    )
+    _set_bambu_env(monkeypatch)
+    monkeypatch.delenv("BAMBU_MQTT_HOST", raising=False)
+    register_printer(_conn_device("prt-conn3"))
+    try:
+        with pytest.raises(PrinterRefusedError) as caught:
+            connect_printer("prt-conn3", timeout=1,
+                            client_factory=lambda: FakeBambuClient())
+        text = str(caught.value)
+        assert "BAMBU_MQTT_HOST" in text
+        assert "BAMBU_PRINTER_SERIAL" not in text
+        assert "fake-code-123" not in text
+        assert "192.168.1.50" not in text
+        assert adapter_for_printer("prt-conn3") is None
+    finally:
+        unregister_printer("prt-conn3")
+
+
+def test_connect_causes_no_motion(monkeypatch):
+    from coordinator.app import bambu_exec as exec_mod
+    from coordinator.app.printer3d import (
+        BambuPrinterAdapter,
+        adapter_for_printer,
+        connect_printer,
+        register_printer,
+        unregister_printer,
+    )
+    _set_bambu_env(monkeypatch)
+    calls: list = []
+
+    def _boom(*args, **kwargs):
+        calls.append((args, kwargs))
+        raise AssertionError("motion path reached during connect")
+
+    monkeypatch.setattr(exec_mod, "execute_bambu_job", _boom)
+    monkeypatch.setattr(exec_mod, "ftps_upload", _boom)
+    monkeypatch.setattr(exec_mod, "publish_request", _boom)
+    monkeypatch.setattr(BambuPrinterAdapter, "execute", _boom)
+    register_printer(_conn_device("prt-conn4"))
+    try:
+        result = connect_printer(
+            "prt-conn4", timeout=5,
+            client_factory=lambda: FakeBambuClient())
+        assert result["reachable"] is True
+        assert calls == []
+        assert isinstance(adapter_for_printer("prt-conn4"),
+                          BambuPrinterAdapter)
+    finally:
+        unregister_printer("prt-conn4")
+
+
+def test_connect_registry_empty_after_restart(tmp_path, monkeypatch):
+    from coordinator.app.printer3d import (
+        adapter_for_printer,
+        clear_printers,
+        connect_printer,
+        get_printer,
+        load_printer,
+        register_printer,
+        save_printer,
+    )
+    _set_bambu_env(monkeypatch)
+    monkeypatch.setenv("MYCELIUM_CHAT_DATABASE_PATH",
+                       str(tmp_path / "conn-chat.db"))
+    clear_printers()
+    assert adapter_for_printer("prt-conn5") is None
+    device = _conn_device("prt-conn5")
+    save_printer(device)
+    # Stored twin carries the device, never an adapter.
+    assert load_printer("prt-conn5") is not None
+    assert adapter_for_printer("prt-conn5") is None
+    result = connect_printer(
+        "prt-conn5", timeout=5,
+        client_factory=lambda: FakeBambuClient())
+    assert result["reachable"] is True
+    # "Restart": in-memory registry is empty again.
+    clear_printers()
+    assert get_printer("prt-conn5") is None
+    assert adapter_for_printer("prt-conn5") is None
+
+
+# -- AMS tray-loaded gate (print only what is loaded) ----------------------
+
+
+def test_ams_slot_loaded_helper():
+    from coordinator.app.printer3d import ams_slot_loaded
+    live = {"trays_loaded": [True, False, False, False]}
+    assert ams_slot_loaded(live, "AMS-1") is True
+    assert ams_slot_loaded(live, "AMS-2") is False
+    assert ams_slot_loaded(live, "AMS-9") is None
+    assert ams_slot_loaded({}, "AMS-1") is None
+    assert ams_slot_loaded({"trays_loaded": []}, "AMS-1") is None
+    assert ams_slot_loaded(None, "AMS-1") is None
+    assert ams_slot_loaded(live, "") is None
+    assert ams_slot_loaded(live, "plank") is None
+
+
+class FakeSessionAdapter(SimulatedPrinterAdapter):
+    """Session adapter with canned telemetry. Records motion."""
+
+    capabilities = ["printer.status", "printer.telemetry",
+                    "printer.upload", "printer.start",
+                    "printer.stop", "printer.cancel"]
+
+    def __init__(self, live):
+        super().__init__()
+        self._live = dict(live or {})
+        self.is_connected = True
+        self.executions: list = []
+
+    def _live_status(self):
+        return dict(self._live)
+
+    def execute(self, device, job):
+        self.executions.append(job.job_id)
+        return self._result(device, job, "completed")
+
+
+def _slotted_job(slot="AMS-1"):
+    from coordinator.app.printer3d import new_job
+    gcode_ref, sha = make_gcode()
+    return new_job("pjob-slot", "prt-test1", gcode_ref, sha,
+                   "draft-pla", "tester", spool_id="spl-x",
+                   slot=slot)
+
+
+def test_execute_refuses_unloaded_slot():
+    live = {"trays_loaded": [False, False, False, False]}
+    adapter = FakeSessionAdapter(live)
+    job = _slotted_job()
+    proposal = propose_print("wrt-slot1", job,
+                             safety_verdict="safe", actor="tester")
+    result = execute_print(proposal, approved(proposal),
+                           device=make_device(),
+                           adapter=adapter, safety_verdict="safe")
+    assert result.outcome == "failed"
+    assert "not loaded" in result.error
+    assert adapter.executions == []
+
+
+def test_execute_refuses_unknown_tray_state():
+    adapter = FakeSessionAdapter({})
+    job = _slotted_job()
+    proposal = propose_print("wrt-slot2", job,
+                             safety_verdict="safe", actor="tester")
+    result = execute_print(proposal, approved(proposal),
+                           device=make_device(),
+                           adapter=adapter, safety_verdict="safe")
+    assert result.outcome == "failed"
+    assert adapter.executions == []
+
+
+def test_execute_proceeds_loaded_slot():
+    live = {"trays_loaded": [True, False, False, False]}
+    adapter = FakeSessionAdapter(live)
+    job = _slotted_job()
+    proposal = propose_print("wrt-slot3", job,
+                             safety_verdict="safe", actor="tester")
+    result = execute_print(proposal, approved(proposal),
+                           device=make_device(),
+                           adapter=adapter, safety_verdict="safe")
+    assert result.outcome == "executed"
+    assert adapter.executions == ["pjob-slot"]
+
+
+def test_execute_without_slot_unchanged():
+    adapter = FakeSessionAdapter({})
+    gcode_ref, sha = make_gcode()
+    from coordinator.app.printer3d import new_job
+    job = new_job("pjob-noslot", "prt-test1", gcode_ref, sha,
+                  "draft-pla", "tester")
+    proposal = propose_print("wrt-slot4", job,
+                             safety_verdict="safe", actor="tester")
+    result = execute_print(proposal, approved(proposal),
+                           device=make_device(),
+                           adapter=adapter, safety_verdict="safe")
+    assert result.outcome == "executed"
+
+
+def test_execute_waits_for_partial_push_trays():
+    """First pushes may lack the AMS node; the gate waits
+    boundedly instead of judging one partial push."""
+
+    class _Scripted(FakeSessionAdapter):
+        def __init__(self):
+            super().__init__({})
+            self._reads = [{}, {},
+                           {"trays_loaded": [True, False]}]
+            self.waits = 0
+
+        def _live_status(self):
+            if len(self._reads) > 1:
+                return self._reads.pop(0)
+            return dict(self._reads[0])
+
+        def wait_for_push(self, timeout=None):
+            self.waits += 1
+            return True
+
+    adapter = _Scripted()
+    job = _slotted_job()
+    proposal = propose_print("wrt-slot5", job,
+                             safety_verdict="safe", actor="tester")
+    result = execute_print(proposal, approved(proposal),
+                           device=make_device(),
+                           adapter=adapter, safety_verdict="safe")
+    assert result.outcome == "executed"
+    assert adapter.waits >= 1
+    assert adapter.executions == ["pjob-slot"]

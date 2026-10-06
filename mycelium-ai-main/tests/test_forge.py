@@ -48,6 +48,35 @@ def test_forge_page_opens_with_workshop_shell(tmp_path,
             assert tab in text
 
 
+def test_forge_3d_preview_toggle_present(tmp_path,
+                                         monkeypatch):
+    """3D-preview-toggle: zelfde pinned three.js-patroon als
+    /homebase, 2D-editor blijft leidend, eerlijke fallback."""
+    for client in make_client(tmp_path, monkeypatch):
+        text = client.get("/forge").text
+        assert 'id="forge-3d"' in text
+        assert 'id="forge-3d-toggle"' in text
+        assert 'id="forge-3d-refresh"' in text
+        assert "three@0.160.0" in text
+        assert "2D-editor is leidend" in text
+        assert 'id="forge-view"' in text  # 2D blijft
+
+
+def test_forge_build_queues_without_leaving(tmp_path,
+                                            monkeypatch):
+    """BUILD-paneel spiegelt de /3d-acties: prepare/slice/
+    propose/preflight/enqueue als fetch-knoppen (geen
+    redirect), server blijft gaten."""
+    for client in make_client(tmp_path, monkeypatch):
+        text = client.get("/forge").text
+        assert "forgeAct" in text
+        assert "data-act='" in text
+        assert "data-job='" in text
+        assert "In wachtrij plaatsen" in text
+        assert "/writes" in text
+
+
+
 def test_forge_session_primitive_and_honesty(tmp_path,
                                              monkeypatch):
     """B + I + G: echte primitive + eerlijke slicer + echte read."""

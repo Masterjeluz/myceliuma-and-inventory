@@ -26,9 +26,12 @@ Rules (tested, all fail-closed):
 - Only ``SimulatedPrinterAdapter`` (deterministic in-memory
   state machine, explicitly simulated) and
   ``UnavailablePrinterAdapter`` execute. ``BambuPrinterAdapter``
-  is experimental scaffolding only: it needs the optional
-  ``paho-mqtt`` package plus real hardware, and raises
-  ``PrinterUnavailable`` until fully connected. No serial,
+  is M4.1 READ-ONLY telemetry (TLS connect + allow-listed report
+  subscribe + real ``print``-payload parsing); it has NO publish
+  path, and ``execute()``/``cancel()`` refuse unconditionally.
+  Motion returns no earlier than M4.2. The adapter needs the
+  optional ``paho-mqtt`` package plus real hardware, and raises
+  ``PrinterUnavailable`` until a valid push arrives. No serial,
   no vendor SDK ships in the core.
 - Execution needs ALL of: bound non-stale approval, unchanged
   G-code fingerprint, a safety assessment that is not unsafe,
@@ -56,9 +59,8 @@ MQTT_MISSING_MESSAGE = ("paho-mqtt is not installed, so the Bambu MQTT "
                         "for hardware use).")
 import time
 from typing import Any, Optional # Import Optional
-import queue # Added for BambuPrinterAdapter's message queue
-import threading # Added for BambuPrinterAdapter's message queue processing
-import json # Import json
+import threading # Bambu connack/push events (bounded waits only)
+import json # Bambu report parsing (inbound only, never publish)
 import logging # Import logging
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -107,12 +109,12 @@ def _require_mqtt() -> None:
         raise PrinterUnavailable(
             MQTT_MISSING_MESSAGE + " No motion, no telemetry.")
 
-
 class PrinterDevice(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     printer_id: str = Field(min_length=3, max_length=80)
     name: str = Field(min_length=1, max_length=120)
+    model: str = Field(default="", max_length=80)
     capabilities: list[str] = Field(default_factory=list,
                                     max_length=10)
     inventory_hardware_id: str = Field(default="", max_length=100)
@@ -133,6 +135,8 @@ class PrintJob(BaseModel):
     status: str = Field(default="proposed", max_length=20)
     actor: str = Field(min_length=1, max_length=80)
     proposal_id: str = Field(default="", max_length=80)
+    spool_id: str = Field(default="", max_length=80)
+    slot: str = Field(default="", max_length=12)
     started_at: str = ""
     ended_at: str = ""
     error: str = Field(default="", max_length=2000)
@@ -179,7 +183,7 @@ def check_capabilities(capabilities) -> list[str]:
 
 def new_printer(printer_id: str, name: str, capabilities,
                 inventory_hardware_id: str = "",
-                notes: str = "") -> PrinterDevice:
+                notes: str = "", model: str = "") -> PrinterDevice:
     if not isinstance(printer_id, str) or not printer_id.strip():
         raise PrinterRefusedError("printer_id must be non-empty text")
     if not printer_id.startswith("prt-"):
@@ -191,9 +195,11 @@ def new_printer(printer_id: str, name: str, capabilities,
     if twin and not twin.startswith("hw_"):
         raise PrinterRefusedError(
             "inventory_hardware_id must be an 'hw_' reference")
+    cleaned_model = str(model or "").strip()[:80]
     return PrinterDevice(
         printer_id=printer_id.strip(),
         name=name.strip()[:120],
+        model=cleaned_model,
         capabilities=check_capabilities(capabilities or []),
         inventory_hardware_id=twin,
         notes=str(notes or "")[:500],
@@ -202,7 +208,8 @@ def new_printer(printer_id: str, name: str, capabilities,
 
 def new_job(job_id: str, printer_id: str, gcode_ref: str,
             gcode_sha256: str, profile: str, actor: str,
-            proposal_id: str = "") -> PrintJob:
+            proposal_id: str = "", spool_id: str = "",
+            slot: str = "") -> PrintJob:
     from .mesh3d import check_artifact_ref
     try:
         reference = check_artifact_ref(gcode_ref)
@@ -216,11 +223,18 @@ def new_job(job_id: str, printer_id: str, gcode_ref: str,
         raise PrinterRefusedError("gcode_sha256 must be sha256 hex")
     if not isinstance(actor, str) or not actor.strip():
         raise PrinterRefusedError("actor must be non-empty text")
+    import re as _slot_re
+    cleaned_slot = str(slot or "").strip()[:12]
+    if cleaned_slot and not _slot_re.match(
+            r"^[A-Za-z0-9_-]{1,12}$", cleaned_slot):
+        raise PrinterRefusedError(
+            "slot must match [A-Za-z0-9_-]{1,12}")
     return PrintJob(
         job_id=job_id, printer_id=printer_id,
         gcode_ref=reference, gcode_sha256=gcode_sha256.lower(),
         profile=profile, actor=actor.strip(),
         proposal_id=proposal_id,
+        spool_id=str(spool_id or "")[:80], slot=cleaned_slot,
         provenance=Provenance(
             source_type="ai-generated",
             creator_id=actor.strip(), human_verified=False,
@@ -340,9 +354,16 @@ class SimulatedPrinterAdapter(PrinterAdapter):
 
 
 class BambuPrinterAdapter(PrinterAdapter):
-    """Bambu Lab A1 Mini (AMS) printer adapter.
-    Real driver, but transport and API integration are not yet implemented.
-    Raises PrinterUnavailable until fully connected."""
+    """Bambu Lab A1 Mini (AMS), M4.1 READ-ONLY telemetry.
+
+    TLS connect + subscribe to the allow-listed report topic +
+    parse of real Bambu ``print`` payloads + disconnect. There is
+    NO publish path in this phase: the old command-sending helper
+    was removed, ``execute()``/``cancel()`` refuse unconditionally,
+    and motion returns no earlier than M4.2. Status is UNKNOWN
+    until a valid push arrives and goes stale after 60s; READY is
+    never inferred from connection alone.
+    """
 
     name = "bambu-a1-mini-ams"
     capabilities = ["printer.status", "printer.telemetry",
@@ -350,337 +371,575 @@ class BambuPrinterAdapter(PrinterAdapter):
                     "printer.pause", "printer.stop",
                     "printer.cancel"]
 
-    def __init__(self, mqtt_host: str, mqtt_port: int, mqtt_username: Optional[str], mqtt_password: Optional[str], printer_serial: str, printer_token: str):
+    #: Exact-match subscription allowlist (single entry, M4.1).
+    #: Anything else inbound is counted and ignored.
+    REPORT_TOPIC_TEMPLATE = "device/{serial}/report"
+
+    #: Seconds without a valid push before telemetry counts stale.
+    STALE_AFTER_SECONDS = 60.0
+
+    def __init__(self, mqtt_host: str, mqtt_port: int, mqtt_username: Optional[str], mqtt_password: Optional[str], printer_serial: str, printer_token: str, *, client_factory=None, default_timeout: float = 10.0):
         if not str(mqtt_host or "").strip() or not str(printer_serial or "").strip():
             raise PrinterRefusedError(
                 "Bambu adapter needs mqtt_host and printer_serial")
-        self.mqtt_host = mqtt_host
-        self.mqtt_port = mqtt_port
-        self.mqtt_username = mqtt_username
+        self.mqtt_host = str(mqtt_host).strip()
+        try:
+            self.mqtt_port = int(mqtt_port or 8883)
+        except (TypeError, ValueError):
+            raise PrinterRefusedError(
+                "mqtt_port must be numeric") from None
+        self.mqtt_username = str(mqtt_username or "") or "bblp"
         self.mqtt_password = mqtt_password
-        self.printer_serial = printer_serial
+        self.printer_serial = str(printer_serial).strip()
         self.printer_token = printer_token
+        self._client_factory = client_factory
+        try:
+            self._default_timeout = max(1.0, float(default_timeout))
+        except (TypeError, ValueError):
+            self._default_timeout = 10.0
 
         self.client = None
-        self.message_queue = queue.Queue()
         self.is_connected = False
-        self._status = "offline" # Use string for initial state matching other adapters
-        self._current_job_id: str | None = None
-        self._jobs: dict[str, PrintJob] = {} # In-memory store for job status
-        self._is_simulated = False # Flag to indicate if this is a real adapter or simulation
+        self._report: dict[str, Any] = {}
+        self._pushes = 0
+        self._unexpected_topics = 0
+        self._payload_errors = 0
+        self._last_read_at = ""
+        self._connected_at = ""
+        self._connack = threading.Event()
+        self._pushed = threading.Event()
 
 
-    def _on_connect(self, client, userdata, flags, rc):
-        if rc == 0:
-            logger.info(f"Connected to MQTT Broker: {self.mqtt_host}")
+    def _report_topic(self) -> str:
+        return self.REPORT_TOPIC_TEMPLATE.format(
+            serial=self.printer_serial)
+
+    def _make_client(self):
+        """Build the MQTT client. The factory is injectable so
+        tests use a fake without network; production uses paho
+        with the module-global reference (keeps the existing
+        ``paho.mqtt.client.Client`` patch point working).
+
+        Proven against the real A1 mini broker: explicit v3.1.1,
+        clean session, legacy TLS negotiation floor (the ESP32
+        broker never answers the strict TLSv1.2+ default).
+        """
+        _require_mqtt()
+        if self._client_factory is not None:
+            return self._client_factory()
+        import secrets as _secrets
+        client_id = f"mycelium-{_secrets.token_hex(4)}"
+        try:
+            api = mqtt.CallbackAPIVersion.VERSION2
+            return mqtt.Client(api, client_id=client_id,
+                               protocol=mqtt.MQTTv311,
+                               transport="tcp", clean_session=True)
+        except AttributeError:
+            return mqtt.Client(client_id=client_id)
+
+    @staticmethod
+    def _rc_to_int(rc) -> int:
+        try:
+            value = rc.value if hasattr(rc, "value") else rc
+            return int(value)
+        except (TypeError, ValueError):
+            return -1
+
+    def _on_connect(self, client, userdata, flags, rc,
+                    properties=None):
+        code = self._rc_to_int(rc)
+        if code == 0:
+            try:
+                client.subscribe(self._report_topic())
+            except Exception as error:
+                logger.error(f"Bambu subscribe failed: {error}")
+                self.is_connected = False
+                return
             self.is_connected = True
-            # Subscribe to relevant topics
-            status_topic = f"device/{self.printer_serial}/report"
-            command_reply_topic = f"device/{self.printer_serial}/command_reply"
-            self.client.subscribe(status_topic)
-            self.client.subscribe(command_reply_topic)
-            logger.info(f"Subscribed to {status_topic} and {command_reply_topic}")
-            # Publish initial status request (example)
-            self.client.publish(f"device/{self.printer_serial}/command", json.dumps({"command": "get_status"}))
+            self._connected_at = now()
+            self._connack.set()
+            logger.info(
+                f"Bambu MQTT connected (read-only): {self.mqtt_host} "
+                f"(subscribed, never publishing)")
         else:
-            logger.error(f"Failed to connect, return code {rc}\n")
+            logger.error(f"Bambu MQTT refused, return code {code}")
             self.is_connected = False
-            self._status = "offline"
+            self._connack.set()
+
+    def _on_disconnect(self, client, userdata, flags, rc,
+                       properties=None):
+        self.is_connected = False
+        logger.info(
+            f"Bambu MQTT disconnected "
+            f"(rc={self._rc_to_int(rc)})")
 
     def _on_message(self, client, userdata, msg):
-        logger.debug(f"Received message on topic {msg.topic}: {msg.payload.decode()}")
         try:
-            payload = json.loads(msg.payload.decode())
-            self.message_queue.put((msg.topic, payload))
-        except json.JSONDecodeError:
-            logger.error(f"Failed to decode JSON message: {msg.payload.decode()}")
-        except Exception as e:
-            logger.error(f"Error processing message: {e}")
+            topic = str(getattr(msg, "topic", ""))
+            raw = bytes(getattr(msg, "payload", b"") or b"")
+        except Exception as error:
+            logger.error(f"Bambu message read failed: {error}")
+            return
+        self._handle_mqtt_payload(topic, raw)
 
     def _connect_mqtt(self):
+        """Open a read-only session. Fire-and-forget by design:
+        connect_async never blocks; callers bound the wait via
+        wait_for_push()/read_bambu_once(). No publish, ever."""
         _require_mqtt()
-        # Use a unique client ID to avoid conflicts
-        client_id = f"coordinator_bambu_{self.printer_serial}_{time.time_ns()}"
-        self.client = mqtt.Client(client_id=client_id)
-
-        if self.mqtt_username and self.mqtt_password:
-            self.client.username_pw_set(self.mqtt_username, self.mqtt_password)
-
-        self.client.on_connect = self._on_connect
-        self.client.on_message = self._on_message
-
+        if self.is_connected and self.client is not None:
+            return
+        self._connack.clear()
+        client = self._make_client()
         try:
-            logger.info(f"Attempting to connect to MQTT broker at {self.mqtt_host}:{self.mqtt_port}")
-            self.client.connect(self.mqtt_host, self.mqtt_port, 60)
-            self.client.loop_start() # Start network loop in background thread
-            # Start message processing thread
-            threading.Thread(target=self._process_messages, daemon=True).start()
-        except Exception as e:
-            logger.error(f"MQTT connection error: {e}")
-            self.is_connected = False
-            self._status = "offline"
-
-
-    def _process_messages(self):
-        """Process messages from the MQTT queue."""
-        while True:
+            if self.mqtt_username:
+                client.username_pw_set(
+                    self.mqtt_username, self.mqtt_password or "")
             try:
-                topic, payload = self.message_queue.get_nowait()
-                self._handle_mqtt_payload(topic, payload)
-                self.message_queue.task_done()
-            except queue.Empty:
-                time.sleep(0.1)
-            except Exception as e:
-                logger.error(f"Error processing MQTT message: {e}")
+                import ssl as _ssl
+                # Bewezen tegen de echte A1 mini: CERT_NONE direct
+                # in tls_set. Alleen tls_insecure_set() achteraf
+                # bouwt de context al met CERT_REQUIRED waardoor
+                # de ESP32-handshake nooit een CONNACK oplevert
+                # (bisectie A/B/C). Self-signed LAN-cert, nooit
+                # plaintext.
+                client.tls_set(tls_version=_ssl.PROTOCOL_TLS,
+                               cert_reqs=_ssl.CERT_NONE)
+            except Exception as error:
+                raise PrinterUnavailable(
+                    f"Bambu TLS setup failed ({error}); refusing "
+                    f"plaintext to a printer") from error
+            client.on_connect = self._on_connect
+            client.on_disconnect = self._on_disconnect
+            client.on_message = self._on_message
+            self.client = client
+            client.connect_async(self.mqtt_host, self.mqtt_port,
+                                 keepalive=60)
+            client.loop_start()
+        except PrinterUnavailable:
+            raise
+        except Exception as error:
+            self.client = None
+            raise PrinterUnavailable(
+                f"Bambu MQTT unreachable ({error})") from error
 
-    def _handle_mqtt_payload(self, topic: str, payload: dict):
-        """Handle incoming MQTT payloads and update printer state."""
-        # This is a simplified example. Real Bambu MQTT payloads are complex.
-        # You would need to parse specific messages for status, job updates, etc.
+    #: gcode_state -> honest adapter state. Unknown strings stay
+    #: "unknown"; READY is never a state (never infer readiness).
+    GCODE_STATE_MAP = {
+        "IDLE": "idle",
+        "RUNNING": "printing",
+        "PAUSE": "paused",
+        "PAUSED": "paused",
+        "FINISH": "idle",
+        "FAILED": "failed",
+        "PREPARE": "preparing",
+        "SLICING": "preparing",
+    }
 
-        if "report" in topic:
-            # Example: Update printer status based on report payload
-            if "print_status" in payload:
-                status_str = payload["print_status"]
-                if status_str == "PRINTING":
-                    self._status = "printing"
-                    if self._current_job_id and self._current_job_id in self._jobs:
-                        job = self._jobs[self._current_job_id]
-                        job.status = "running"
-                        if "progress" in payload and payload["progress"] is not None:
-                            job.progress = {"progress": int(payload["progress"]), "time_remaining": payload.get("time_remaining")} # Mimic PrinterProgress structure
-                        if "start_time" in payload: # Assuming printer provides start time
-                             job.started_at = payload["start_time"]
+    def _handle_mqtt_payload(self, topic: str, raw: bytes) -> str:
+        """Parse one inbound report against the real Bambu schema.
 
-                elif status_str == "PAUSED":
-                    self._status = "paused"
-                    if self._current_job_id and self._current_job_id in self._jobs:
-                        self._jobs[self._current_job_id].status = "paused"
+        Returns "stored" | "ignored-topic" | "ignored-payload".
+        Only the exact allow-listed topic is accepted; payloads
+        merge as deltas into ``_report`` (Bambu sends partial
+        updates). Anything unexpected is counted, never trusted.
+        """
+        if topic != self._report_topic():
+            self._unexpected_topics += 1
+            return "ignored-topic"
+        try:
+            payload = json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, ValueError):
+            self._payload_errors += 1
+            return "ignored-payload"
+        if not isinstance(payload, dict):
+            self._payload_errors += 1
+            return "ignored-payload"
+        node = payload.get("print")
+        if not isinstance(node, dict):
+            self._payload_errors += 1
+            return "ignored-payload"
+        merged = dict(self._report)
+        for key in ("gcode_state", "gcode_file", "subtask_name",
+                    "nozzle_temper", "bed_temper", "chamber_temper",
+                    "nozzle_target_temper", "bed_target_temper",
+                    "mc_percent", "mc_remaining_time",
+                    "layer_num", "total_layer_num", "print_error",
+                    "wifi_signal", "nozzle_diameter", "ams_status"):
+            if key in node and node[key] is not None:
+                merged[key] = node[key]
+        ams = node.get("ams")
+        if isinstance(ams, dict):
+            trays = []
+            for unit in ams.get("ams", []) or []:
+                if isinstance(unit, dict):
+                    for tray in unit.get("tray", []) or []:
+                        if isinstance(tray, dict):
+                            trays.append({
+                                "id": tray.get("id"),
+                                "tag_uid": tray.get("tag_uid", ""),
+                                "ctype": tray.get("ctype", ""),
+                                "remain": tray.get("remain", -1),
+                            })
+            merged["ams_trays"] = trays
+            merged["ams_exists"] = ams.get("ams_exist_bits", "")
+        self._report = merged
+        self._pushes += 1
+        self._last_read_at = now()
+        self._pushed.set()
+        return "stored"
 
-                elif status_str in ("FINISH", "CANCELLED", "STOPPED"): # Map Bambu statuses to our statuses
-                    self._status = "idle"
-                    if self._current_job_id and self._current_job_id in self._jobs:
-                        job = self._jobs[self._current_job_id]
-                        job.status = "completed" if status_str == "FINISH" else "cancelled"
-                        job.ended_at = payload.get("end_time", now()) # Assuming end time is provided
-                        job.error = payload.get("error", "")
-                    self._current_job_id = None
+    def _report_age_seconds(self, current: str = "") -> float | None:
+        if not self._last_read_at:
+            return None
+        try:
+            from datetime import datetime, timezone
+            stamp = current or datetime.now(timezone.utc).isoformat()
+            delta = (datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+                     - datetime.fromisoformat(
+                         self._last_read_at.replace("Z", "+00:00")))
+            return max(0.0, delta.total_seconds())
+        except (ValueError, TypeError):
+            return None
 
-                elif status_str == "IDLE":
-                    self._status = "idle"
-                    self._current_job_id = None # Ensure current job is cleared if printer reports idle
+    def _live_status(self) -> dict:
+        """Build the status dict from the last good push. UNKNOWN
+        wherever the printer has not actually said anything."""
+        report = self._report
+        gcode_state = str(report.get("gcode_state", "") or "")
+        state = self.GCODE_STATE_MAP.get(gcode_state, "unknown")
+        if gcode_state == "FINISH":
+            state = "idle"
 
-                else:
-                    self._status = "error" # Default to error for unknown states
-
-            # Example: Update job info if available
-            if "job_id" in payload and "job_name" in payload:
-                job_id = payload["job_id"]
-                if job_id not in self._jobs:
-                    # Create a basic PrintJob if it doesn't exist
-                    self._jobs[job_id] = PrintJob(
-                        job_id=job_id,
-                        printer_id=self.printer_serial, # Assuming serial is printer_id
-                        gcode_ref=payload.get("job_name", "Unknown File"),
-                        gcode_sha256=payload.get("gcode_sha256", "0"*64), # Placeholder if not provided
-                        profile="default", # Placeholder
-                        status="queued", # Initial status, will be updated
-                        actor="system", # Placeholder
-                        started_at=payload.get("start_time", ""),
-                        ended_at=payload.get("end_time", ""),
-                        error=payload.get("error", ""),
-                        provenance=Provenance(source_type="telemetry", creator_id=f"printer:{self.printer_serial}")
-                    )
-                if self._current_job_id == job_id:
-                    job = self._jobs[job_id]
-                    job.gcode_ref = payload.get("job_name", job.gcode_ref) # Update name
-                    # Update other fields as needed based on received payload
-
-
-        elif "command_reply" in topic:
-            # Handle replies to commands sent
-            if payload.get("success"):
-                logger.info(f"Command successful: {payload}")
-                # Update job status based on command replies if applicable
-                if payload.get("command") == "start_print" and payload.get("success"):
-                    if self._current_job_id and self._current_job_id in self._jobs:
-                         self._jobs[self._current_job_id].status = "running"
-                         self._status = "printing" # Update overall status
-            else:
-                logger.info(f"Command failed: {payload}") # Use info for expected command failures too
-                # If a command fails, update the status of the affected job
-                if "job_id" in payload and payload["job_id"] in self._jobs:
-                    job = self._jobs[payload["job_id"]]
-                    job.status = "failed"
-                    job.error = payload.get("message", "Unknown error during command execution")
-                    job.ended_at = now()
-                    if self._current_job_id == payload["job_id"]:
-                        self._current_job_id = None
-                        self._status = "error"
-
-
-    def _send_command(self, command: dict, retries: int = 3) -> dict:
-        """Sends a command to the printer via MQTT and returns the reply payload."""
-        _require_mqtt()
-        if not self.is_connected or not self.client:
-            return {"success": False, "message": "Not connected to MQTT."}
-
-        # Add common fields required by the printer API
-        command["printer_serial"] = self.printer_serial
-        command["token"] = self.printer_token
-
-        topic = f"device/{self.printer_serial}/command"
-        payload = json.dumps(command)
-
-        logger.info(f"Sending command to {topic}: {payload}")
-
-        for attempt in range(retries):
+        def _num(key: str):
             try:
-                result = self.client.publish(topic, payload)
-                if result.rc == mqtt.MQTT_ERR_SUCCESS:
-                    # In a real implementation, we'd wait for a specific reply
-                    # on the command_reply_topic. For this example, we'll assume
-                    # a successful publish implies eventual success and return a placeholder response.
-                    # A more robust solution would involve tracking command IDs and matching replies.
-                    logger.debug(f"Command published successfully (mid={result.mid})")
-                    # Simulate a reply - this needs to be replaced with actual reply handling
-                    return {"success": True, "message": "Command sent, waiting for confirmation.", "command": command.get("command")}
-                else:
-                    logger.warning(f"MQTT publish failed with code {result.rc} on attempt {attempt + 1}")
-                    time.sleep(5) # Wait before retrying
-            except Exception as e:
-                logger.error(f"Exception during MQTT publish: {e} on attempt {attempt + 1}")
-                time.sleep(5) # Wait before retrying
+                value = report.get(key, None)
+                return float(value) if value is not None else None
+            except (TypeError, ValueError):
+                return None
 
-        return {"success": False, "message": f"Failed to send command after {retries} retries."}
+        trays = report.get("ams_trays") or []
+        has_trays = isinstance(report.get("ams_trays"), list)
+        loaded_flags = [bool(
+            isinstance(tray, dict)
+            and str(tray.get("tag_uid", "") or "") not in
+            ("", "0000000000000000")) for tray in trays]
+        loaded = sum(1 for flag in loaded_flags if flag)
+        job_name = str(report.get("subtask_name", "")
+                       or report.get("gcode_file", "") or "")
+        return {
+            "state": state,
+            "gcode_state": gcode_state or "UNKNOWN",
+            "nozzle_c": _num("nozzle_temper"),
+            "bed_c": _num("bed_temper"),
+            "progress_pct": _num("mc_percent"),
+            "remaining_min": _num("mc_remaining_time"),
+            "layer": _num("layer_num"),
+            "layers_total": _num("total_layer_num"),
+            "job_name": job_name[:120],
+            "ams_trays": len(trays),
+            "ams_loaded": loaded,
+            "trays_loaded": loaded_flags if has_trays else [],
+            "print_error": report.get("print_error", 0),
+            "pushes": self._pushes,
+            "last_read_at": self._last_read_at,
+        }
+
+    def wait_for_push(self, timeout: float | None = None) -> bool:
+        """Wait (bounded) for the next valid push. No polling of
+        the printer — the broker delivers; we only wait."""
+        try:
+            budget = max(1.0, float(
+                self._default_timeout if timeout is None
+                else timeout))
+        except (TypeError, ValueError):
+            budget = self._default_timeout
+        self._pushed.clear()
+        return bool(self._pushed.wait(timeout=budget))
+
+    def disconnect(self) -> None:
+        """Close the read session. Best-effort, never raises."""
+        self.is_connected = False
+        client, self.client = self.client, None
+        if client is None:
+            return
+        try:
+            client.loop_stop()
+        except Exception:
+            pass
+        try:
+            client.disconnect()
+        except Exception:
+            pass
 
 
     def status(self, device: PrinterDevice) -> dict:
-        """Get the current status of the printer."""
+        """Live read-only status from the last valid push.
+
+        Refuses (fail-closed) when offline, without telemetry, or
+        stale (>60s). Never invents READY: without a gcode_state
+        the state is "unknown".
+        """
         if not self.is_connected:
             raise PrinterUnavailable("Bambu printer is offline.")
-
-        # Request status explicitly if needed and wait for a reply.
-        # For simplicity here, we return the last known status from MQTT reports.
-        # A real implementation would need a mechanism to send a status request
-        # and wait for the specific reply.
-        return {"printer_id": device.printer_id, "state": self._status}
-
+        if not self._report or not self._last_read_at:
+            raise PrinterUnavailable(
+                "Bambu connected but no telemetry yet; UNKNOWN, "
+                "never READY by connection alone.")
+        age = self._report_age_seconds()
+        if age is not None and age > self.STALE_AFTER_SECONDS:
+            raise PrinterUnavailable(
+                f"Bambu telemetry stale ({age:.0f}s without push); "
+                f"not READY.")
+        live = self._live_status()
+        live["printer_id"] = device.printer_id
+        return live
 
     def execute(self, device: PrinterDevice, job: PrintJob) -> PrintResult:
-        """Executes a print job."""
+        """M4.2 physical execution (operator-gated upstream).
+
+        Runs only after exact-YES + revalidation in fab_flow: live
+        G-code re-hash, plate .3mf build, FTPS upload + SIZE
+        verify, project_file publish, start-confirm via telemetry.
+        Returns started (never completed — completion is observed
+        separately). Offline/unconfigured refuses fail-closed.
+        """
         if not self.is_connected:
             raise PrinterUnavailable("Bambu printer is offline.")
-        if job.job_id in self._jobs and self._jobs[job.job_id].status in TERMINAL_JOB_STATUSES:
-             raise PrinterRefusedError(f"Job {job.job_id} is already in terminal state.")
-
-        # Send the start print command
-        command_result = self._send_command({
-            "command": "start_print",
-            "job_id": job.job_id,
-            "file_path": job.gcode_ref # Assuming gcode_ref is the path on the printer
-        })
-
-        if command_result.get("success"):
-            # Update internal state for the job
-            if job.job_id not in self._jobs:
-                 # If job wasn't known, create it
-                 self._jobs[job.job_id] = job
-            self._jobs[job.job_id].status = "queued" # Start as queued
-            self._jobs[job.job_id].started_at = now()
-            self._current_job_id = job.job_id
-            self._status = "printing" # Update overall status
-
-            # Simulate completion after a delay for testing purposes if not connected to real printer
-            # In a real scenario, you'd wait for MQTT status updates.
-            if not self.is_connected or self._is_simulated: # Check if simulation is intended
-                 threading.Thread(target=self._simulate_job_completion, args=(job.job_id,), daemon=True).start()
-
-            # Return a PrintResult indicating the job has started
-            return PrintResult(
-                job_id=job.job_id,
-                printer_id=device.printer_id,
-                status="queued", # Initially queued, will change to running/completed
-                gcode_sha256=job.gcode_sha256,
-                started_at=now(),
-                ended_at="",
-                error="",
-                telemetry={}, # Initial telemetry is empty
-                actor=job.actor,
-                provenance=Provenance(source_type="operator-request", creator_id=job.actor)
-            )
-        else:
-            # Command failed to send or printer reported error
-            error_msg = command_result.get("message", "Unknown error during start_print command.")
-            self._jobs[job.job_id] = job.model_copy(update={
-                "status": "failed", "error": error_msg, "ended_at": now()
-            })
-            raise PrinterUnavailable(f"Failed to start print job {job.job_id}: {error_msg}")
+        from .bambu_exec import BambuExecError, BambuExecUnavailable
+        from .bambu_exec import execute_bambu_job
+        try:
+            started = execute_bambu_job(self, device, job)
+        except (BambuExecError, BambuExecUnavailable) as error:
+            raise PrinterUnavailable(
+                f"Bambu execution refused: {error}") from error
+        return PrintResult(
+            job_id=job.job_id,
+            printer_id=device.printer_id,
+            status="running",
+            gcode_sha256=job.gcode_sha256,
+            started_at=now(),
+            ended_at="",
+            error="",
+            telemetry={
+                "remote_name": started["remote_name"],
+                "size_bytes": started["size_bytes"],
+                "subtask_name": started["subtask_name"],
+                "sequence_id": started["sequence_id"],
+                "profile_files": started["profile_files"],
+                "weight_g": started["weight_g"],
+            },
+            actor=job.actor,
+            provenance=Provenance(
+                source_type="operator-request",
+                creator_id=job.actor, human_verified=False,
+                notes="physical print started; completion is "
+                      "observed separately, never implied"))
 
     def cancel(self, device: PrinterDevice, job: PrintJob) -> PrintJob:
-        """Cancels a print job."""
+        """M4.2 hardware stop (operator-gated upstream).
+
+        Publishes stop and confirms IDLE; refuses (fail-closed)
+        when offline or unconfirmed. Queue bookkeeping stays with
+        the caller.
+        """
         if not self.is_connected:
             raise PrinterUnavailable("Bambu printer is offline.")
-        if job.job_id not in self._jobs or self._jobs[job.job_id].status in TERMINAL_JOB_STATUSES:
-            # Job not found or already finished
-            return job
-
-        command_result = self._send_command({"command": "cancel_print", "job_id": job.job_id})
-
-        if command_result.get("success"):
-            # Update internal job status
-            updated_job = self._jobs[job.job_id].model_copy(update={
-                "status": "cancelled",
-                "ended_at": now(),
-                "error": "cancelled by operator (simulated; " + ESTOP_NOTE + ")",
-            })
-            self._jobs[job.job_id] = updated_job
-            if self._current_job_id == job.job_id:
-                self._current_job_id = None
-                self._status = "idle"
-            return updated_job
-        else:
-            error_msg = command_result.get("message", "Unknown error during cancel_print command.")
-            updated_job = self._jobs[job.job_id].model_copy(update={
-                "status": "failed", "error": error_msg, "ended_at": now()
-            })
-            if self._current_job_id == job.job_id:
-                self._current_job_id = None
-                self._status = "error"
-            return updated_job
-
-    def _simulate_job_completion(self, job_id: str):
-        """Simulates job completion after a delay for testing."""
-        time.sleep(10) # Simulate print duration
-        if job_id in self._jobs:
-            job = self._jobs[job_id]
-            if job.status == "queued" or job.status == "running": # Only complete if not already cancelled/failed
-                job.status = "completed"
-                job.ended_at = now()
-                job.error = ""
-                self._jobs[job_id] = job
-                if self._current_job_id == job_id:
-                    self._current_job_id = None
-                    self._status = "idle" # Transition to idle
+        from .bambu_exec import BambuExecError, BambuExecUnavailable
+        from .bambu_exec import stop_bambu_job
+        try:
+            stop_bambu_job(self)
+        except (BambuExecError, BambuExecUnavailable) as error:
+            raise PrinterUnavailable(
+                f"Bambu stop refused: {error}") from error
+        return job.model_copy(update={
+            "status": "cancelled", "ended_at": now(),
+            "error": "stopped by operator; verify on device (" +
+                     ESTOP_NOTE + ")",
+        })
 
 
     @classmethod
     def requirements(cls) -> str:
-        return ("Bambu Lab printer requires MQTT connection details (host, port, "
-                "username, password) and printer-specific credentials "
-                "(serial, token).")
+        return ("Bambu Lab printer (M4.1 read-only): LAN MQTT over "
+                "TLS :8883 as user bblp with the printer access code, "
+                "plus the printer serial for the report topic. "
+                "Configure via BAMBU_MQTT_HOST/PORT/USERNAME/"
+                "ACCESS_CODE env only (never stored); enable LAN mode "
+                "on the printer. Motion paths do not exist in M4.1.")
 
     def __del__(self):
-        """Ensure MQTT client is disconnected when the object is garbage collected."""
-        if getattr(self, "client", None):
-            self.client.loop_stop()
-            self.client.disconnect()
-            logger.info("MQTT client disconnected.")
+        """Best-effort disconnect on teardown. Never raises."""
+        try:
+            self.disconnect()
+        except Exception:
+            pass
+
+
+#: Env-only Bambu credentials (M4.1). Never persisted, never
+#: logged, never rendered. USERNAME defaults to the protocol-fixed
+#: "bblp"; the serial is identity (not a secret) but also stays
+#: out of source/DB for the same handling discipline.
+BAMBU_ENV_VARS = ("BAMBU_MQTT_HOST", "BAMBU_MQTT_PORT",
+                  "BAMBU_MQTT_USERNAME", "BAMBU_MQTT_ACCESS_CODE",
+                  "BAMBU_PRINTER_SERIAL")
+
+
+def bambu_config_from_env(env=None) -> tuple[dict, list[str]]:
+    """Read Bambu LAN config from the environment only.
+
+    Returns (config, missing). Missing names the exact vars to
+    set; values never appear in messages, logs or errors.
+    """
+    import os as _os
+    source = env if env is not None else _os.environ
+    host = str(source.get("BAMBU_MQTT_HOST", "") or "").strip()
+    raw_port = str(source.get("BAMBU_MQTT_PORT", "") or "").strip()
+    username = str(source.get("BAMBU_MQTT_USERNAME", "")
+                   or "").strip() or "bblp"
+    access_code = str(source.get("BAMBU_MQTT_ACCESS_CODE", "")
+                      or "").strip()
+    serial = str(source.get("BAMBU_PRINTER_SERIAL", "")
+                 or "").strip()
+    missing = []
+    if not host:
+        missing.append("BAMBU_MQTT_HOST")
+    if not access_code:
+        missing.append("BAMBU_MQTT_ACCESS_CODE")
+    if not serial:
+        missing.append("BAMBU_PRINTER_SERIAL")
+    try:
+        port = int(raw_port) if raw_port else 8883
+    except (TypeError, ValueError):
+        return {}, ["BAMBU_MQTT_PORT (moet numeriek zijn)"]
+    if not 1 <= port <= 65535:
+        return {}, ["BAMBU_MQTT_PORT (moet 1..65535 zijn)"]
+    if missing:
+        return {}, missing
+    return {"host": host, "port": port, "username": username,
+            "access_code": access_code, "serial": serial}, []
+
+
+def read_bambu_once(printer_id: str = "", timeout: float = 20.0,
+                    client_factory=None, env=None) -> dict:
+    """One bounded read-only session: connect, wait for a valid
+    push, snapshot, disconnect (always, via finally).
+
+    Raises PrinterUnavailable (missing config/unreachable/
+    timeout/no telemetry) or PrinterRefusedError (bad config).
+    Publishes nothing; the adapter has no publish path.
+    """
+    config, missing = bambu_config_from_env(env=env)
+    if missing:
+        raise PrinterUnavailable(
+            "Bambu niet geconfigureerd; zet "
+            + ", ".join(missing))
+    adapter = BambuPrinterAdapter(
+        config["host"], config["port"], config["username"],
+        config["access_code"], config["serial"], "",
+        client_factory=client_factory, default_timeout=timeout)
+    try:
+        adapter._connect_mqtt()
+        if not adapter.wait_for_push(timeout=timeout):
+            raise PrinterUnavailable(
+                "Bambu verbonden maar geen geldige telemetrie "
+                "binnen budget; UNKNOWN.")
+        live = adapter._live_status()
+        live["printer_id"] = printer_id or config["serial"]
+        live["reachable"] = True
+        return live
+    finally:
+        adapter.disconnect()
+
+
+#: Last read-only snapshots per printer (process-local display
+#: cache; never a source of truth, always timestamped).
+_LAST_BAMBU_READS: dict[str, dict] = {}
+
+
+def connect_printer(printer_id: str, *, timeout: float = 20.0,
+                    client_factory=None) -> dict:
+    """Attach a live Bambu adapter to a registered printer.
+
+    Operator-triggered only (connect route). Exactly one bounded
+    read-only telemetry check via ``read_bambu_once``; the adapter
+    is registered in the in-memory registry only on valid
+    telemetry. Every failure closes without registering and
+    without partial state. This function never moves hardware:
+    no publish, no upload, no job — motion stays behind the
+    printer.execute YES-gate in fab_flow.
+    """
+    device = _PRINTERS.get(str(printer_id or ""))
+    if device is None:
+        device = load_printer(str(printer_id or ""))
+    if device is None:
+        raise PrinterRefusedError(
+            f"Printer '{str(printer_id or '')[:40]}' unknown; "
+            f"register it first")
+    config, missing = bambu_config_from_env()
+    if missing:
+        raise PrinterRefusedError(
+            "Bambu niet geconfigureerd; zet "
+            + ", ".join(missing))
+    _require_mqtt()
+    try:
+        budget = float(timeout)
+    except (TypeError, ValueError):
+        budget = 20.0
+    budget = max(1.0, min(budget, 60.0))
+    live = read_bambu_once(device.printer_id, timeout=budget,
+                           client_factory=client_factory)
+    adapter = BambuPrinterAdapter(
+        config["host"], config["port"], config["username"],
+        config["access_code"], config["serial"], "",
+        client_factory=client_factory)
+    register_printer(device, adapter)
+    return {
+        "printer_id": device.printer_id,
+        "adapter": adapter.name,
+        "reachable": True,
+        "state": live.get("state", "unknown"),
+        "gcode_state": live.get("gcode_state", "UNKNOWN"),
+        "nozzle_c": live.get("nozzle_c"),
+        "bed_c": live.get("bed_c"),
+        "progress_pct": live.get("progress_pct"),
+        "last_read_at": live.get("last_read_at", ""),
+    }
+
+
+def record_bambu_reading(printer_id: str, snapshot: dict) -> dict:
+    entry = dict(snapshot or {})
+    entry["read_at"] = now()
+    _LAST_BAMBU_READS[str(printer_id or "")] = entry
+    return entry
+
+
+def last_bambu_reading(printer_id: str) -> dict | None:
+    return _LAST_BAMBU_READS.get(str(printer_id or ""))
 
 
 def adapter_capabilities(adapter: PrinterAdapter) -> list[str]:
     claimed = list(getattr(adapter, "capabilities", []) or [])
     return [cap for cap in claimed if cap in PRINTER_CAPABILITIES]
+
+
+def ams_slot_loaded(live: dict | None,
+                    slot_label: str) -> bool | None:
+    """Is the tray for one AMS-N slot loaded? True/False, or None
+    when the printer reported no tray data. Never guessed: an
+    empty slot label or unknown tray state returns None."""
+    import re as _re
+    match = _re.match(r"(?i)^ams-([1-8])$",
+                      str(slot_label or ""))
+    if not match:
+        return None
+    flags = (live or {}).get("trays_loaded")
+    if not isinstance(flags, list) or not flags:
+        return None
+    index = int(match.group(1)) - 1
+    if index >= len(flags):
+        return None
+    return bool(flags[index])
 
 
 # -- registry (empty in production: fail-closed) ------------------------------

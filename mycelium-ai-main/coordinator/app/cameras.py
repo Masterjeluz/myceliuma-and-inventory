@@ -326,6 +326,25 @@ def detect_local_imaging_devices() -> dict:
     return {"supported": True, "devices": found, "reason": ""}
 
 
+def _configure_setupapi_signatures(setupapi, guid_type, interface_data_type) -> None:
+    """Declare Win32 pointer-sized handles before calling SetupAPI."""
+    handle = ctypes.c_void_p
+    dword = ctypes.c_ulong
+    setupapi.SetupDiGetClassDevsW.argtypes = [
+        ctypes.POINTER(guid_type), ctypes.c_wchar_p, handle, dword]
+    setupapi.SetupDiGetClassDevsW.restype = handle
+    setupapi.SetupDiEnumDeviceInterfaces.argtypes = [
+        handle, handle, ctypes.POINTER(guid_type), dword,
+        ctypes.POINTER(interface_data_type)]
+    setupapi.SetupDiEnumDeviceInterfaces.restype = ctypes.c_int
+    setupapi.SetupDiGetDeviceInterfaceDetailW.argtypes = [
+        handle, ctypes.POINTER(interface_data_type), handle, dword,
+        ctypes.POINTER(dword), handle]
+    setupapi.SetupDiGetDeviceInterfaceDetailW.restype = ctypes.c_int
+    setupapi.SetupDiDestroyDeviceInfoList.argtypes = [handle]
+    setupapi.SetupDiDestroyDeviceInfoList.restype = ctypes.c_int
+
+
 def _windows_image_devices() -> list[dict[str, Any]]:
     """SetupDi enumeration of GUID_DEVINTERFACE_IMAGE, names only."""
     setupapi = ctypes.windll.setupapi
@@ -347,6 +366,7 @@ def _windows_image_devices() -> list[dict[str, Any]]:
                     ("Flags", ctypes.c_ulong),
                     ("Reserved", ctypes.c_void_p)]
 
+    _configure_setupapi_signatures(setupapi, GUID, DeviceInterfaceData)
     guid = GUID()
     ctypes.memmove(ctypes.byref(guid), guid_bytes, 16)
     DIGCF_PRESENT = 0x00000002

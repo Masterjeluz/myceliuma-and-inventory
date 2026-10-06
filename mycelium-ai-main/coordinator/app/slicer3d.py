@@ -42,16 +42,33 @@ from .mesh3d import (
 )
 
 #: Closed slicer profiles. Identity only — no slicer runs here.
+#: M2 (BIG57) dims: supports + threshold + print speed join the
+#: allow-list so real slicing can be configured; check_profile
+#: still refuses anything outside this set.
+#: M3.5: "printers" allow-list per profile (empty = universeel,
+#: documented as no uitspraak, warned at pre-flight; non-empty is
+#: enforced against the printer model).
 SLICER_PROFILES = {
     "draft-pla": {"layer_mm": 0.28, "infill": 15,
                   "material": "PLA", "nozzle_c": 210,
-                  "bed_c": 60},
+                  "bed_c": 60, "supports": False,
+                  "support_threshold_deg": 45,
+                  "print_speed_mms": 0, "printers": []},
     "fine-pla": {"layer_mm": 0.12, "infill": 20,
                  "material": "PLA", "nozzle_c": 210,
-                 "bed_c": 60},
+                 "bed_c": 60, "supports": False,
+                 "support_threshold_deg": 45,
+                 "print_speed_mms": 0, "printers": []},
     "draft-petg": {"layer_mm": 0.28, "infill": 15,
                    "material": "PETG", "nozzle_c": 240,
-                   "bed_c": 80},
+                   "bed_c": 80, "supports": False,
+                   "support_threshold_deg": 45,
+                   "print_speed_mms": 0, "printers": []},
+    "fine-pla-supports": {"layer_mm": 0.12, "infill": 20,
+                          "material": "PLA", "nozzle_c": 210,
+                          "bed_c": 60, "supports": True,
+                          "support_threshold_deg": 45,
+                          "print_speed_mms": 0, "printers": []},
 }
 
 #: G-code dialects this layer emits/reads. Nothing else parses.

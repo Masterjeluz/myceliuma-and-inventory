@@ -109,6 +109,15 @@ svg.world{width:100%;height:auto;background:var(--soil-2);border:1px solid var(-
 svg.world .w-node{cursor:pointer}
 svg.world .w-node:focus{outline:2px solid var(--amber);outline-offset:2px}
 svg.world text{fill:var(--ink-dim);font-size:11px;font-family:var(--font)}
+svg.world .w-area{fill:rgba(76,107,79,.10);stroke:var(--fern);stroke-width:1.5;stroke-dasharray:6 4}
+svg.world .w-area:hover,.w-area:focus{fill:rgba(76,107,79,.20);stroke:var(--moss);outline:none}
+svg.world .w-hi{stroke:var(--amber);stroke-width:3px}
+.canvas-wrap{display:grid;grid-template-columns:minmax(0,1fr) 300px;gap:var(--space-2);align-items:start}
+#cside{position:sticky;top:var(--space-2)}
+#cresults{list-style:none;margin:.4rem 0;padding:0}
+#cresults li{margin:.25rem 0}
+@media (max-width:1080px){.canvas-wrap{grid-template-columns:minmax(0,1fr)}#cside{position:static}}
+svg.world text.w-area-label{fill:var(--spore);font-size:12px;letter-spacing:.08em;text-transform:uppercase}
 @media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
 .breathe{animation:breathe 5s ease-in-out infinite}
 @keyframes breathe{0%,100%{opacity:.75}50%{opacity:1}}
@@ -243,8 +252,8 @@ NAV = [
                     ("/missions", "Mission"), ("/approvals", "Approval"),
                     ("/tasks", "Task"), ("/activity", "Event"),
                     ("/triage", "Triage 🌱")]),
-    ("WORLD", [("/", "Living World"), ("/play", "Play"),
-               ("/world", "World Graph"),
+    ("WORLD", [("/solarpunk", "Solar Punk City 🌱"), ("/homebase", "Home Base 3D 🏠"), ("/", "Living World"), ("/play", "Play"),
+               ("/side", "Side 🌱"), ("/world", "World Graph"), ("/canvas", "Canvas 🔧"),
                ("/craft", "Craft Tree"), ("/guide", "Guide"),
                ("/quests", "Quests"), ("/campaigns", "Campaigns"),
                ("/presence", "Presence"),
@@ -1068,6 +1077,38 @@ function wrender(){
   g.setAttribute('transform', `translate(${tx},${ty}) scale(${scale})`);
   svg.appendChild(g);
   const byId = wlayout();
+  (WGDATA.areas || []).forEach(a => {
+    if (!a || !a.id) return;
+    const pts = (a.members || []).map(id => byId[id]).filter(p => p);
+    if (!pts.length) return;
+    const xs = pts.map(p => p.x), ys = pts.map(p => p.y);
+    const pad = 34;
+    const x0 = Math.min(...xs) - pad, y0 = Math.min(...ys) - pad - 14;
+    const x1 = Math.max(...xs) + pad, y1 = Math.max(...ys) + pad;
+    const label = String(a.label || a.id).slice(0, 40);
+    const go = () => { location.href = '/world?entity_id=' + encodeURIComponent(a.id) + WSSUFFIX; };
+    const r = document.createElementNS(NS, 'rect');
+    r.setAttribute('x', x0); r.setAttribute('y', y0);
+    r.setAttribute('width', Math.max(10, x1 - x0));
+    r.setAttribute('height', Math.max(10, y1 - y0));
+    r.setAttribute('rx', 18); r.setAttribute('class', 'w-area');
+    r.setAttribute('tabindex', '0'); r.setAttribute('role', 'link');
+    r.setAttribute('aria-label', label + ' area — open neighborhood');
+    const tip = document.createElementNS(NS, 'title');
+    tip.textContent = label + ' — open area';
+    r.appendChild(tip);
+    r.style.cursor = 'pointer';
+    r.addEventListener('click', go);
+    r.addEventListener('keydown', e => {
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); go(); }
+    });
+    g.appendChild(r);
+    const lab = document.createElementNS(NS, 'text');
+    lab.setAttribute('x', x0 + 12); lab.setAttribute('y', y0 + 20);
+    lab.setAttribute('class', 'w-area-label');
+    lab.textContent = '▦ ' + label + ' (' + pts.length + ')';
+    g.appendChild(lab);
+  });
   (WGDATA.edges || []).forEach(e => {
     if (!byId[e.from] || !byId[e.to]) return;
     const l = document.createElementNS(NS, 'line');
@@ -1096,7 +1137,7 @@ function wselect(n){
     .map(([k, v]) => `<tr><th scope="row">${k}</th><td>${String(v).replace(/</g, '&lt;')}</td></tr>`).join('');
   let links = '';
   if (String(n.id).match(/^(obj_|proj_|idea_|loc_|hw_|file_)/))
-    links += `<p><a href="/world?entity_id=${encodeURIComponent(n.id)}">Open neighborhood</a></p>`;
+    links += `<p><a href="/world?entity_id=${encodeURIComponent(n.id)}${WSSUFFIX}">Open neighborhood</a></p>`;
   if (String(n.id).startsWith('mem_'))
     links += `<p><a href="/memory">Open in memory</a></p>`;
   if (String(n.id).startsWith('prt-'))
@@ -1134,13 +1175,21 @@ wrender();
 
 def graph_panel(data_json: str, form_action: str, entity_id: str = "",
                 depth: int = 1, show: str = "missions,nodes",
-                error: str = "") -> str:
+                error: str = "", workspace: str = "") -> str:
     """Interactive world graph: form + SVG stage + details.
     `data_json` is the already-serialized graph dict. An
     empty graph renders guidance plus a static mycelium
-    figure (decorative, aria-hidden) instead of a void."""
+    figure (decorative, aria-hidden) instead of a void.
+    `workspace` (optional) is preserved across the focus form
+    and area/entity deep links."""
     import json as _json
     safe_data = data_json.replace("</", "<\\/")
+    ws_field = (f"<input type=\"hidden\" name=\"workspace\" "
+                f"value=\"{esc(workspace)}\">") if workspace else ""
+    # Workspace slugs are [A-Za-z0-9_-] (validated server-side), so
+    # this suffix is URL-safe verbatim.
+    ws_const = (f"const WSSUFFIX = '&workspace={esc(workspace)}';"
+                if workspace else "const WSSUFFIX = '';")
     try:
         node_count = len(_json.loads(data_json).get("nodes",
                                                     []))
@@ -1166,8 +1215,9 @@ def graph_panel(data_json: str, form_action: str, entity_id: str = "",
 <label>Entity <input type="text" name="entity_id" placeholder="obj_… / proj_… / mem_…" value="{esc(entity_id)}" style="width:16rem"></label>
 <label>Depth <input type="number" name="depth" value="{esc(depth)}" min="1" max="2" style="width:3.5rem"></label>
 <label>Overlays <input type="text" name="show" value="{esc(show)}" style="width:12rem"></label>
+{ws_field}
 <button type="submit">Grow</button></form>
-<p class="muted">world <span class="dot online"></span> · mycelium overlay (dashed) · memory <span class="dot" style="background:var(--spore)"></span> · mission <span class="dot" style="background:var(--amber)"></span> · conflict <span class="dot" style="background:var(--danger)"></span></p>
+<p class="muted">world <span class="dot online"></span> · mycelium overlay (dashed) · memory <span class="dot" style="background:var(--spore)"></span> · mission <span class="dot" style="background:var(--amber)"></span> · conflict <span class="dot" style="background:var(--danger)"></span> · area <span style="color:var(--spore)">▦</span> = location containment</p>
 <p><small>Show:</small>
 <label><input type="checkbox" id="f-world" checked> world</label>
 <label><input type="checkbox" id="f-mycelium" checked> mycelium</label>
@@ -1181,4 +1231,295 @@ def graph_panel(data_json: str, form_action: str, entity_id: str = "",
 {empty_html}
 <div class="panel"><h2>Details</h2><div id="wdetails">Select a node or relation. Keyboard: Tab to a node, Enter to open.</div></div>
 <script>const WGDATA = {safe_data};
+{ws_const}
 {GRAPH_JS.replace("constWGDATA;", "")}</script>"""
+
+
+# -- infinite canvas (MVP) ---------------------------------------------------
+# Additive workshop lens over the same graph payload as /world. Own
+# script (draggable nodes, camera transform, search-to-focus) so the
+# world graph stays byte-identical in behavior. Positions live in a
+# session-only offsets map — never persisted, never sent anywhere.
+
+CANVAS_JS = """
+let cscale = 1, ctx = 0, cty = 0, coff = {}, csel = null;
+let cdrag = null, cmoved = false;
+const csvg = document.getElementById('cstage');
+const cNS = 'http://www.w3.org/2000/svg';
+const px2u = () => 1000 / (csvg.clientWidth || 1000);
+function ckind(n){ return (n.kind || n.type || 'entity').toLowerCase(); }
+function ccolor(n){
+  if ((n.metadata && n.metadata.status === 'conflict') || n.type === 'conflict') return 'var(--danger)';
+  if (n.source === 'inventory') return 'var(--moss)';
+  if (n.kind === 'memory' || n.type === 'memory') return 'var(--spore)';
+  if (n.kind === 'mission' || n.type === 'mission') return 'var(--amber)';
+  return 'var(--ink-dim)';
+}
+function clayout(){
+  const byId = {};
+  (CDATA.nodes || []).forEach((n, i) => {
+    const a = 2 * Math.PI * i / Math.max(1, CDATA.nodes.length);
+    const r = n.source === 'inventory' ? 150 : 210;
+    const o = coff[n.id] || {dx: 0, dy: 0};
+    byId[n.id] = {x: 500 + r * Math.cos(a) + o.dx, y: 300 + r * Math.sin(a) + o.dy, n};
+  });
+  return byId;
+}
+function cshape(g, p){
+  const k = ckind(p.n), c = ccolor(p.n), id = p.n.id;
+  const grp = document.createElementNS(cNS, 'g');
+  grp.setAttribute('class', 'c-node');
+  grp.setAttribute('tabindex', '0');
+  grp.setAttribute('role', 'button');
+  grp.setAttribute('aria-label', (p.n.label || id) + ' (' + k + ')');
+  grp.dataset.nid = id;
+  if (ckind(p.n) === 'memory' || ckind(p.n) === 'mission') {
+    const h = document.createElementNS(cNS, 'circle');
+    h.setAttribute('cx', p.x); h.setAttribute('cy', p.y); h.setAttribute('r', 16);
+    h.setAttribute('fill', 'none'); h.setAttribute('stroke', c);
+    h.setAttribute('stroke-opacity', '.35'); h.setAttribute('stroke-width', '5');
+    grp.appendChild(h);
+  }
+  let el;
+  if (k === 'idea') {
+    el = document.createElementNS(cNS, 'rect');
+    el.setAttribute('x', p.x - 7); el.setAttribute('y', p.y - 7);
+    el.setAttribute('width', 14); el.setAttribute('height', 14);
+    el.setAttribute('transform', `rotate(45 ${p.x} ${p.y})`);
+  } else if (k === 'node' || k === 'device' || k === 'printer') {
+    el = document.createElementNS(cNS, 'rect');
+    el.setAttribute('x', p.x - 7); el.setAttribute('y', p.y - 7);
+    el.setAttribute('width', 14); el.setAttribute('height', 14);
+    el.setAttribute('rx', 2);
+  } else {
+    el = document.createElementNS(cNS, 'circle');
+    el.setAttribute('cx', p.x); el.setAttribute('cy', p.y);
+    const rr = k === 'project' ? 12 : 8;
+    el.setAttribute('r', id === csel ? rr + 4 : rr);
+  }
+  el.setAttribute('fill', k === 'project' ? 'none' : c);
+  el.setAttribute('stroke', c);
+  el.setAttribute('stroke-width', k === 'project' ? 3 : 1.5);
+  if (p.n.source !== 'inventory') el.setAttribute('stroke-dasharray', '4 2');
+  if (id === csel) el.setAttribute('class', 'w-hi');
+  grp.appendChild(el);
+  const t = document.createElementNS(cNS, 'text');
+  t.setAttribute('x', p.x + 13); t.setAttribute('y', p.y + 4);
+  t.textContent = (p.n.label || id).slice(0, 26);
+  grp.appendChild(t);
+  g.appendChild(grp);
+}
+function careas(g, byId){
+  (CDATA.areas || []).forEach(a => {
+    if (!a || !a.id) return;
+    const pts = (a.members || []).map(id => byId[id]).filter(p => p);
+    if (!pts.length) return;
+    const xs = pts.map(p => p.x), ys = pts.map(p => p.y);
+    const pad = 34;
+    const x0 = Math.min(...xs) - pad, y0 = Math.min(...ys) - pad - 14;
+    const x1 = Math.max(...xs) + pad, y1 = Math.max(...ys) + pad;
+    const label = String(a.label || a.id).slice(0, 40);
+    const r = document.createElementNS(cNS, 'rect');
+    r.setAttribute('x', x0); r.setAttribute('y', y0);
+    r.setAttribute('width', Math.max(10, x1 - x0));
+    r.setAttribute('height', Math.max(10, y1 - y0));
+    r.setAttribute('rx', 18); r.setAttribute('class', 'w-area');
+    const tip = document.createElementNS(cNS, 'title');
+    tip.textContent = label + ' — open area in World';
+    r.appendChild(tip);
+    r.style.cursor = 'pointer';
+    r.addEventListener('click', () => {
+      if (cmoved) return;
+      location.href = '/world?entity_id=' + encodeURIComponent(a.id) + CWSSUFFIX;
+    });
+    g.appendChild(r);
+    const lab = document.createElementNS(cNS, 'text');
+    lab.setAttribute('x', x0 + 12); lab.setAttribute('y', y0 + 20);
+    lab.setAttribute('class', 'w-area-label');
+    lab.textContent = '▦ ' + label + ' (' + pts.length + ')';
+    g.appendChild(lab);
+  });
+}
+function cside(html){ document.getElementById('cside-body').innerHTML = html; }
+function cesc(s){ return String(s == null ? '' : s).replace(/</g, '&lt;'); }
+function clinks(n){
+  const id = String(n.id);
+  let out = `<p><a href="/world?entity_id=${encodeURIComponent(id)}${CWSSUFFIX}">Open in World →</a></p>`;
+  if (/^(obj_|proj_|idea_|loc_|hw_|file_)/.test(id))
+    out += `<p><a href="/world?entity_id=${encodeURIComponent(id)}${CWSSUFFIX}">Open entity neighborhood →</a></p>`;
+  if (id.startsWith('mem_')) out += `<p><a href="/memory">Open in memory →</a></p>`;
+  if (id.startsWith('mission_')) out += `<p><a href="/missions/${encodeURIComponent(id)}">Open mission →</a></p>`;
+  if (id.startsWith('prt-')) out += `<p><a href="/devices">Open in devices →</a></p>`;
+  return out;
+}
+function cselect(n){
+  csel = n.id;
+  const meta = n.metadata || {};
+  const rows = [['type', ckind(n)], ['source', n.source || '?']]
+    .concat(Object.entries(meta).slice(0, 6).map(([k, v]) => [k, String(v).slice(0, 80)]))
+    .map(([k, v]) => `<tr><th scope="row">${cesc(k)}</th><td>${cesc(v)}</td></tr>`).join('');
+  cside(`<b>${cesc(n.label || n.id)}</b><br><code>${cesc(n.id)}</code>`
+    + `<table><tbody>${rows}</tbody></table>` + clinks(n));
+  crender();
+}
+function crender(){
+  [...csvg.children].forEach(ch => {
+    if (ch.tagName && ch.tagName.toLowerCase() !== 'defs') csvg.removeChild(ch);
+  });
+  const grid = document.createElementNS(cNS, 'rect');
+  grid.setAttribute('x', -5000); grid.setAttribute('y', -5000);
+  grid.setAttribute('width', 10000); grid.setAttribute('height', 10000);
+  grid.setAttribute('fill', 'url(#cdot)');
+  const g = document.createElementNS(cNS, 'g');
+  g.setAttribute('transform', `translate(${ctx},${cty}) scale(${cscale})`);
+  g.appendChild(grid);
+  csvg.appendChild(g);
+  const byId = clayout();
+  careas(g, byId);
+  (CDATA.edges || []).forEach(e => {
+    if (!byId[e.from] || !byId[e.to]) return;
+    const l = document.createElementNS(cNS, 'line');
+    l.setAttribute('x1', byId[e.from].x); l.setAttribute('y1', byId[e.from].y);
+    l.setAttribute('x2', byId[e.to].x); l.setAttribute('y2', byId[e.to].y);
+    l.setAttribute('stroke', 'var(--line)'); l.setAttribute('stroke-width', '1.5');
+    g.appendChild(l);
+  });
+  Object.values(byId).forEach(p => cshape(g, p));
+  const n = (CDATA.nodes || []).length;
+  document.getElementById('ccount').textContent = n + ' nodes · drag to arrange (session only)';
+}
+csvg.addEventListener('pointerdown', e => {
+  const grp = e.target.closest ? e.target.closest('.c-node') : null;
+  csvg.setPointerCapture(e.pointerId);
+  cmoved = false;
+  if (grp && grp.dataset.nid)
+    cdrag = {kind: 'node', id: grp.dataset.nid, sx: e.clientX, sy: e.clientY, lx: e.clientX, ly: e.clientY};
+  else cdrag = {kind: 'pan', sx: e.clientX, sy: e.clientY, lx: e.clientX, ly: e.clientY};
+});
+csvg.addEventListener('pointermove', e => {
+  if (!cdrag) return;
+  if (Math.abs(e.clientX - cdrag.sx) + Math.abs(e.clientY - cdrag.sy) > 4) cmoved = true;
+  const dx = e.clientX - cdrag.lx, dy = e.clientY - cdrag.ly;
+  cdrag.lx = e.clientX; cdrag.ly = e.clientY;
+  if (cdrag.kind === 'node') {
+    const f = px2u() / cscale;
+    const o = coff[cdrag.id] || {dx: 0, dy: 0};
+    o.dx += dx * f; o.dy += dy * f;
+    coff[cdrag.id] = o;
+    crender();
+  } else {
+    const f = px2u();
+    ctx += dx * f; cty += dy * f;
+    crender();
+  }
+});
+csvg.addEventListener('pointerup', e => {
+  const wasDrag = cdrag && cdrag.kind === 'node' ? cdrag.id : null;
+  cdrag = null;
+  if (wasDrag && !cmoved) {
+    const found = (CDATA.nodes || []).find(n => n.id === wasDrag);
+    if (found) cselect(found);
+  }
+});
+csvg.addEventListener('keydown', e => {
+  const grp = e.target.closest ? e.target.closest('.c-node') : null;
+  if (grp && grp.dataset.nid && (e.key === 'Enter' || e.key === ' ')) {
+    e.preventDefault();
+    const found = (CDATA.nodes || []).find(n => n.id === grp.dataset.nid);
+    if (found) cselect(found);
+  }
+});
+csvg.addEventListener('wheel', e => {
+  e.preventDefault();
+  cscale = Math.max(0.2, Math.min(4, cscale * (e.deltaY < 0 ? 1.1 : 0.9)));
+  crender();
+}, {passive: false});
+document.getElementById('czin').addEventListener('click', () => { cscale = Math.max(0.2, Math.min(4, cscale * 1.2)); crender(); });
+document.getElementById('czout').addEventListener('click', () => { cscale = Math.max(0.2, Math.min(4, cscale / 1.2)); crender(); });
+document.getElementById('creset').addEventListener('click', () => { cscale = 1; ctx = 0; cty = 0; coff = {}; csel = null; crender(); });
+async function csearchGo(){
+  const box = document.getElementById('cresults');
+  const q = document.getElementById('csearch').value.trim();
+  if (!q) { box.innerHTML = '<li class="muted">Type to search the world.</li>'; return; }
+  box.innerHTML = '<li class="muted">Searching…</li>';
+  try {
+    const res = await fetch('/api/v1/world/search?q=' + encodeURIComponent(q));
+    if (!res.ok) throw new Error('search ' + res.status);
+    const data = await res.json();
+    const rows = (data.results || []).slice(0, 8);
+    if (!rows.length) { box.innerHTML = '<li class="muted">Nothing found.</li>'; return; }
+    box.innerHTML = '';
+    rows.forEach(r => {
+      const li = document.createElement('li');
+      const b = document.createElement('button');
+      b.textContent = (r.title || r.entity_id) + ' [' + (r.entity_type || '?') + ']';
+      b.addEventListener('click', () => cfocus(r.entity_id));
+      li.appendChild(b);
+      box.appendChild(li);
+    });
+  } catch (err) {
+    box.innerHTML = '<li class="muted">Search unavailable.</li>';
+  }
+}
+function cfocus(id){
+  const box = document.getElementById('cresults');
+  const byId = clayout();
+  const p = byId[id];
+  if (!p) {
+    box.innerHTML = '<li class="muted">Not in this workspace — clear the scope or open it in <a href="/world?entity_id=' + encodeURIComponent(id) + '">World</a>.</li>';
+    return;
+  }
+  ctx = 500 - p.x * cscale; cty = 300 - p.y * cscale;
+  const found = (CDATA.nodes || []).find(n => n.id === id);
+  if (found) cselect(found); else crender();
+}
+document.getElementById('cgo').addEventListener('click', csearchGo);
+document.getElementById('csearch').addEventListener('keydown', e => {
+  if (e.key === 'Enter') { e.preventDefault(); csearchGo(); }
+});
+crender();
+"""
+
+
+def canvas_panel(data_json: str, workspace: str = "",
+                 back_to_world_href: str = "/world") -> str:
+    """Infinite-canvas workshop lens over a world-graph payload.
+
+    Same node/edge/area shapes as the world graph; own script for
+    draggable nodes (session-only offsets), camera transform and
+    search-to-focus. Positions are never persisted or sent anywhere.
+    `workspace` scopes deep links; `back_to_world_href` returns."""
+    safe_data = data_json.replace("</", "<\\/")
+    try:
+        import json as _json
+        node_count = len(_json.loads(data_json).get("nodes", []))
+    except ValueError:
+        node_count = -1
+    ws_const = (f"const CWSSUFFIX = '&workspace={esc(workspace)}';"
+                if workspace else "const CWSSUFFIX = '';")
+    empty_html = ""
+    if node_count == 0:
+        empty_html = """<div class="panel"><h2>A quiet workbench</h2>
+<p class="muted">Nothing to arrange here yet — open a project or check that INVENTory is running. The canvas only ever shows real data, never placeholders.</p>
+<p><a href="/projects">Browse projects</a> · <a href="/memory">Browse memory</a></p></div>"""
+    return f"""<div class="panel"><h2>Workshop toolbar</h2>
+<p class="flowline" role="search" aria-label="Canvas search">
+<input type="text" id="csearch" placeholder="Search world…" style="width:16rem" aria-label="Search world" autocomplete="off">
+<button id="cgo">Focus</button>
+<button id="czin" aria-label="Zoom in">+</button><button id="czout" aria-label="Zoom out">−</button>
+<button id="creset">Reset view</button>
+<a class="chip" href="{esc(back_to_world_href)}">Back to World →</a>
+<span id="ccount" class="muted" role="status"></span></p>
+<ul id="cresults" aria-live="polite"></ul></div>
+<div class="canvas-wrap">
+<svg id="cstage" class="world" viewBox="0 0 1000 600" role="application" aria-label="Infinite canvas workshop. Drag nodes to arrange, drag background to pan.">
+<defs><pattern id="cdot" width="28" height="28" patternUnits="userSpaceOnUse">
+<circle cx="2" cy="2" r="1" fill="var(--line)"/>
+</pattern></defs>
+</svg>
+<aside class="panel" id="cside" aria-label="Selection"><h2>Selection</h2><div id="cside-body"><p class="muted">Select a node to inspect it. Drag to arrange — positions live in this session only.</p></div></aside>
+</div>
+{empty_html}
+<script>const CDATA = {safe_data};
+{ws_const}
+{CANVAS_JS}</script>"""

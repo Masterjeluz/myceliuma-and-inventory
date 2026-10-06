@@ -104,6 +104,31 @@ def test_discovery_is_read_only_and_safe():
         assert "path" in entry
 
 
+def test_setupapi_functions_use_pointer_safe_signatures():
+    import ctypes
+    import coordinator.app.cameras as module
+
+    class Procedure:
+        pass
+
+    class SetupApi:
+        SetupDiGetClassDevsW = Procedure()
+        SetupDiEnumDeviceInterfaces = Procedure()
+        SetupDiGetDeviceInterfaceDetailW = Procedure()
+        SetupDiDestroyDeviceInfoList = Procedure()
+
+    api = SetupApi()
+    module._configure_setupapi_signatures(
+        api, ctypes.c_ubyte * 16, ctypes.c_ubyte * 32)
+
+    assert api.SetupDiGetClassDevsW.restype is ctypes.c_void_p
+    assert api.SetupDiGetClassDevsW.argtypes[-2:] == [
+        ctypes.c_void_p, ctypes.c_ulong]
+    assert api.SetupDiEnumDeviceInterfaces.restype is ctypes.c_int
+    assert api.SetupDiGetDeviceInterfaceDetailW.argtypes[2] is ctypes.c_void_p
+    assert api.SetupDiDestroyDeviceInfoList.argtypes == [ctypes.c_void_p]
+
+
 def test_no_network_or_shell_surface():
     import coordinator.app.cameras as module
     source = open(module.__file__, encoding="utf-8").read().lower()

@@ -227,7 +227,11 @@ def _mission_state(ref: str) -> tuple[str, str, str]:
     if mission is None:
         return ("MISSING", "mission not found", "/missions")
     try:
-        status = str(mission.record.get("status", "unknown"))
+        record = getattr(mission, "record", None)
+        if isinstance(record, dict):
+            status = str(record.get("status", "unknown"))
+        else:
+            status = str(getattr(mission, "status", "unknown"))
     except Exception:
         status = "unknown"
     href = f"/missions/{ref}"
@@ -450,9 +454,32 @@ def quest_detail(quest: QuestTrail) -> dict:
             "state": level, "done": done, "total": len(steps),
             "steps": steps,
             "progress": f"{done}/{len(steps)}",
+            "fabrication": _quest_fabrication(quest),
             "provenance": {"source_type": "derived",
                            "creator_id": "quest-trails",
                            "human_verified": False}}
+
+
+def _quest_fabrication(quest: QuestTrail) -> list[dict]:
+    """Existing fabrication_chain() states for fabrication-flavored
+    quests, else []. Read-only representation of REAL / SIMULATED /
+    BLOCKED / UNAVAILABLE transitions — never a capability claim,
+    never execution. Same label heuristic as step_readiness."""
+    try:
+        wants_fab = any(
+            any(token in str(step.label or "").lower()
+                for token in ("fabricat", "print", "slice", "mesh",
+                              "model", "gcode"))
+            for step in quest.steps)
+    except Exception:
+        return []
+    if not wants_fab:
+        return []
+    try:
+        from .play_workshop import fabrication_chain
+        return fabrication_chain()
+    except Exception:
+        return []
 
 
 def list_quest_details(limit: int = 50) -> list[dict]:

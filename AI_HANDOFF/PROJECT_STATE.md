@@ -40,3 +40,434 @@ d687145 = Bambu mock MQTT tests
 
 A recovery stash exists:
 stash@{0}: On main: RECOVERY_CHECKPOINT_BEFORE_AGENT_LOSS
+
+## BIG47 — LIVING WORKSHOP VERTICAL (uncommitted, 2026-09-25)
+
+GOAL MET: one real vertical digital loop works end-to-end (proven live,
+not only in tests): /play Oracle (real Ollama qwen3.5:4b advice) →
+POST /api/v1/play/code-task → existing queue → real code_worker
+(OpenCode, model opencode/muse-spark-1.3-contributor-free) claim →
+execute → complete → task.completed event → /play Workshop snapshot.
+
+FILES (all uncommitted, none committed/pushed):
+- NEW mycelium-ai-main/coordinator/app/play_workshop.py
+  (GET /api/v1/play/status snapshot + bounded code-task queue;
+  code.review/patch/test only; no execution; no physical authority)
+- mycelium-ai-main/coordinator/app/main.py
+  (+2 routes; Luma dialog +Workshop choice, workshop render fns,
+  shared lifecycleLegend/stageChip helper, oraclequeue/wsrefresh/
+  wsqueue/wsdrive actions, oracle queue-task button)
+- NEW mycelium-ai-main/tests/test_big47_vertical.py (5 tests, pass)
+
+LIVE DEMO (tmp DBs, :8000, all real): advice model qwen3.5:4b;
+worker b47-opencode-01; task #3 completed, 0 files changed (review);
+real OpenCode sentence stored in task result. code_worker quirk found:
+bare `opencode` binary name unresolvable on Windows (task #2 failed
+honestly); full exe path via --opencode-bin works. New node
+registration requires node_token (code_worker supports via
+--node-token/MYCELIUM_NODE_TOKEN).
+
+NEXT BIG JUMP: game-created missions without hand-made conversations
+(POST /api/v1/play/mission: advice -> pending_approval mission in one
+call) + worker presence/liveness heartbeat strip in /play header.
+
+## BIG48 — PRIMARY GAME RUNTIME (uncommitted, 2026-09-25)
+
+ACCEPTANCE CHAIN PROVEN LIVE (tmp DBs, :8000, no reload, no fakes):
+session play_4b7cf7c69151a403 -> position (1180,420) -> real Ollama
+qwen3.5:4b advice -> POST /api/v1/play/mission (mission_8c56ea2d
+pending_approval + quest qst_... + analysis step) -> YES -> POST
+/api/v1/play/code-task met step_id (task #1) -> echte code_worker
+b48-live-worker claim -> echte OpenCode run (completed, 0 files) ->
+bestaande closeout sloot de step -> tick -> mission completed ->
+quest COMPLETED 1/1 -> fungi 2 knopen / 1 vink in snapshot ->
+resume na refresh herstelde (1180,420).
+
+FILES (uncommitted, nothing committed/pushed):
+- coordinator/app/play_workshop.py: step_id-binding (code.review +
+  analysis only), play_sessions (throttled 2s), world counts.
+- coordinator/app/main.py: routes play/session, play/position,
+  play/mission; dispatch analysis-tak; kind-bewuste closeout-tekst;
+  sessie-JS + refreshAfterAction/refreshJourneyData + playmission/
+  stepqueue-acties (inline, geen refactor).
+- coordinator/app/missions.py: DISPATCHABLE += analysis (goal ->
+  code.review, cap).
+- coordinator/app/quests.py: _mission_state leest echte status
+  (was altijd WAITING door .record-bug) + fabrication-key in detail.
+- coordinator/app/world.py: completed missies als vink-nodes
+  (representatie only).
+- coordinator/app/database.py: play_sessions-tabel (additief).
+- NEW tests/test_big48_runtime.py (7 tests, pass).
+
+EERLIJKE BEVINDINGEN: OpenCode permission-systeem weigerde C:\*-
+toegang tijdens demo-run (auto-reject, safety werkt); worker
+rapporteerde completed met echte output. Oude :8000-server moest
+eerst gekilled (poortconflict).
+
+TESTS: 7 nieuw + 26 missie + 70 big46/playshell + 20 big43/47 +
+39 research/templates/world44-45 = alles groen. node --check 3/3.
+
+NEXT BIG JUMP: tweede speelbare lus naast review (research.fetch
+vanuit game-quest: issue->dossier->missie->worker->INVENTory-record
+-> world_rep) + fungi-grove client-side her-render. Est. 3-4u.
+
+## BIG49 — SIDE-VIEW SLICE /side (uncommitted, 2026-09-25)
+
+Eigen Mycelium-game (Terraria = inspiratie only): GET /side naast
+/play (vervangt niets). Inline canvas + vanilla JS (zelfde tech als
+/play). Handgemaakte wereld 1920px: homebase + wildernis, gravity/
+jump/AABB-collision, werkbank/waterbron/plantplek + scripted NPC
+Mos, touch-knoppen (◀ ▶ ⤒ E). Geen nieuwe tabellen/routes:
+discovery=echte candidate (observation, idempotent op titel),
+keuze=advise/research-queue, quest=play/mission, positie=play-
+session zone "side". XP in localStorage only, nooit poort.
+
+LIVE BEWEZEN (:8001, tmp-DB): candidate 201, research 201 draft,
+quest+mission 201 pending_approval, oracle 502 eerlijk
+(INVENTory offline -> UNAVAILABLE, niets verzonnen).
+
+FILES: main.py (+/side route), ui.py (+1 nav-regel Side),
+NEW tests/test_big49_side.py (6 pass). Per ongeluk geraakt:
+test_canvas_no_backend_writes brak op nieuwe kolom
+position_updated_at ("position"-substring) -> hernoemd naar
+moved_at; 18/18 groen (canvas+side+big48). node --check 2/2.
+
+START: cd mycelium-ai-main && python -m uvicorn
+coordinator.app.main:app --port 8000 -> http://127.0.0.1:8000/side
+
+NEXT SLICE: tweede interactieve discovery (plantplek ->
+zaailing-observatie), spring-uitdaging naar platform met
+lore-beloning, NPC Mos met 1 echte flow-keuze. Est. 1-2u.
+
+## BIG49 FOLLOW-UP — ECHT SPEELBAAR (uncommitted, 2026-09-25)
+
+AUDIT (echte Chrome/Playwright vs BIG49-rapportage): renderen,
+lopen, camera, sessie-restore en E-interactie klopten; platforms
+waren ONBEREIKBAAR (sprong max ~107px vs 120/180px nodig) en er
+was geen land/nabij-feedback. Gefixt, geen nieuwe content.
+
+SPEELBAAR EN WERKEND (browser-bewezen): sprong -680/gravity 1800
+(~128px hoog, ~195px ver); platforms p1 (300,390) p2 (580,300)
+p3 (920,340) — sprong-op-p1 met aanloop in screenshot bewezen;
+"geland"-feedback, "[E] naam" in bereik, "dichterbij komen"
+daarbuiten; val-respawn; volledige lus waterbron->E->discovery
+(+10 XP)->Research-run res_...->quest+missie pending_approval,
+alles in echte Chrome incl. platform-sprong; /play /world / 200.
+
+BACKEND-AFHANKELIJK: discovery->echte candidate (observation),
+Oracle->echt qwen3.5:4b-advies live bewezen, Research-queue echt,
+quest+missie pending_approval achter exacte-YES; offline ->
+eerlijke 502/UNAVAILABLE (live gezien).
+
+NOG PRESENTATIE/PROTOTYPE: NPC Mos (scripted hints only),
+plantplek/werkbank (info+links), XP (teller only), platforms 2-3
+alleen via sprong bereikbaar maar zonder beloning, touch-knoppen
+niet op hardware getest.
+
+FILES: main.py (/side physics/feedback only). Tests ongewijzigd;
+suites: big49+big48 13/13, canvas 5/5, node --check 2/2.
+
+## BIG49-X — GAME-WERELD + RESEARCH-STATION (uncommitted, 2026-09-25)
+
+DOCS GEBRUIKT: AUTOPILOT_ROADMAP (P0 Research->Mission E2E, P3
+Terraria-presentatie), MYCELIUM_CANVAS_DIRECTION (additief, skin
+over data), REALITY_MAP (E-roadmap, paho-mqtt stock-broken),
+living-game-layer.md (game = VIEW, geen 2e DB), PROJECT_STATE
+BIG47/48/49 + follow-up. Code/tests als bewijs, docs als intentie.
+
+MATRIX-KEUZE: Research full-loop als in-world Onderzoek-station
+(queue->run-once->dossier->plan->pending_approval missie), want
+P0-prioriteit, volledig bestaand/getest, eerlijke offline-tak,
+direct vervolg op waterbron-discovery. INVENTory-lezen, fabricage
+en camera bewust niet gekozen (bridge offline / SIMULATED zonder
+printer / geen adapter).
+
+WERELD (zelfde stack, geen assets): dusk-sky + sterren + maan,
+2 parallax-heuvellagen, mycelium-draden, hut met verlicht raam +
+schoorsteenrook, lantaarnpaal met glow, hek, zone-boog
+WILDERNIS, mos-platforms met ranken, riet, paddenstoelen,
+ruinestenen, zodiende zaailingen, fireflies, kapperspeler met
+lantaarn, Mos als figuur met staf + naam, speech-bubble,
+"E · TALK"/range-ringen in-scene, touch-bar gestyled.
+
+LIVE BEWEZEN (echte Chrome, :8003, tmp-DB): Mos-TALK + bubble,
+discovery, research queue->run (wikipedia offline -> eerlijke
+stop), dossierlijst met seeded completed dossier, plan->echte
+missie pending_approval met YES-notice. Oracle-tak: echt
+qwen3.5:4b-advies. Geen page-errors.
+
+FILES: main.py (/side draw + station-flow), tests/test_big49_side
+(+markers). Controles: big49+canvas 11/11, node --check 2/2
+(na brace-fix), /play /world / 200. Geen commit/push.
+
+NOG PROTOTYPE: plantplek/werkbank info-only, XP-teller, Mos
+scripted, touch niet op hardware getest.
+VOLGENDE KLEINSTE STAP: plantplek als 2e discovery
+(zaailing-observatie ->zelfde station-flow) + beloning op p3
+(lore-candidate). Est. 1-2u.
+
+## BIG50 — ATLAS, JOURNAL, RESEARCH-FIX (uncommitted, 2026-09-25)
+
+FASE 1+2: `PROJECTATLAS.md` (root: 9 apps, gamedata-gebruik, 5
+overlapclusters C1–C5 met canonieke bronnen, missend/simulated,
+statusmodellen, routerefs) + `MYCELIUM_BIG50_DOCS.zip` (root, 59
+entries: atlas + big50/MANIFEST/OUTDATED_DOCS/GAPMATRIX +
+bestaande docs; geen secrets/DBs/venvs/binaries — geverifieerd).
+Nieuwe bestanden: `AI_HANDOFF/big50/{MANIFEST,OUTDATED_DOCS,
+GAPMATRIX}.md`.
+
+FASE 3 JOURNAL: `GET /api/v1/play/journal` (read-only rangschikking
+over bestaande stores — geen ongerangschikt alternatief; geen
+nieuwe tabellen/missies) + in-game Journal-view in /side (actieve
+missie met tik, wachtenden met YES, open quests/research/vondsten
+met deep links). Live bewezen: actieve+wachtende missie, YES via
+Journal (approved), support via plantplek (♥1).
+
+FASE 4 RESEARCH-FIX: Plan-knop alleen bij planbaar dossier
+(completed/REAL/TEST-inhoud; backend 422 blijft eindoordeel met
+leesbare station-terugkeer); run-zonder-dossier toont "zonder
+bruikbaar dossier" + retry/Oracle/dossierlijst. 422-contract met
+test bewezen (draft-run zonder dossier -> 422 "no completed
+dossier").
+
+FASE 5 KENNIS-SLICE: plantplek toont open vondsten + Support
+(bestaande gate, supporter "speler", no-op bij dubbel) —
+browser-bewezen.
+
+BEVINDINGEN: /chat hangt live op trage Ollama (>120s) — seeden via
+play/mission; wikipedia offline -> eerlijke unavailable-runs;
+TEST-dossiers zijn planbaar (201 bewezen); browser-interval vs
+API-positionering vraagt verse sessies in tests.
+
+TESTS: test_big50_game.py 6/6 nieuw; big49+big50 12/12;
+big49+canvas 11/11; node --check 2/2; browser: Journal->YES,
+support, dossier->plan->pending_approval missie, /, /play,
+/world, /side 200. Geen commit/push.
+
+VOLGENDE FASERING (GAPMATRIX): F1 proj_-doelen in Journal, F2
+dossier->memory-link, F3 live fabrication_chain bij werkbank, F4
+automation-drive vanuit Journal, F5 tiles/sprites-skin.
+
+## BIG51 — GAME-FIRST PRODUCTRICHTING + PROJECTLUS (uncommitted, 2026-09-25)
+
+RICHTING (gebruikerskeuze, leidend boven verouderde roadmaptekst):
+`/side` is de primaire Mycelium-ervaring (Terraria-geïnspireerde
+eigen gamewereld), geen late presentatie-polish. Vastgelegd in
+`PROJECTATLAS.md` §6 + C5 (runtime `/side`; `/play` behouden; geen
+derde game-ervaring). Behouden: backend leidend, geen dubbele
+truth, approvals intact, XP optioneel/geen poort. Oude docs
+(AUTOPILOT P0–P3 "game last", ROADMAP-V2, BIG48 `/play`=runtime,
+CANVAS FUTURE) blijven archief, geen sturing. ZIP-afwijking:
+`MYCELIUM_BIG50_DOCS.zip`/`PROJECT_STATE.md` stopt bij BIG49-X;
+werkboom bevat BIG50 + BIG51 (verwacht snapshot-lag, geen
+tegenspraak). Live INVENTory `:8080` draait maar is LEEG
+(objects/projects/ideas/files 0; M3-collecties 404) — Journal
+toont dit eerlijk, verzint niets.
+
+FASE 2 JOURNAL (GAPMATRIX F1): `play_journal()` + `/side`
+Journal-view tonen echte `proj_`-records (status→waarom,
+bronrecord, deeplink `/world?entity_id=proj_…&depth=1`).
+GET-only loopback bridge (≤5s, geen redirects); offline →
+UNAVAILABLE + bestaande vervolgstap (`/world`); leeg → eerlijk
+leeg. Geen tweede backlogstore; brainstorm ≠ missies; geen
+missie-aanmaak vanuit Journal.
+
+FASE 3 LUS "ONDERZOEK → ONTHOUD" (GAPMATRIX F2/G10, hoogste
+beschikbare waarde — INVENTory-leegte maakt F1 als lus
+onmogelijk): waterbron-discovery → Onderzoek-station
+(queue→run-once TEST) → completed dossier → bestaande
+auto-remember → station toont "Onthouden als mem_…" (+/memory) →
+Journal kennis-sectie (dossier + mem_ + telling) → wereld:
+zaailingen groeien + gouden geheugensporen (alleen bij echte
+telling) → volgende keuze (Plan→missie/Oracle). Geen XP als
+voortgangsbewijs.
+
+RESEARCH-REGRESSIE (BIG50-fix behouden, expliciet getest in
+`tests/test_big51_game.py`): draft zonder dossier → 422, geen
+Plan-actie in Journal; TEST-completed → plan → pending_approval;
+unavailable → eerlijke status + retry/Oracle/dossierlijst.
+
+FILES: `play_workshop.py` (projects+knowledge-secties),
+`main.py` (/side Journal-secties, station-memoryregel,
+worldMemory + canvas-sporen/zaailingen), `PROJECTATLAS.md`
+(§6 + C5 + Stand), `GAPMATRIX.md` (F1/F2 DONE),
+NEW `tests/test_big51_game.py`. Geen commit/push.
+
+NOG PROTOTYPE: Mos scripted, werkbank/plantplek info+links,
+touch niet op hardware getest, F3–F5 open.
+VOLGENDE KLEINSTE SLICE: F3 werkbank toont live
+`fabrication_chain()` read-only. Est. 1–2u.
+
+## BIG52 — WERK ALS CAMPAIGN + WERKBANK F3 (uncommitted, 2026-09-25)
+
+TRACKING-MODELGAT (eerlijk, geen data toegevoegd): Quest/Campaign
+kunnen een ontwikkelbacklog NIET bijhouden — `note`-steps zonder
+ref zijn permanent MISSING (`derive_step_state`), zelfs mét ref
+blijft een note MISSING, `entity`-steps blijven WAITING; alleen
+missie/task/finance/energy/hardware-steps met ECHT record leven.
+Een Quest voor "nog te bouwen werk" zou nooit COMPLETE kunnen
+worden; missies aanmaken voor F3–F5 zou uitvoerbare missies
+verzinnen. Kleinste bestaande-model-oplossing: read-only
+questlijn `roadmap` in `play_journal()` (VIEW over GAPMATRIX, geen
+tweede backlog-DB, geen records) — F3/F4/F5 met status
+open/in-uitvoering, live bewijs (F3: echte ketentelling; F4: open
+runs + drive-route), bron + bestaande route. Brainstorm blijft
+nergens quest; operationele missies in bestaande secties.
+
+F3 WERKBANK (`/side` bench-spot → `renderBench()`): echte
+`fabrication_chain()` via GET `/api/v1/play/status` + echte
+`mdl_`-modellen via GET `/api/v1/workshop/models`; per stap chip
+(✅REAL/🎭SIMULATED/⛔BLOCKED/🔌UNAVAILABLE), betekenis, via+detail
+(blokkade), volgende actie als link (slicing/approval/execution:
+expliciet geen knop + reden). Alleen GET, nergens POST —
+`prints/propose|/inspect|/execute|/dispatch|/drive` afwezig in
+bench-JS (getest). Niets geprint-claim.
+
+PROVENANCE (BIG52): knowledge-entries krijgen `origin`; niet-REAL
+→ "Proefherkomst … nooit feit", tellingen `memories_test`/
+`memories_real`; station-regel en objectief tonen TEST-herkomst
+("TEST-proef — geen feit") zodat gouden sporen geen verificatie
+suggereren. BIG50-regel behouden (draft→422, getest).
+
+TESTS: `tests/test_big52_game.py` 7/7 (roadmap, origin, regressie,
+keten-states, bench-start-niets, links, markers); regressie
+big51+big50+big49+canvas 24/24. BEVINDING: GET `/cameras` crasht
+het testproces native in `cameras.py:_windows_image_devices`
+(ctypes, pre-existing) — uitgesloten uit link-resolve-test, link
+blijft bestaan. Live-browsertest NIET uitgevoerd: geen
+coordinator beschikbaar (alleen :8080 INVENTory 200); bench is
+gedekt via API- + marker-tests. `/`, `/play`, `/world`, `/side`
+200 via TestClient. Geen commit/push.
+
+NOG PROTOTYPE: Mos scripted, plantplek info+links, touch niet op
+hardware getest.
+REST (F4/F5, in Journal questlijn): F4 drive-knop naast
+Journal-missie; F5 tiles/sprites-skin. STOP na deze slice.
+
+## BIG53 — CORE GAME LOOP / TERRARIA VERTICAL (uncommitted, 2026-09-27)
+
+LOOP (2D side-view, echt speelbaar, 30 min): 9 nodes (houtstronk/
+vezelplant/kei) → E plukt in sessie-voorraad (server: +1, cooldown
+90s/node) → werkbank craft 4 recepten (stok/fakkel/plankbrug/hekje,
+server valideert kosten) → ghost-plaatsmodus (klik in veld;
+plank alleen bij kloof x1050–1270, server valideert bezit+grenzen)
+→ plankbrug als echte collider, fakkel als licht, hekje als decor
+→ oost-zone met 2 sporepuffers (patrol, contact = terugduw + 1s
+stun, nooit schade/verlies) → codex-steen (Oracle/Research/quest
+via bestaande flows). Doelenlijst in-world (6 echte flags), XP
+alleen beloning (+1/+5/+3, nooit poort).
+
+BACKEND (bestaande patronen): tabellen `play_inventory`/
+`play_gather`/`play_builds` (additief, game-state zoals
+play_sessions — nooit backend-records, bridge blijft read-only);
+routes GET `/play/inventory`, POST `/play/gather|craft|place`
+(404 onbekende sessie, 422 onbekende node/recept/tekort/cooldown/
+grenzen). IRL-haken: specimen→candidate, recept→research-kind,
+bouwsel→proposal-missie (alleen haken, niets gebouwd).
+
+BEVINDINGEN: `#side-result` ontbrak initieel (alle vroege feedback
+stil — hersteld als permanent element); load-time canvas-klik
+bleek onbetrouwbaar in testen, ghost-draad nu runtime via
+`stage.onclick` bij moduswissel (+ reserve-listener); kloof-val =
+vriendelijke hut-respawn (bestaat al); ascii-testprints vermengen
+✓/○ (alleen test-artefact).
+
+TESTS: `tests/test_big53_loop.py` 6/6 (shapes, 404/422, cooldown,
+craft-verbruik, place-verbruik/bounds, markers); `node --check`
+op /side-JS schoon; regressie big49+canvas 11/11, big50-reeks
+17/17 (eerder), big51+52 14/14, big52 7/7 (na wijziging).
+BROWSER (echte Chrome, :8003 tmp-DB): gather hout 3 → craft plank
+→ plaats bij kloof (plank verbruikt, ✓ Plaats, brug zichtbaar,
+screenshot b53-bridge.png); puffer-contact (bubbel + ✓, geen
+straf); bench met recepten + 14-staps keten; geen page-errors
+(enige console-404 = pre-existing favicon). Geen commit/push.
+
+## BIG54 — GAME UI CLEANUP + WORLD PRESENTATION (uncommitted, 2026-09-27)
+
+GEEN backend-feature: alleen `/side`-presentatie over de
+ongewijzigde BIG53-game (zelfde routes, flows, gates, tabellen).
+
+WORLD-FIRST: canvas-paneel eerst met HUD-overlay (gebied +
+voorraad + XP + Journal bovenin, interactieprompt onderin);
+dashboardlink-rij ingeklapt in `<details>Mycelium-web` (hrefs
+behouden); dubbele canvas-HUD-balk verwijderd (zone/x alleen in
+DOM-HUD). HUD: `📍 Gebied · x`, `Hout × n`-voorraad, `[✓]/[ ]`-
+doelen, XP als beloning. Werkwoorden overal: E·Verzamel /
+E·Werkbank / E·Codex / E·TALK (canvas) + zinnen (prompt).
+VISUEEL: warmere lucht + gouden horizon, dag-tint per dagdeel
+(puur presentatie), rijkere grondlagen, node-glyphs groter met
+naamlabels, speler-contour voor contrast.
+
+BEVINDING: tweede canvas-HUD-balk (na speler-draw) gebruikte
+verwijderde `zone`-var → `zone is not defined`-spam per frame;
+beide balken verwijderd, DOM-HUD is leidend. Geen page-errors
+meer (favicon-404 pre-existing).
+
+TESTS: `tests/test_big54_ui.py` 5/5 (layout, werkwoorden, geen
+nieuwe routes, lus intact, routes); regressie big53 6/6,
+big49-vorm 3/3, big52-markers 3/3; `node --check` JS schoon.
+BROWSER (echte Chrome, :8003): HUD-overlay, `[E] Verzamel —
+Vezelplant`, `Vezel × 1`, doelen `[✓]/[ ]`, screenshot
+b54-world.png; geen page-errors. Geen commit/push.
+
+## HERMES NPC — MOS ALS ECHTE AGENT (uncommitted, 2026-09-28)
+
+Hermes API bewezen (127.0.0.1:8642, Bearer, chat round-trip);
+sleutel in Hermes-home `.env` (alleen bestand daar gewijzigd).
+`coordinator/app/hermes_bridge.py` (loopback-only, ≤120s, 503/422/
+502-ladder) + `tests/test_hermes_bridge.py` 7/7. `hermes_npc.py`:
+Mos-identiteit, sessie `npc-mos-<play_session>`, wereldcontext
+(voorraad/bouwsels/flags/Journal + echte `obj_`-steekproef);
+route `POST /api/v1/hermes/chat`; agent handelt nooit zelf.
+Game: Mos-dialoog met chat + Missie-0-voorstelformulier
+(bestaande writes/approvals-flow).
+
+MISSIE 0 LIVE BEWEZEN (:8003 tmp-DB, :8080 echte DB): chat met
+echte Hermes-agent → voorstel `wrt-ac88cbdc` (inert) → operator
+YES + execute → echt `obj_1a0e8773d83cd9cf6e3` "Soldeerbout
+Weller" in INVENTory → agent leest terug met exact ID + stelt
+gameplay-koppeling voor. Bevinding: context miste eerst
+objecten (agent zei eerlijk "leeg") — steekproef toegevoegd.
+Tests: `test_hermes_npc.py` 7/7 (incl. /side-markers). Geen
+commit/push. Camera/Insta360/live-vision: NIET GEÏMPLEMENTEERD
+(file-ingest bestaat; geen capture-adapters).
+
+## BIG55 — LIVING MYCELIUM WORLD (uncommitted, 2026-09-27)
+
+WERELD (3840px, zelfde physics): Homebase/Wildernis/Oostland +
+Undergrove (donker, fakkel-gate)/Moeraslab (mist, sporen)/
+Outpost (settlement); 15 nodes (hout/vezel/steen/kristal/riet/
+schroot), 9 recepten, regio-HUD met Dag/fase. Geen nieuwe engine:
+deterministische data-constanten.
+
+SYSTEMEN (game-owned tabellen, additief): `play_chests*` (E→overlay,
+deposit/withdraw, eigendom), `play_npc` (kamer+licht-validatie,
+toewijzing), `play_flags` (quest/encounter-persistentie),
+`world_clock` (dag/minuut/fase, +10min per 60s, nooit wandklok),
+`play_notes` (quest-notities + prioriteit). Routes:
+GET/POST flags/notes, chest get/deposit/withdraw, npc get/assign,
+clock/tick. Interactie = dichtstbijzijnde wint.
+
+NPC's (6): Mos/Orakel/Smid/Archivaris/Voorman/Seinwachter met
+zichtbare eisen, huis-toewijzing, computers op bestaande routes
+(fabrication/knowledge/missions/nodes/advise). Nodes als
+outpost-masten (echte `/nodes`-lijst). Questbord: hydroponics met
+live eisen + notities; geen tweede engine.
+
+ENCOUNTERS: kruiper (achtervolgt), sporenzones (halveren),
+Modderhart-boss (ontdek→bereid→20s trotseren→candidate-beloning
++ kristal-vrij + wortels), ruïne-mysterie (kompas→research→
+zendmast→Seinwachter), events (sporenregen/bloei/handelaar/
+stilte/stormvlaag, afgeleid, geen daemon). Vriendelijk: nooit
+schade/verlies.
+
+BEVINDINGEN: node verslaat kist bij gelijke afstand → dichtstbijzijnde
+wint; dialogs lezen oud cache → refreshInv bij openen; kristal-gate
++ kruiper-bewaking werken samen; ascii-prints vermengen ✓/○.
+
+TESTS: `tests/test_big55_world.py` 7/7 (flags, chests+eigendom,
+npc-validatie, klok, notes, mast, markers); BIG53-grens 1920→3840
+bijgewerkt; regressie big53/54/52 groen; `node --check` schoon.
+BROWSER (:8003): kist-UI, NPC-toewijzing, kristal-gate, questbord,
+Modderhart (vlag + candidate + wortels), hotbar, screenshots
+b55-*.png; geen page-errors. Geen commit/push.

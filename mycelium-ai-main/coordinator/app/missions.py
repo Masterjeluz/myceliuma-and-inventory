@@ -108,10 +108,16 @@ READOUT_SOURCES = frozenset({
 #: Step kinds that may ever auto-dispatch onto the node task queue
 #: (H1). Closed on purpose: only kinds whose queue counterpart has
 #: a live, read-only auto-executor in the claim loop
-#: (research.fetch_url). Desktop/input, writes, camera, fabrication,
-#: slice, physical print, analysis and readout never dispatch —
+#: (research.fetch_url, code.review). Desktop/input, writes, camera,
+#: fabrication, slice, physical print and readout never dispatch —
 #: they keep their existing inline runners and gates.
-DISPATCHABLE_KINDS = frozenset({"research"})
+DISPATCHABLE_KINDS = frozenset({"research", "analysis"})
+
+#: Default capability for dispatched analysis tasks. Mirrors the
+#: proven code_worker loop (code.* only); steps may pin their own
+#: validated required_capabilities instead. Only code.review ever
+#: dispatches from analysis — patch/test stay operator-queued.
+DISPATCH_CODE_CAPABILITY = "code.review"
 
 #: Default capability advertised work for dispatched research tasks.
 #: Mirrors the proven research worker loop (PASS 3); steps may pin
@@ -390,13 +396,35 @@ def dispatchable_task(step: MissionStep,
                       url: str | None = None) -> dict | None:
     """Pure: one queue-task spec for a dispatchable step, else None.
 
-    No I/O, reads only the step. Only research steps with explicit
+    No I/O, reads only the step. Research steps with explicit
     source URLs map onto the live research.fetch_url claim-loop
-    executor; every other kind returns None so callers keep the
-    existing inline runner. The optional url selects which source
-    URL this spec covers (default: the first); payload always
-    carries mission_step_id for idempotent re-dispatch.
+    executor; analysis steps with an explicit goal map onto the
+    live code_worker claim loop as code.review (bounded review
+    only — patch/test never auto-dispatch). Every other kind
+    returns None so callers keep the existing inline runner. The
+    optional url selects which source URL a research spec covers
+    (default: the first); payload always carries mission_step_id
+    for idempotent re-dispatch.
     """
+    if step.kind == "analysis":
+        goal = str(step.parameters.get("goal", "") or "").strip()
+        if not goal:
+            return None
+        capabilities = [str(cap or "").strip()
+                        for cap in (step.required_capabilities or [])
+                        if str(cap or "").strip()][:10]
+        question = str(step.parameters.get("question", "")
+                       or "")[:500]
+        return {
+            "kind": "code.review",
+            "required_capabilities": capabilities or [
+                DISPATCH_CODE_CAPABILITY],
+            "payload": {
+                "goal": goal[:500],
+                "mission_step_id": step.step_id,
+                "question": question,
+            },
+        }
     if step.kind not in DISPATCHABLE_KINDS:
         return None
     urls = [str(item or "").strip()

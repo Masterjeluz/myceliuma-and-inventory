@@ -635,6 +635,7 @@ class PrinterRegisterBody(BaseModel):
     printer_id: str | None = Field(default=None, min_length=3,
                                    max_length=80)
     name: str = Field(min_length=1, max_length=120)
+    model: str = Field(default="", max_length=80)
     capabilities: list[str] = Field(default_factory=list,
                                     max_length=10)
     inventory_hardware_id: str = Field(default="", max_length=100)
@@ -654,6 +655,8 @@ class PrintProposeBody(BaseModel):
     gcode_sha256: str = Field(min_length=64, max_length=64)
     profile: str = Field(min_length=1, max_length=40)
     actor: str = Field(default="mycelium", min_length=1, max_length=80)
+    spool_id: str = Field(default="", max_length=80)
+    slot: str = Field(default="", max_length=12)
 
 
 class PrintCancelBody(BaseModel):

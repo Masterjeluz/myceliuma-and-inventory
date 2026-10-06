@@ -418,11 +418,19 @@ def _parse_obj(text: str):
     return points, facets, degenerate, notes, checks
 
 
-def validate_mesh(artifact_ref: str) -> MeshReport:
+def validate_mesh(artifact_ref: str, *,
+                  data: bytes | None = None) -> MeshReport:
     """Validate one mesh artifact. Verdicts: valid (parsed fully,
     finite, non-empty, within caps), invalid (concrete defect), or
-    inconclusive (unparseable as a known mesh — never valid)."""
-    data = read_artifact_bytes(artifact_ref)
+    inconclusive (unparseable as a known mesh — never valid).
+
+    ``data`` is an M1 (BIG57) additive path: validated library
+    bytes supplied by the caller (e.g. E:\\Mycelium files) instead
+    of a fabrication-dir read. Default None keeps the exact
+    existing behavior.
+    """
+    if data is None:
+        data = read_artifact_bytes(artifact_ref)
     lowered = artifact_ref.lower()
     if lowered.endswith(".stl"):
         text = None
@@ -459,34 +467,39 @@ def validate_mesh(artifact_ref: str) -> MeshReport:
            for note in notes):
         return _report(artifact_ref, format_name, "invalid",
                        point_count, len(facets), degenerate, notes,
-                       checks)
+                       checks, data=data)
     if not facets:
         return _report(artifact_ref, format_name, "inconclusive",
                        point_count, 0, degenerate,
-                       ["empty geometry"], checks)
+                       ["empty geometry"], checks, data=data)
     return _report(artifact_ref, format_name, "valid", point_count,
-                   len(facets), degenerate, notes, checks)
+                   len(facets), degenerate, notes, checks,
+                   data=data)
 
 
 def _report(artifact_ref: str, format_name: str, verdict: str,
-            point_count: int, face_count: int, degenerate: int,
-            reasons, checks) -> MeshReport:
+             point_count: int, face_count: int, degenerate: int,
+             reasons, checks,
+             data: bytes | None = None) -> MeshReport:
     return MeshReport(
         artifact_ref=artifact_ref, format=format_name,
         verdict=verdict,
         vertices=point_count,
         faces=face_count,
         degenerate_faces=degenerate if verdict == "valid" else 0,
-        bounds_mm=_bounds_of(artifact_ref, format_name),
+        bounds_mm=_bounds_of(artifact_ref, format_name, data=data),
         checks=list(checks or []),
         reasons=[str(reason)[:200] for reason in (reasons or [])])
 
 
-def _bounds_of(artifact_ref: str, format_name: str) -> list[float]:
+def _bounds_of(artifact_ref: str, format_name: str, *,
+               data: bytes | None = None) -> list[float]:
     """Re-read coordinates for bounds. Small helper kept separate
-    so the verdict path never depends on float aggregation."""
+    so the verdict path never depends on float aggregation.
+    ``data`` is the M1 additive path (caller-supplied bytes)."""
     try:
-        data = read_artifact_bytes(artifact_ref)
+        if data is None:
+            data = read_artifact_bytes(artifact_ref)
     except MeshRefusedError:
         return []
     coords: list[float] = []

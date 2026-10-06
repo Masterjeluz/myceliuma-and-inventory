@@ -56,6 +56,7 @@ from .printer3d import (
     PrintJob,
     PrintResult,
     adapter_capabilities,
+    ams_slot_loaded,
     new_job,
 )
 from .slicer3d import SlicerRefusedError
@@ -154,6 +155,8 @@ def propose_print(proposal_id: str, job: PrintJob, *,
         "gcode_sha256": job.gcode_sha256,
         "profile": job.profile,
         "safety_verdict": safety_verdict,
+        "spool_id": str(getattr(job, "spool_id", "") or "")[:80],
+        "slot": str(getattr(job, "slot", "") or "")[:12],
     }
     return propose_write(
         proposal_id, "printer.execute",
@@ -187,6 +190,26 @@ def execute_print(proposal: WriteProposal, approval: WriteApproval, *,
     if "printer.start" not in adapter_capabilities(adapter):
         return _blocked(proposal, fingerprint,
                         "adapter lacks printer.start; refusing")
+    if not getattr(adapter, "is_connected", True):
+        connector = getattr(adapter, "_connect_mqtt", None)
+        waiter = getattr(adapter, "wait_for_push", None)
+        if not callable(connector) or not callable(waiter):
+            return _blocked(proposal, fingerprint,
+                            "adapter is offline with no session "
+                            "path; refusing")
+        try:
+            connector()
+            alive = waiter(timeout=20.0)
+        except PrinterUnavailable as error:
+            return _failed(proposal, fingerprint,
+                           f"printer offline ({error}); refusing")
+        if not alive:
+            try:
+                adapter.disconnect()
+            except Exception:
+                pass
+            return _failed(proposal, fingerprint,
+                           "printer silent within budget; refusing")
     try:
         check_profile(proposal.payload.get("profile", ""))
     except (SlicerRefusedError, ValueError) as error:
@@ -207,12 +230,45 @@ def execute_print(proposal: WriteProposal, approval: WriteApproval, *,
         return _blocked(proposal, fingerprint,
                         "G-code changed since approval "
                         "(fingerprint mismatch); refusing")
+    slot_label = str(payload.get("slot", "") or "")
+    if slot_label:
+        reader = getattr(adapter, "_live_status", None)
+        if not callable(reader):
+            return _failed(proposal, fingerprint,
+                           "adapter reports no tray state; "
+                           "refusing")
+        tray = None
+        try:
+            # The first push after connect is often partial (no
+            # AMS node yet); wait boundedly for tray data instead
+            # of judging one possibly incomplete push.
+            waiter = getattr(adapter, "wait_for_push", None)
+            for _ in range(6):
+                live_now = reader()
+                tray = ams_slot_loaded(live_now, slot_label)
+                if tray is not None:
+                    break
+                if not callable(waiter) or not waiter(timeout=5.0):
+                    break
+        except Exception as error:
+            return _failed(proposal, fingerprint,
+                           f"telemetry unreadable ({error}); "
+                           f"refusing")
+        if tray is not True:
+            reason = (f"slot '{slot_label[:12]}' is not loaded; "
+                      f"load filament first"
+                      if tray is False else
+                      "tray state unknown; verify physically "
+                      "and retry")
+            return _failed(proposal, fingerprint, reason)
     job = new_job(
         payload.get("job_id", ""), payload.get("printer_id", ""),
         payload.get("gcode_ref", ""),
         payload.get("gcode_sha256", ""),
         payload.get("profile", ""), proposal.actor,
-        proposal_id=proposal.proposal_id)
+        proposal_id=proposal.proposal_id,
+        spool_id=str(payload.get("spool_id", "") or ""),
+        slot=str(payload.get("slot", "") or ""))
     running = job.model_copy(update={"status": "running",
                                      "started_at": now()})
     try:
@@ -221,8 +277,15 @@ def execute_print(proposal: WriteProposal, approval: WriteApproval, *,
         return _failed(proposal, fingerprint, str(error))
     if result.status == "completed":
         outcome: str = "executed"
+        started_note = ""
     elif result.status == "cancelled":
         outcome = "blocked"
+        started_note = ""
+    elif result.status == "running":
+        outcome = "executed"
+        started_note = ("print STARTED (not completed); completion "
+                        "is observed separately via telemetry, "
+                        "never implied")
     else:
         return _failed(proposal, fingerprint,
                        result.error or "printer reported "
@@ -231,7 +294,8 @@ def execute_print(proposal: WriteProposal, approval: WriteApproval, *,
         proposal_id=proposal.proposal_id, fingerprint=fingerprint,
         outcome=outcome,  # type: ignore[arg-type]
         before={"job": running.model_dump(mode="json")},
-        after={"print_result": result.model_dump(mode="json")},
+        after={"print_result": result.model_dump(mode="json"),
+               "started_note": started_note},
         actor=proposal.actor, executed_at=now(),
         provenance=Provenance(
             source_type="sensor-observed",

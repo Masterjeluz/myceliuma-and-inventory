@@ -502,7 +502,18 @@ def derive_fungi_network(limit: int = 120) -> dict:
         for mission in sorted(
                 list_missions(limit=50) or [],
                 key=lambda m: str(m.mission_id)):
-            if str(mission.status) not in (
+            status = str(mission.status)
+            if status == "completed":
+                # Historisch resultaat: zichtbaar als afgerond (✓),
+                # nooit opnieuw uitvoerbaar — representatie only.
+                _add(_fungi_node(
+                    f"fungi-mission-{mission.mission_id}", "mission",
+                    f"✓ {str(mission.goal or mission.mission_id)[:96]}",
+                    f"/missions/{mission.mission_id}", weight=3,
+                    parent=mission_parents.get(
+                        str(mission.mission_id), "fungi-seed")))
+                continue
+            if status not in (
                     "approved", "running", "pending_approval"):
                 continue
             _add(_fungi_node(

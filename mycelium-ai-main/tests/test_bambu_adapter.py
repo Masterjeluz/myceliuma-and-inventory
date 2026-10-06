@@ -87,10 +87,15 @@ def test_bambu_adapter_cancel_raises_unavailable(bambu_adapter, test_printer_dev
 
 
 def test_bambu_adapter_requirements():
-    """Verifieer dat de requirements methode de juiste string retourneert."""
-    expected_requirements = ("Bambu Lab printer requires MQTT connection details (host, port, "
-                            "username, password) and printer-specific credentials "
-                            "(serial, token).")
+    """M4.1 read-only: requirements noemen LAN-MQTT + env-config,
+    geen motion paths."""
+    expected_requirements = (
+        "Bambu Lab printer (M4.1 read-only): LAN MQTT over "
+        "TLS :8883 as user bblp with the printer access code, "
+        "plus the printer serial for the report topic. "
+        "Configure via BAMBU_MQTT_HOST/PORT/USERNAME/"
+        "ACCESS_CODE env only (never stored); enable LAN mode "
+        "on the printer. Motion paths do not exist in M4.1.")
     assert BambuPrinterAdapter.requirements() == expected_requirements
 
 

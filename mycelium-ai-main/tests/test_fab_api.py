@@ -278,6 +278,134 @@ def test_printer_routes_and_cancel(tmp_path, monkeypatch):
         assert "emergency stop" in cancelled["estop_note"]
 
 
+def _connect_env(monkeypatch, **overrides):
+    import coordinator.app.printer3d as printer_mod
+    for key in ("BAMBU_MQTT_HOST", "BAMBU_MQTT_PORT",
+                "BAMBU_MQTT_USERNAME", "BAMBU_MQTT_ACCESS_CODE",
+                "BAMBU_PRINTER_SERIAL"):
+        monkeypatch.delenv(key, raising=False)
+    base = {"BAMBU_MQTT_HOST": "192.168.1.50",
+            "BAMBU_MQTT_ACCESS_CODE": "route-canary-999",
+            "BAMBU_PRINTER_SERIAL": "TESTSERIAL"}
+    base.update(overrides)
+    for key, value in base.items():
+        if value is not None:
+            monkeypatch.setenv(key, value)
+    return printer_mod
+
+
+def _canned_live():
+    return {"state": "idle", "gcode_state": "IDLE",
+            "nozzle_c": 24.0, "bed_c": 22.0, "progress_pct": 0,
+            "last_read_at": "2026-01-01T00:00:00+00:00"}
+
+
+def _register_bare_printer(test_client, printer_id):
+    """Register via the route only: stored twin, no adapter
+    attached (production-faithful starting point)."""
+    response = test_client.post("/api/v1/printers/register", json={
+        "printer_id": printer_id, "name": "Bareprinter",
+        "capabilities": ["printer.status", "printer.telemetry",
+                         "printer.start"]})
+    assert response.status_code == 201, response.text
+    return printer_id
+
+
+def test_connect_route_success_registers(tmp_path, monkeypatch):
+    import coordinator.app.printer3d as printer_mod
+    from coordinator.app.printer3d import adapter_for_printer
+    _connect_env(monkeypatch)
+    monkeypatch.setattr(printer_mod, "read_bambu_once",
+                        lambda *a, **k: _canned_live())
+    for test_client in make_client(tmp_path, monkeypatch):
+        printer_id = _register_bare_printer(
+            test_client, printer_id="prt-conn1")
+        assert adapter_for_printer(printer_id) is None
+        response = test_client.post(
+            f"/api/v1/printers/{printer_id}/connect", json={})
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert body["adapter"] == "bambu-a1-mini-ams"
+        assert body["reachable"] is True
+        assert body["state"] == "idle"
+        assert "192.168.1.50" not in response.text
+        assert "route-canary-999" not in response.text
+        assert adapter_for_printer(printer_id) is not None
+
+
+def test_connect_route_unknown_printer_404(tmp_path, monkeypatch):
+    _connect_env(monkeypatch)
+    for test_client in make_client(tmp_path, monkeypatch):
+        response = test_client.post(
+            "/api/v1/printers/prt-missing/connect", json={})
+        assert response.status_code == 404
+
+
+def test_connect_route_missing_env_422_no_secrets(tmp_path,
+                                                 monkeypatch):
+    import coordinator.app.printer3d as printer_mod
+    from coordinator.app.printer3d import adapter_for_printer
+    _connect_env(monkeypatch)
+    monkeypatch.delenv("BAMBU_MQTT_HOST", raising=False)
+    monkeypatch.setattr(printer_mod, "read_bambu_once",
+                        lambda *a, **k: _canned_live())
+    for test_client in make_client(tmp_path, monkeypatch):
+        printer_id = _register_bare_printer(
+            test_client, printer_id="prt-conn2")
+        response = test_client.post(
+            f"/api/v1/printers/{printer_id}/connect", json={})
+        assert response.status_code == 422, response.text
+        assert "BAMBU_MQTT_HOST" in response.text
+        assert "route-canary-999" not in response.text
+        assert adapter_for_printer(printer_id) is None
+
+
+def test_connect_route_offline_registers_nothing(tmp_path,
+                                                 monkeypatch):
+    import coordinator.app.printer3d as printer_mod
+    from coordinator.app.printer3d import (
+        PrinterUnavailable, adapter_for_printer)
+    _connect_env(monkeypatch)
+
+    def _offline(*args, **kwargs):
+        raise PrinterUnavailable("Bambu printer is offline.")
+
+    monkeypatch.setattr(printer_mod, "read_bambu_once", _offline)
+    for test_client in make_client(tmp_path, monkeypatch):
+        printer_id = _register_bare_printer(
+            test_client, printer_id="prt-conn3")
+        response = test_client.post(
+            f"/api/v1/printers/{printer_id}/connect", json={})
+        assert response.status_code == 422
+        assert adapter_for_printer(printer_id) is None
+
+
+def test_connect_route_causes_no_motion(tmp_path, monkeypatch):
+    import coordinator.app.bambu_exec as exec_mod
+    import coordinator.app.printer3d as printer_mod
+    from coordinator.app.printer3d import adapter_for_printer
+    _connect_env(monkeypatch)
+    calls: list = []
+
+    def _boom(*args, **kwargs):
+        calls.append((args, kwargs))
+        raise AssertionError("motion path reached via connect")
+
+    monkeypatch.setattr(exec_mod, "execute_bambu_job", _boom)
+    monkeypatch.setattr(exec_mod, "ftps_upload", _boom)
+    monkeypatch.setattr(exec_mod, "publish_request", _boom)
+    monkeypatch.setattr(printer_mod, "read_bambu_once",
+                        lambda *a, **k: _canned_live())
+    for test_client in make_client(tmp_path, monkeypatch):
+        printer_id = _register_bare_printer(
+            test_client, printer_id="prt-conn4")
+        response = test_client.post(
+            f"/api/v1/printers/{printer_id}/connect", json={})
+        assert response.status_code == 200, response.text
+        assert calls == []
+        assert adapter_for_printer(printer_id) is not None
+
+
 def test_fabrication_mission_steps(tmp_path, monkeypatch):
     for test_client in make_client(tmp_path, monkeypatch):
         printer_id = register_test_printer(test_client)

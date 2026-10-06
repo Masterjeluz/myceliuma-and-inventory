@@ -68,6 +68,12 @@ persoonlijke computer-agent (verticale slice, live bewezen):
   → telemetrie + camera-verificatie; geen `safe_to_execute`
   nergens, software-cancel ≠ e-stop, zie
   `docs/3d-architecture.md` (geen echte printertransporten)
+- **Modelbibliotheken** (`/3d`, `GET /api/v1/workshop/libraries`):
+  Wikimedia Commons / NIH 3D / NASA importeren met licentie erbij
+  (bron, auteur, commercial_use, remix, attributie — "open" is
+  nooit automatisch verkoopbaar); zoeken + Importvoorstel lopen
+  via de bestaande writes-flow (exact YES), zie
+  `docs/3d-model-libraries.md`
 - **Desktop-agent** (`/agents`): standalone proces (outbound-only)
   dat goedgekeurde acties claimt, hervalideert en uitvoert via
   scherm/muis/toetsenbord — observe → act → observe, begrensd,
@@ -100,8 +106,20 @@ persoonlijke computer-agent (verticale slice, live bewezen):
   needs-signalen, verified-glow in de graaf, gedeelde
   mobiele woordenschat; zie
   `docs/living-solarpunk-world.md`
+- **Solar Punk City** (`/solarpunk` + `/homebase`): begaanbare
+  stad in first person (WASD + pijltjes, kijkrichting bewaart
+  mee, typen in een veld beweegt nooit), zes NPC-bewoners met
+  vaste werkspot (walk-up praten, Delegeer-knop), town-geheugen,
+  activiteitsfeed en Bureau (voorstel met actie/waarom/raakt/
+  zekerheid →   exact-YES → queue-taak; autonomie-dial
+  `TOWN_AUTONOMY`, default uit, nooit hardware/desktop-invoer);
+  Three.js alleen voor `/homebase` + 3D-snapshot-preview in
+  `/forge` (zelfde gepinde CDN, 2D blijft leidend)
 - **Veiligheid**: geen shell/RCE, geen credentials-opslag, geen
-  auto-approval/bypass, geen permanente autonomie, screenshots lokaal
+  auto-approval/bypass (behalve de expliciete TOWN_AUTONOMY-dial
+  voor research.fetch_url/system_inventory/desktop_screenshot,
+  default uit), geen permanente autonomie,
+  screenshots lokaal
 - **Integratiepass** (`/tasks`, `/tasks/{id}`, `/approvals`,
   `/system`, `GET /api/v1/models/routes`,
   `GET /api/v1/events/stream`): elke bestaande backend-waarheid is
@@ -122,6 +140,36 @@ taak → desktop-agent → observatie → volgende stap → gesprekupdate.
 - SQLite-opslag en gestructureerde logging
 - Een leesbaar lokaal dashboard op `/`
 - Docker Compose voor lokaal gebruik
+
+## Backends in de UI (±546 routes, 52 pagina's, ±423 API)
+
+Elke grote backend heeft een pagina; de rest is API/CLI-only of
+verwant via een andere pagina. Stand 2026-10-06 (routes geteld,
+geen claims zonder route).
+
+| Backend | UI | Status |
+|---|---|---|
+| Spelwereld (`/play` `/side` `/world` `/canvas` `/game` `/craft`) | eigen pagina's | volledig |
+| Solar Punk City + NPC's + Bureau | `/solarpunk` (panelen) | volledig |
+| Homebase 3D-pand | `/homebase` (Three.js, fallback) | volledig |
+| Missies / taken / approvals | `/missions` `/tasks` `/approvals` | volledig |
+| Research / dossiers | `/research` | volledig |
+| Chat / conversaties | `/chat` `/conversations` | volledig |
+| Camera's + Insta360-grab | `/cameras` + scan-paneel | 1-klik beeld via image-route (X3 live bewezen) |
+| Forge + 3D-snapshot | `/forge` | BUILD queuet mee (prepare→enqueue), 2D leidend |
+| Workshop / bibliotheek / graaf | `/workshop` `/workshop/3d` `/workshop/graph` | volledig |
+| Fabricage / slicer | `/fabrication` | SIMULATED, hardware gated |
+| Writes | `/writes` | exact YES + execute + verify |
+| Nodes | `/nodes` | volledig (pull-only) |
+| Projecten / quests / kennis / geheugen / skills | eigen pagina's | volledig |
+| Automatisering / watcher / triage / activiteit | eigen pagina's | volledig (expliciete POST) |
+| Energie / financiën / agenda / gezondheid / morning | eigen pagina's | volledig |
+| Printers (o.a. Bambu) | via `/devices` + `/fabrication` | API + eerlijk-degraded zonder adapter |
+| Voice | — | API-only |
+| Hardware-links | `/devices` `/hardware` | eerlijk-degraded zonder hardware |
+| Ollama / Hermes-modellen | via town + advies | degraded zonder keys (502/503) |
+| Node-worker | — | CLI-only (`node_client`) |
+| n8n-workflows | — | test-fixtures only |
 
 ## Snel starten: één seed zichtbaar maken in de UI
 

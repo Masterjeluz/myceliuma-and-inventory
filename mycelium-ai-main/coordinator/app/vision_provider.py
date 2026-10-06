@@ -130,8 +130,12 @@ def _validate_base_url(raw) -> str:
 def read_vision_media(media_ref: str) -> tuple[bytes, str]:
     """Read one allow-listed local media file. Returns (bytes, mime).
 
-    Plain filename only, inside the camera dir, known suffix,
-    capped size. Everything else refuses before any byte is read.
+    Plain filename only, inside the camera dir or the screen-
+    observation dir (both operator-local %TEMP% dirs), known
+    suffix, capped size. Everything else refuses before any byte
+    is read. Screen files are included so an explicit opt-in VLM
+    text summary can describe them; raw pixels still never leave
+    this layer except toward the loopback model.
     """
     try:
         reference = check_image_ref(media_ref)
@@ -139,14 +143,23 @@ def read_vision_media(media_ref: str) -> tuple[bytes, str]:
         raise VisionRefusedError(str(error)) from error
     if not reference:
         raise VisionRefusedError("Vision needs a media reference")
-    root = os.path.abspath(camera_dir())
-    path = os.path.abspath(os.path.join(root, reference))
-    if path != root and not path.startswith(root + os.sep):
+    roots = [os.path.abspath(camera_dir())]
+    try:
+        from .desktop_runtime import observation_dir
+        roots.append(os.path.abspath(observation_dir()))
+    except Exception:
+        pass
+    path = ""
+    for root in roots:
+        candidate = os.path.abspath(os.path.join(root, reference))
+        if candidate != root and candidate.startswith(root + os.sep):
+            if os.path.isfile(candidate):
+                path = candidate
+                break
+    if not path:
         raise VisionRefusedError(
-            "Media escapes the camera directory; refusing")
-    if not os.path.isfile(path):
-        raise VisionRefusedError(
-            f"Media '{reference}' does not exist; refusing")
+            f"Media '{reference}' is outside the allow-listed "
+            "camera/screen directories; refusing")
     size = os.path.getsize(path)
     if size <= 0:
         raise VisionRefusedError("Media is empty; refusing")

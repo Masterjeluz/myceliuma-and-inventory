@@ -4,9 +4,11 @@ Een local-first wereldmodel-, geheugen- en herkomstsysteem voor de fysieke, digi
 
 INVENTory houdt bij **wat er is en wat er gebeurt**: objecten, materialen, gereedschappen, machines, projecten, ideeën, bestanden, en relaties.
 
-> **Status:** Milestone 1B — Objecten + Projecten + Ideeën + Relaties + Events.  
-> Milestone 1A (Fundament & Fysieke Objecten) is afgerond en blijft de basis.  
-> Dit is een zelfstandig project dat volledig losstaat van de Mycelium AI database en codebase.
+> **Status (bijgewerkt 2026-10-05):** Milestone 1A + 1B zijn de basis;
+> M3+ entiteiten (hardware/sensors/cameras/locations/models/tasks/
+> actuators/files), FTS5-search en graaf bestaan inmiddels
+> (183 tests). De "M1B"-kop hierboven is historisch; actuele kaart:
+> `docs/CURRENT_STATE.md` in de repo-root.
 
 ---
 
@@ -30,10 +32,11 @@ INVENTory houdt bij **wat er is en wat er gebeurt**: objecten, materialen, geree
   - Overzichtstabel op `http://127.0.0.1:8080/` met herkomst-badges (`🤖 AI (unverified)`, `👤 User`, etc.).
   - Webformulier om direct nieuwe objecten in te voeren.
   - Detailpagina op `http://127.0.0.1:8080/objects/{id}` met volledige provenance-historie en ruwe JSON.
-- **Geautomatiseerde testsuite** (`pytest`): 35 tests in 3 bestanden
-  (`test_database.py`, `test_objects.py`, `test_milestone_1b.py`).
-  Alleen dit reproduceerbare aantal geldt; oudere "73 tests"-claims zijn niet
-  reproduceerbaar en worden nergens meer gesteld.
+- **Geautomatiseerde testsuite** (`pytest`): 183 tests in 13 bestanden
+  (telling 2026-10-05 via `def test_`). Oudere "35 tests in
+  3 bestanden"- en "73 tests"-claims zijn vervallen; alleen dit
+  reproduceerbare aantal geldt. Teststrategie FAST/FEATURE/FULL:
+  zie `docs/TESTING.md` in de repo-root.
 
 ### Milestone 1B — Projecten, Ideeën, Relaties, Events (geïmplementeerd)
 
@@ -109,7 +112,12 @@ pytest -v
 
 ---
 
-## Wat is bewust nog NIET gebouwd (Toekomstige Milestones)
+## Wat is bewust nog NIET gebouwd (historisch — deels achterhaald)
+
+> Stand 2026-10-05: de milestones hieronder zijn deels geïmplementeerd
+> (M3+ entiteiten, FTS5, graaf bestaan; REST-lezing Mycelium ↔ INVENTory
+> via loopback-bridge bestaat). Deze lijst blijft als intentie-archief;
+> waarheid = code + `docs/CURRENT_STATE.md`.
 
 - **Milestone 3:** Conversations (geheugen) en Files (lokale media-opslag met SHA-256).
 - **Milestone 4:** Full-text search (SQLite FTS5) en graaf-navigatie in de webinterface.

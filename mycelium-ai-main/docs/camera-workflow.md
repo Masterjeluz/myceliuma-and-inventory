@@ -55,9 +55,14 @@ honestly what works. Full chain in `docs/camera-ecosystem.md`.
 ## What is missing (UNAVAILABLE)
 
 Live Insta360 transport. The `Insta360Adapter` is an explicit
-unavailable foundation: identity/candidate matching only, capture
-refused until a reviewed transport lands (webcam-driver or
-file-ingest path). No SDK steps are invented.
+unavailable foundation: identity/candidate matching only.
+WEL geland sinds 2026-10-05: de `insta360`-grabber
+(ffmpeg-dshow, argv-only, parent verifieert SHA256) —
+één echt frame per `probe-grab` (X3 live bewezen,
+1920×1080), te bekijken met één klik via
+`GET /api/v1/cameras/observations/{id}/image`
+("Bekijk beeld" op `/solarpunk`). Geen stream, geen SDK;
+per frame een expliciete grab.
 
 ## What Jelles needs to do
 

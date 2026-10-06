@@ -1311,6 +1311,67 @@ def _complete_task(task_id: int, result: TaskResult, completing_node_id: str | N
                            "cause=%s", task_id, error)
 
 
+def _cancel_task(task_id: int, *, reason: str = "",
+                 actor: str = "") -> dict:
+    """Cancel one queued task (M3.5/BIG57). Idempotent.
+
+    queued -> cancelled (conditional single-row update, so a racing
+    claim wins instead of duplicating). Already cancelled returns
+    the same shape (idempotent). assigned/completed/failed/blocked
+    refuse: an assigned task is held by a node (wait for
+    completion or lease-expiry), terminal tasks are immutable.
+    Missing tasks 404. Never executes, never assigns.
+    """
+    cleaned_reason = str(reason or "").strip()[:200]
+    cleaned_actor = str(actor or "").strip()[:80]
+    with connection() as db:
+        row = db.execute("SELECT status FROM tasks WHERE id=?",
+                         (task_id,)).fetchone()
+        if row is None:
+            raise HTTPException(404, "Task not found")
+        status = str(row["status"] or "")
+        if status == "cancelled":
+            return {"id": task_id, "status": "cancelled",
+                    "existing": True}
+        if status == "assigned":
+            raise HTTPException(
+                status_code=409,
+                detail=f"Task {task_id} is assigned to a node; "
+                       f"wait for completion or lease-expiry, "
+                       f"never force-cancel running work")
+        if status in ("completed", "failed", "blocked"):
+            raise HTTPException(
+                status_code=409,
+                detail=f"Task {task_id} is {status}; terminal "
+                       f"tasks cannot be cancelled")
+        if status != "queued":
+            raise HTTPException(
+                status_code=409,
+                detail=f"Task {task_id} is {status}; only queued "
+                       f"tasks cancel")
+        changed = db.execute(
+            "UPDATE tasks SET status='cancelled', completed_at=? "
+            "WHERE id=? AND status='queued'",
+            (now(), task_id)).rowcount
+    if not changed:
+        raise HTTPException(404, "Task not found")
+    logger.info("task_cancelled task_id=%s actor=%s", task_id,
+                cleaned_actor or "operator")
+    emit_event("task.cancelled",
+               f"Task {task_id} cancelled"
+               f"{(': ' + cleaned_reason) if cleaned_reason else ''}",
+               task_id=str(task_id))
+    return {"id": task_id, "status": "cancelled", "existing": False}
+
+
+@app.post("/api/v1/tasks/{task_id}/cancel")
+def cancel_task(task_id: int, body: dict | None = None) -> dict:
+    payload = body if isinstance(body, dict) else {}
+    return _cancel_task(
+        task_id, reason=str(payload.get("reason", "")),
+        actor=str(payload.get("actor", "")))
+
+
 def _ingest_research_fetch(task_id: int, result: TaskResult,
                            node_id: str) -> None:
     """Completion hook: a finished research.fetch_url task becomes
@@ -1408,7 +1469,8 @@ def _closeout_dispatched_step(task_id: int) -> None:
     breaks task completion (all unexpected paths log and return)."""
     with connection() as db:
         row = db.execute(
-            "SELECT mission_id, payload, status FROM tasks WHERE id=?",
+            "SELECT mission_id, kind, payload, status FROM tasks "
+            "WHERE id=?",
             (task_id,)).fetchone()
     if row is None:
         return
@@ -1461,9 +1523,10 @@ def _closeout_dispatched_step(task_id: int) -> None:
     if any(str(entry["status"]) != "completed" for entry in linked):
         return
     old_status, old_step = mission.status, mission.current_step
+    task_kind = str(row["kind"] or "queue-task")
     result_text = (step.result_text
                    or f"Dispatched task {task_id} completed "
-                   "(research.fetch_url).")[:4000]
+                   f"({task_kind}).")[:4000]
     updated = set_step(mission, step_id, status="completed",
                        result_text=result_text,
                        completed_at=now())
@@ -1632,6 +1695,600 @@ def list_tasks() -> list[dict]:
             record["routing_decision"] = None
         items.append(record)
     return items
+
+
+# =============================================================================
+# BIG47 — LIVING WORKSHOP VERTICAL (game as interface, no new systems).
+# GET /api/v1/play/status: read-only snapshot over the EXISTING task
+# queue, node registry, automation runs, missions and bus events.
+# POST /api/v1/play/code-task: queue ONE bounded code.* task from the
+# game. Same row shape as POST /api/v1/tasks, same claim/complete/
+# lease/fencing hand-off, no execution here, no physical authority.
+# =============================================================================
+
+
+@app.get("/api/v1/play/status")
+def play_status_route() -> dict:
+    """Living-workshop snapshot for /play. Read-only, never raises."""
+    from .play_workshop import play_status as _play_status
+    return _play_status()
+
+
+@app.post("/api/v1/play/code-task", status_code=201)
+def play_code_task(body: dict) -> dict:
+    """Queue one bounded code task from the game. Fail-closed.
+
+    Only code.review / code.patch / code.test queue; mission_id is
+    traceability only and must reference a real mission; step_id
+    optionally binds to a pending analysis step of that mission
+    (code.review only, approved/running missions only). Queued rows
+    leave through the existing claim path alone; bound steps close
+    through the existing mission closeout.
+    """
+    from pydantic import ValidationError as _ValidationError
+    from .missions import MissionConflictError as _MissionConflict
+    from .play_workshop import (PlayCodeTaskBody, PlayRefusedError,
+                                queue_play_task)
+    try:
+        parsed = (PlayCodeTaskBody.model_validate(body)
+                  if isinstance(body, dict) else
+                  PlayCodeTaskBody.model_validate({"_": None}))
+    except _ValidationError as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    try:
+        created = queue_play_task(parsed.kind, parsed.goal,
+                                  parsed.mission_id,
+                                  parsed.step_id)
+    except _MissionConflict as error:
+        raise HTTPException(status_code=409, detail=str(error))
+    except PlayRefusedError as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    emit_event("task.queued",
+               f"Task {created['id']} ({created['kind']}) queued "
+               "from play",
+               task_id=str(created["id"]),
+               mission_id=created["mission_id"] or "")
+    return created
+
+
+@app.post("/api/v1/play/session")
+def play_session(body: dict | None = None) -> dict:
+    """Create or resume a player session. No auth, no accounts.
+
+    Body {session_id?}: known ids resume (position restored),
+    unknown/missing ids spawn fresh at Homebase. Refresh-safe.
+    """
+    from .play_workshop import (PlaySessionRefusedError,
+                                open_play_session)
+    payload = body if isinstance(body, dict) else {}
+    try:
+        data = open_play_session(payload.get("session_id"))
+    except PlaySessionRefusedError as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    if not data.get("resumed"):
+        emit_event("interface.session",
+                   f"Player session {data['session_id']} opened "
+                   "from play")
+    return data
+
+
+@app.post("/api/v1/play/position")
+def play_position(body: dict) -> dict:
+    """Store a player position + facing (server-side,
+    throttled).
+
+    Unknown sessions 404; throttled calls (<2s) return saved=False
+    with the stored position. Coordinates clamp to the world,
+    facing ``a`` (radians) wraps to [0, 2pi); callers without
+    ``a`` (/side) leave the stored facing untouched."""
+    from .play_workshop import (PlaySessionRefusedError,
+                                save_play_position)
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=422,
+                            detail="invalid JSON body")
+    if not body.get("session_id"):
+        raise HTTPException(status_code=422,
+                            detail="session_id is required")
+    try:
+        return save_play_position(
+            body.get("session_id"), body.get("x"),
+            body.get("y"), body.get("zone", ""),
+            body.get("a"))
+    except KeyError as error:
+        raise HTTPException(status_code=404, detail=str(error))
+    except PlaySessionRefusedError as error:
+        raise HTTPException(status_code=422, detail=str(error))
+
+
+@app.get("/api/v1/play/inventory")
+def play_inventory(session_id: str = "") -> dict:
+    """Read-only session inventory + placed builds (game-owned
+    state, never backend records). Unknown sessions 404."""
+    from .play_workshop import (PlaySessionRefusedError,
+                                get_play_inventory)
+    try:
+        return get_play_inventory(session_id)
+    except KeyError as error:
+        raise HTTPException(status_code=404, detail=str(error))
+    except PlaySessionRefusedError as error:
+        raise HTTPException(status_code=422, detail=str(error))
+
+
+@app.post("/api/v1/play/gather")
+def play_gather(body: dict) -> dict:
+    """Yield 1 resource from a world node. Unknown sessions 404;
+    unknown nodes or cooldown refuse with 422 (reason included)."""
+    from .play_workshop import (PlaySessionRefusedError,
+                                gather_node)
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=422,
+                            detail="invalid JSON body")
+    if not body.get("session_id"):
+        raise HTTPException(status_code=422,
+                            detail="session_id is required")
+    if not body.get("node_id"):
+        raise HTTPException(status_code=422,
+                            detail="node_id is required")
+    try:
+        return gather_node(body.get("session_id"),
+                           body.get("node_id"))
+    except KeyError as error:
+        raise HTTPException(status_code=404, detail=str(error))
+    except PlaySessionRefusedError as error:
+        raise HTTPException(status_code=422, detail=str(error))
+
+
+@app.post("/api/v1/play/craft")
+def play_craft(body: dict) -> dict:
+    """Consume ingredients, add 1 crafted good. Missing goods
+    refuse with 422; nothing is invented."""
+    from .play_workshop import (PlaySessionRefusedError,
+                                craft_recipe)
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=422,
+                            detail="invalid JSON body")
+    if not body.get("session_id"):
+        raise HTTPException(status_code=422,
+                            detail="session_id is required")
+    if not body.get("recipe"):
+        raise HTTPException(status_code=422,
+                            detail="recipe is required")
+    try:
+        return craft_recipe(body.get("session_id"),
+                            body.get("recipe"))
+    except KeyError as error:
+        raise HTTPException(status_code=404, detail=str(error))
+    except PlaySessionRefusedError as error:
+        raise HTTPException(status_code=422, detail=str(error))
+
+
+@app.post("/api/v1/play/place")
+def play_place(body: dict) -> dict:
+    """Consume 1 placeable good, record a structure. Bounds and
+    ownership enforced; unknown sessions 404."""
+    from .play_workshop import (PlaySessionRefusedError,
+                                place_build)
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=422,
+                            detail="invalid JSON body")
+    if not body.get("session_id"):
+        raise HTTPException(status_code=422,
+                            detail="session_id is required")
+    if not body.get("kind"):
+        raise HTTPException(status_code=422,
+                            detail="kind is required")
+    try:
+        return place_build(body.get("session_id"),
+                           body.get("kind"), body.get("x"),
+                           body.get("y"))
+    except KeyError as error:
+        raise HTTPException(status_code=404, detail=str(error))
+    except PlaySessionRefusedError as error:
+        raise HTTPException(status_code=422, detail=str(error))
+
+
+@app.get("/api/v1/play/flags")
+def play_flags(session_id: str = "") -> dict:
+    """Read-only quest/encounter flags. Unknown sessions 404."""
+    from .play_workshop import (PlaySessionRefusedError,
+                                get_play_flags)
+    try:
+        return get_play_flags(session_id)
+    except KeyError as error:
+        raise HTTPException(status_code=404, detail=str(error))
+    except PlaySessionRefusedError as error:
+        raise HTTPException(status_code=422, detail=str(error))
+
+
+@app.post("/api/v1/play/flags")
+def play_flag_set(body: dict) -> dict:
+    """Idempotent flag set from a closed list. Unknown sessions 404."""
+    from .play_workshop import (PlaySessionRefusedError,
+                                set_play_flag)
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=422,
+                            detail="invalid JSON body")
+    if not body.get("session_id"):
+        raise HTTPException(status_code=422,
+                            detail="session_id is required")
+    if not body.get("flag"):
+        raise HTTPException(status_code=422,
+                            detail="flag is required")
+    try:
+        return set_play_flag(body.get("session_id"),
+                             body.get("flag"))
+    except KeyError as error:
+        raise HTTPException(status_code=404, detail=str(error))
+    except PlaySessionRefusedError as error:
+        raise HTTPException(status_code=422, detail=str(error))
+
+
+@app.get("/api/v1/play/chest")
+def play_chest(session_id: str = "", chest_id: str = "") -> dict:
+    """Read-only chest contents. Foreign chests 404."""
+    from .play_workshop import (PlaySessionRefusedError,
+                                get_chest)
+    try:
+        return get_chest(session_id, chest_id)
+    except KeyError as error:
+        raise HTTPException(status_code=404, detail=str(error))
+    except PlaySessionRefusedError as error:
+        raise HTTPException(status_code=422, detail=str(error))
+
+
+@app.post("/api/v1/play/chest/deposit")
+def play_chest_deposit(body: dict) -> dict:
+    """Move items session -> chest. Ownership + qty enforced."""
+    from .play_workshop import (PlaySessionRefusedError,
+                                move_chest_item)
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=422,
+                            detail="invalid JSON body")
+    for key in ("session_id", "chest_id", "item", "qty"):
+        if body.get(key) in (None, ""):
+            raise HTTPException(status_code=422,
+                                detail=f"{key} is required")
+    try:
+        return move_chest_item(body.get("session_id"),
+                               body.get("chest_id"),
+                               body.get("item"), body.get("qty"),
+                               True)
+    except KeyError as error:
+        raise HTTPException(status_code=404, detail=str(error))
+    except PlaySessionRefusedError as error:
+        raise HTTPException(status_code=422, detail=str(error))
+
+
+@app.post("/api/v1/play/chest/withdraw")
+def play_chest_withdraw(body: dict) -> dict:
+    """Move items chest -> session. Ownership + qty enforced."""
+    from .play_workshop import (PlaySessionRefusedError,
+                                move_chest_item)
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=422,
+                            detail="invalid JSON body")
+    for key in ("session_id", "chest_id", "item", "qty"):
+        if body.get(key) in (None, ""):
+            raise HTTPException(status_code=422,
+                                detail=f"{key} is required")
+    try:
+        return move_chest_item(body.get("session_id"),
+                               body.get("chest_id"),
+                               body.get("item"), body.get("qty"),
+                               False)
+    except KeyError as error:
+        raise HTTPException(status_code=404, detail=str(error))
+    except PlaySessionRefusedError as error:
+        raise HTTPException(status_code=422, detail=str(error))
+
+
+@app.get("/api/v1/play/npc")
+def play_npc(session_id: str = "") -> dict:
+    """Read-only settlement state. Unknown sessions 404."""
+    from .play_workshop import (PlaySessionRefusedError,
+                                list_npc)
+    try:
+        return list_npc(session_id)
+    except KeyError as error:
+        raise HTTPException(status_code=404, detail=str(error))
+    except PlaySessionRefusedError as error:
+        raise HTTPException(status_code=422, detail=str(error))
+
+
+@app.post("/api/v1/play/npc/assign")
+def play_npc_assign(body: dict) -> dict:
+    """Settle an NPC into a placed room of this session."""
+    from .play_workshop import (PlaySessionRefusedError,
+                                assign_npc)
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=422,
+                            detail="invalid JSON body")
+    for key in ("session_id", "npc_id", "house_build_id"):
+        if not body.get(key):
+            raise HTTPException(status_code=422,
+                                detail=f"{key} is required")
+    try:
+        return assign_npc(body.get("session_id"),
+                          body.get("npc_id"),
+                          body.get("house_build_id"))
+    except KeyError as error:
+        raise HTTPException(status_code=404, detail=str(error))
+    except PlaySessionRefusedError as error:
+        raise HTTPException(status_code=422, detail=str(error))
+
+
+@app.post("/api/v1/play/clock/tick")
+def play_clock_tick(body: dict) -> dict:
+    """Advance game time +10 min (throttled 60s wall time)."""
+    from .play_workshop import (PlaySessionRefusedError,
+                                tick_clock)
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=422,
+                            detail="invalid JSON body")
+    if not body.get("session_id"):
+        raise HTTPException(status_code=422,
+                            detail="session_id is required")
+    try:
+        return tick_clock(body.get("session_id"))
+    except KeyError as error:
+        raise HTTPException(status_code=404, detail=str(error))
+    except PlaySessionRefusedError as error:
+        raise HTTPException(status_code=422, detail=str(error))
+
+
+@app.get("/api/v1/play/notes")
+def play_notes(session_id: str = "") -> dict:
+    """Read-only quest notes. Unknown sessions 404."""
+    from .play_workshop import (PlaySessionRefusedError,
+                                get_play_notes)
+    try:
+        return get_play_notes(session_id)
+    except KeyError as error:
+        raise HTTPException(status_code=404, detail=str(error))
+    except PlaySessionRefusedError as error:
+        raise HTTPException(status_code=422, detail=str(error))
+
+
+@app.post("/api/v1/play/notes")
+def play_note_set(body: dict) -> dict:
+    """Upsert one quest note (max 500 chars)."""
+    from .play_workshop import (PlaySessionRefusedError,
+                                set_play_note)
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=422,
+                            detail="invalid JSON body")
+    for key in ("session_id", "key"):
+        if not body.get(key):
+            raise HTTPException(status_code=422,
+                                detail=f"{key} is required")
+    try:
+        return set_play_note(body.get("session_id"),
+                             body.get("key"),
+                             body.get("text", ""),
+                             body.get("priority", False))
+    except KeyError as error:
+        raise HTTPException(status_code=404, detail=str(error))
+    except PlaySessionRefusedError as error:
+        raise HTTPException(status_code=422, detail=str(error))
+
+
+@app.post("/api/v1/hermes/chat")
+async def hermes_chat(body: dict) -> dict:
+    """One chat turn with a Hermes NPC agent (Mos first).
+
+    Body {npc_id, message, session_id?, max_tokens?,
+    include_screen?}. The agent gets a fresh world snapshot each
+    call and a stable Hermes session key per NPC + player session
+    (persists across refresh). The turn is also stored durably in
+    conversations/messages. The agent only talks: all actions run
+    through existing UI + approvals. Missing key config -> 503,
+    refused input -> 422, Hermes down -> 502.
+
+    include_screen=true adds an opt-in local-VLM text summary of
+    the latest screen observation to the context. Raw pixels never
+    leave the vision layer; VLM down or no screen rows degrade to
+    no summary, never an error.
+    """
+    from .hermes_npc import HERMES_NPCS, npc_chat
+    from .hermes_bridge import HermesRefusedError, HermesUnavailable
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=422,
+                            detail="invalid JSON body")
+    npc_id = str(body.get("npc_id", "") or "").strip()
+    if npc_id not in HERMES_NPCS:
+        raise HTTPException(status_code=422,
+                            detail=f"Unknown Hermes NPC '{npc_id}'")
+    if not str(body.get("message", "") or "").strip():
+        raise HTTPException(status_code=422,
+                            detail="message is required")
+    screen_vlm = {"state": "NOT_REQUESTED", "summary": "",
+                  "model": "", "reason": ""}
+    if body.get("include_screen") is True:
+        screen_vlm = await _hermes_screen_summary()
+    try:
+        response = npc_chat(
+            npc_id, body.get("message"),
+            play_session_id=body.get("session_id"),
+            max_tokens=body.get("max_tokens", 500),
+            screen_summary=screen_vlm["summary"])
+        response["screen_vlm"] = screen_vlm
+        return response
+    except HermesRefusedError as error:
+        detail = str(error)
+        if "API key missing" in detail:
+            raise HTTPException(status_code=503, detail=detail)
+        raise HTTPException(status_code=422, detail=detail)
+    except HermesUnavailable as error:
+        raise HTTPException(status_code=502, detail=str(error))
+
+
+async def _hermes_screen_summary(max_chars: int = 800) -> dict:
+    """Opt-in VLM text summary of the latest screen observation.
+
+    Text only: the file is read inside the vision layer, described
+    by the loopback model, and only labels + description return.
+    Raw pixels never reach the prompt, the chat history, or any
+    response. Failures return an explicit UNAVAILABLE reason so
+    the caller can tell the player why no summary was included."""
+    try:
+        from .vision_provider import VisionRequest, get_vision_provider
+        from .world_observations import list_observations
+        rows = list_observations(limit=20) or []
+        target = None
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            if str(row.get("source", "")) != "screen":
+                continue
+            if not row.get("media_ref"):
+                continue
+            target = row
+            break
+        if target is None:
+            return {"state": "UNAVAILABLE", "summary": "",
+                    "model": "",
+                    "reason": "Geen schermwaarneming met media gevonden."}
+        request = VisionRequest(
+            observation_id=str(target.get("obs_id", "screen") or "screen"
+                               )[:80],
+            device_id=("screen-" + str(target.get("node_id", "?") or "?"
+                                       ))[:80],
+            media_ref=str(target.get("media_ref") or ""),
+            question=("Beschrijf kort wat op dit scherm te zien is "
+                      "(alleen tekst, max 5 zinnen).")[:500])
+        provider = get_vision_provider("ollama")
+        result = await provider.analyze(request)
+        labels = ", ".join((result.labels or [])[:10])
+        description = str(result.description or "")[:max_chars]
+        state = "REAL" if result.model else "UNAVAILABLE"
+        parts = [f"Schermsamenvatting (VLM-tekst, opt-in, {state})"]
+        if labels:
+            parts.append(f"labels: {labels}")
+        if description:
+            parts.append(description)
+        else:
+            parts.append("geen beschrijving beschikbaar.")
+        return {"state": state, "summary": " ".join(parts)[:1000],
+                "model": str(result.model or ""), "reason": ""}
+    except Exception as error:
+        reason = " ".join(str(error or type(error).__name__).split())[:200]
+        return {"state": "UNAVAILABLE", "summary": "", "model": "",
+                "reason": reason or type(error).__name__}
+
+
+@app.get("/api/v1/hermes/history")
+def hermes_history_route(npc_id: str = "", session_id: str = "",
+                         limit: int = 50) -> dict:
+    """Durable turns for one Hermes NPC session, oldest first.
+
+    Reads the conversations/messages rows written on every chat
+    turn (deterministic conv-hermes-<sha> id). Unknown NPC -> 422.
+    The live gateway session stays the agent memory; this is the
+    audit trail that survives refresh and restart.
+    """
+    from .hermes_npc import (
+        HERMES_NPCS,
+        hermes_conversation_id,
+        hermes_history,
+        npc_session_key,
+    )
+    from .hermes_bridge import HermesRefusedError
+    key = str(npc_id or "").strip()
+    if key not in HERMES_NPCS:
+        raise HTTPException(status_code=422,
+                            detail=f"Unknown Hermes NPC '{key}'")
+    try:
+        session_key = npc_session_key(key, session_id or None)
+    except HermesRefusedError as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    turns = hermes_history(session_key, limit=limit)
+    return {"npc_id": key,
+            "npc_name": HERMES_NPCS[key]["name"],
+            "session_key": session_key,
+            "conversation_id": hermes_conversation_id(session_key),
+            "turns": turns}
+
+
+@app.post("/api/v1/play/mission", status_code=201)
+async def play_mission(body: dict) -> dict:
+    """Game-originated quest + mission in one call. Fail-closed.
+
+    Creates a play conversation, a pending_approval mission with
+    one analysis step (goal-bound, dispatchable as code.review),
+    and a quest trailing the mission. The existing exact-YES
+    approval gate stays exactly the same: nothing is approved,
+    dispatched or executed here.
+    """
+    from .play_workshop import MAX_GOAL_LENGTH
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=422,
+                            detail="invalid JSON body")
+    goal = str(body.get("goal", "") or "").strip()
+    if not goal:
+        raise HTTPException(status_code=422,
+                            detail="Play mission needs a goal")
+    if len(goal) > MAX_GOAL_LENGTH:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Play goal exceeds {MAX_GOAL_LENGTH} characters")
+    context = str(body.get("context", "") or "").strip()[:1000]
+    records = ([{"note": f"Play advice context: {context}"}]
+               if context else [])
+    created = now()
+    conversation_id = generate_conversation_id()
+    user_message = new_message(
+        conversation_id, "user", f"play: {goal}")
+    _chat_ensure_conversation(
+        conversation_id, goal[:120], "", created)
+    _chat_store_message(
+        user_message.message_id, conversation_id, "user",
+        user_message.content, created,
+        dump(user_message.provenance.model_dump(mode="json")), "[]")
+    step_description = f"Review: {goal}"[:500]
+    try:
+        mission = _executor().create(
+            conversation_id, goal,
+            [{"kind": "analysis",
+              "description": step_description,
+              "parameters": {"goal": goal}}],
+            context_records=records)
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    except ExecutorError as error:
+        raise _mission_error(error)
+    from .quests import new_quest, save_quest
+    quest_title = f"Missie: {goal}"[:200]
+    quest = new_quest(quest_title, [{
+        "key": "missie", "label": quest_title,
+        "kind": "mission", "ref": mission.mission_id}])
+    save_quest(quest)
+    emit_event("mission.started",
+               f"Mission {mission.mission_id}: "
+               f"{mission.goal[:120]} (from play)",
+               conversation_id=mission.conversation_id,
+               mission_id=mission.mission_id)
+    step = mission.steps[0] if mission.steps else None
+    return {"mission_id": mission.mission_id,
+            "quest_id": quest.quest_id,
+            "step_id": step.step_id if step else None,
+            "status": mission.status,
+            "conversation_id": conversation_id}
+
+
+@app.get("/api/v1/play/journal")
+def play_journal() -> dict:
+    """Journal/Command Center: ranked priorities over existing stores.
+
+    Read-only composition (missions, quests, research, candidates).
+    No new tables, no new missions, no approvals: actions only
+    describe existing endpoints. Existing interfaces (game_state,
+    missions, quests) return unranked sections; ranking + next
+    actions per goal exist nowhere else, hence this view.
+    """
+    from .play_workshop import play_journal as _play_journal
+    return _play_journal()
 
 
 # =============================================================================
@@ -1854,6 +2511,11 @@ def task_page(task_id: int):
     <input type="text" name="node_id" placeholder="node_id (empty = auto-route)" style="width:40%" aria-label="Node id">
     <button type="submit">Assign</button></form>
     <p class="muted">Explicit assignment constrains the next claim; the node still pulls the task. Empty node_id auto-routes via the existing routing decision.</p></div>
+    <h2>Cancel</h2><div class="panel">
+    <form method="post" action="/web/tasks/{_ui.esc(str(record.get('id')))}/cancel">
+    <input type="text" name="reason" placeholder="reden (optioneel)" style="width:40%" aria-label="Reden">
+    <button type="submit">Annuleren</button></form>
+    <p class="muted">Alleen wachtende taken annuleerbaar (idempotent); opgepakte of afgesloten taken weigeren met reden.</p></div>
     <h2>Events</h2><ul>{events}</ul>
     <p class="muted">Stuck or expired? <code>POST /api/v1/maintenance/sweep-leases</code> requeues expired leases (physical-uncertain tasks block instead of duplicating). Retry happens by re-queueing, never by forcing.</p>"""
     return _ui.shell(f"Task #{task_id}", "/tasks", main,
@@ -1873,6 +2535,24 @@ async def web_task_assign(task_id: int, request: Request) -> RedirectResponse:
     except (_HTTPException, ValueError):
         pass
     return RedirectResponse(f"/tasks/{task_id}", status_code=303)
+
+
+@app.post("/web/tasks/{task_id}/cancel")
+async def web_task_cancel(task_id: int, request: Request) -> Response:
+    """Smallest UI bridge onto POST /api/v1/tasks/{id}/cancel:
+    queued -> cancelled (idempotent); assigned/terminal refuse
+    with reason. Never executes, never forces running work."""
+    from fastapi import HTTPException as _HTTPException
+    fields = await _form_fields(request)
+    back = str(fields.get("back", "") or "").strip()[:40]
+    try:
+        _cancel_task(
+            task_id, reason=str(fields.get("reason", "")),
+            actor="web")
+    except (_HTTPException, ValueError):
+        pass
+    target = "/3d" if back == "/3d" else f"/tasks/{task_id}"
+    return RedirectResponse(target, status_code=303)
 
 
 @app.post("/web/maintenance/sweep")
@@ -2099,6 +2779,233 @@ async def world_graph(entity_id: str | None = None, depth: int = 1) -> GraphResp
         raise HTTPException(status_code=422, detail=str(error))
     except InventoryUnavailable:
         raise HTTPException(status_code=502, detail="INVENTory unavailable")
+
+
+# =============================================================================
+# WORLD OBSERVATIONS — multi-node perception without ownership.
+# Many wobs_ rows may reference one entity_ref (no owner); each row
+# keeps node/source/confidence/provenance/time. Recorded explicitly
+# by nodes, game flows or the operator. No vision, no detection,
+# no adapters, no fake media. Complements (never competes with)
+# cameras.CameraObservation via optional media_ref.
+# =============================================================================
+
+
+@app.post("/api/v1/world/observations", status_code=201)
+def world_observation_create(body: dict) -> dict:
+    """Record one world observation. Unknown entity_refs are
+    allowed (the world is bigger than our records); invalid
+    prefixes refuse. Never assigns ownership."""
+    from .world_observations import (
+        WorldObservationRefusedError,
+        new_observation,
+        save_observation,
+    )
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=422,
+                            detail="invalid JSON body")
+    if not body.get("node_id"):
+        raise HTTPException(status_code=422,
+                            detail="node_id is required")
+    if not body.get("source"):
+        raise HTTPException(status_code=422,
+                            detail="source is required")
+    try:
+        observation = new_observation(
+            body.get("node_id"), body.get("source"),
+            entity_ref=body.get("entity_ref", ""),
+            x=body.get("x"), y=body.get("y"), z=body.get("z"),
+            confidence=body.get("confidence", 0.5),
+            provenance=body.get("provenance"),
+            note=body.get("note", ""),
+            media_ref=body.get("media_ref", ""))
+    except WorldObservationRefusedError as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    return save_observation(observation).model_dump(mode="json")
+
+
+@app.get("/api/v1/world/observations")
+def world_observation_list(limit: int = 50, entity_ref: str = "",
+                           node_id: str = "") -> dict:
+    """List observations, newest first. Optional entity/node
+    filter; shared entity_refs list every observer."""
+    from .world_observations import list_observations
+    try:
+        items = list_observations(limit=limit,
+                                  entity_ref=entity_ref,
+                                  node_id=node_id)
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    return {"observations": items, "total": len(items)}
+
+
+@app.get("/api/v1/vision/capabilities")
+def vision_capabilities() -> dict:
+    """Honest vision/capture capability report. Read-only, never
+    raises, never activates hardware: USB enumeration is NOT
+    probed here (it can destabilize Windows); only already
+    registered adapters and a bounded loopback Ollama probe
+    inform the states. Anything unproven reports UNAVAILABLE."""
+    import os
+    import socket as _socket
+    from urllib.parse import urlsplit as _urlsplit
+    adapters: list[str] = []
+    try:
+        from . import vision_ingest as _ingest
+        registry = getattr(_ingest, "_ADAPTERS", {}) or {}
+        adapters = sorted(str(name) for name in registry.keys())
+    except Exception:
+        adapters = []
+    from .vision_provider import (
+        BASE_URL_ENV_VAR,
+        DEFAULT_BASE_URL,
+        VISION_MODEL_ENV_VAR,
+        DEFAULT_VISION_MODEL,
+    )
+    base_url = os.environ.get(BASE_URL_ENV_VAR, DEFAULT_BASE_URL)
+    model = os.environ.get(VISION_MODEL_ENV_VAR, DEFAULT_VISION_MODEL)
+    ollama_state = "UNAVAILABLE"
+    ollama_reason = "not probed"
+    try:
+        parts = _urlsplit(base_url)
+        host = (parts.hostname or "").lower()
+        port = parts.port or 11434
+        if parts.scheme == "http" and host in (
+                "127.0.0.1", "localhost", "::1"):
+            sock = _socket.create_connection((host, port), timeout=2)
+            sock.close()
+            ollama_state = "REAL"
+            ollama_reason = f"loopback {host}:{port} accepts"
+        else:
+            ollama_reason = "non-loopback base URL, never probed"
+    except Exception as error:
+        ollama_reason = f"unreachable: {type(error).__name__}"
+    capture_state = "UNAVAILABLE"
+    capture_reason = ("no working capture adapter registered; file "
+                      "ingest remains the only capture path")
+    try:
+        from .vision_ingest import (
+            UnavailableAdapterMixin as _UnavailMixin,
+            adapter_capabilities as _adapter_caps,
+        )
+        real_names: list[str] = []
+        for dev_id, adapter in (registry or {}).items():
+            if isinstance(adapter, _UnavailMixin):
+                continue
+            if "camera.snapshot" in _adapter_caps(adapter):
+                real_names.append(str(dev_id))
+    except Exception:
+        real_names = []
+    if real_names:
+        capture_state = "REAL"
+        capture_reason = ("working capture adapter registered: "
+                          + ", ".join(sorted(real_names))[:160])
+    elif any("test" in name.lower() for name in adapters):
+        capture_state = "TEST"
+        capture_reason = "test-only adapter registered"
+    return {
+        "capture": {"state": capture_state,
+                    "reason": capture_reason,
+                    "adapters": adapters},
+        "vision": {"state": ollama_state,
+                   "reason": ollama_reason,
+                   "model": model,
+                   "base_url": base_url},
+        "usb_enumeration": {"state": "UNKNOWN",
+                            "reason": ("USB imaging enumeration is not "
+                                       "probed by this endpoint")},
+        "insta360": {"state": "UNAVAILABLE",
+                     "reason": ("no reviewed capture runtime; files via "
+                                "file ingest only")},
+    }
+
+
+@app.get("/api/v1/hermes/status")
+def hermes_status() -> dict:
+    """Hermes bridge status without secrets: configured or not,
+    reachable or not. Never raises, never leaks the key."""
+    import os
+    from .hermes_bridge import (
+        BASE_URL_ENV_VAR,
+        DEFAULT_BASE_URL,
+        HermesBridge,
+        HermesUnavailable,
+    )
+    base_url = os.environ.get(BASE_URL_ENV_VAR, DEFAULT_BASE_URL)
+    try:
+        bridge = HermesBridge(base_url=base_url)
+    except Exception as error:
+        return {"state": "UNAVAILABLE",
+                "reason": f"not configured: {error}",
+                "base_url": base_url}
+    try:
+        health = bridge.health()
+    except HermesUnavailable as error:
+        return {"state": "UNAVAILABLE",
+                "reason": str(error)[:200],
+                "base_url": bridge.base_url}
+    except Exception as error:
+        return {"state": "UNAVAILABLE",
+                "reason": f"{type(error).__name__}",
+                "base_url": bridge.base_url}
+    version = health.get("version", "") if isinstance(health, dict) else ""
+    return {"state": "REAL", "reason": "health ok",
+            "base_url": bridge.base_url, "version": version}
+
+
+@app.post("/api/v1/world/observations/screen", status_code=201)
+def world_observation_screen(body: dict) -> dict:
+    """Record one screen observation from an already-captured
+    screenshot. The pixels are NOT uploaded here: ``image_ref``
+    must be a plain local filename (existing
+    ``observations.check_image_ref`` rule), typically produced by
+    the node's own capture path. Screen reading never implies
+    screen acting — actions stay behind existing gates."""
+    from .observations import check_image_ref
+    from .world_observations import (
+        WorldObservationRefusedError,
+        new_observation,
+        save_observation,
+    )
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=422,
+                            detail="invalid JSON body")
+    if not body.get("node_id"):
+        raise HTTPException(status_code=422,
+                            detail="node_id is required")
+    for key in ("width", "height"):
+        value = body.get(key)
+        if not isinstance(value, int) or isinstance(value, bool):
+            raise HTTPException(status_code=422,
+                                detail=f"{key} must be an integer")
+    try:
+        image_ref = check_image_ref(body.get("image_ref", ""))
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    if not image_ref:
+        raise HTTPException(status_code=422,
+                            detail="image_ref is required")
+    provenance = {"width": body.get("width"),
+                  "height": body.get("height")}
+    window = str(body.get("active_window", "") or "")[:200]
+    if window:
+        provenance["active_window"] = window
+    try:
+        observation = new_observation(
+            body.get("node_id"), "screen",
+            entity_ref=body.get("entity_ref", ""),
+            x=body.get("x"), y=body.get("y"), z=body.get("z"),
+            confidence=body.get("confidence", 0.5),
+            provenance=provenance,
+            note=body.get("note", ""),
+            media_ref=image_ref)
+    except WorldObservationRefusedError as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    return save_observation(observation).model_dump(mode="json")
 
 
 # =============================================================================
@@ -4124,42 +5031,62 @@ def dispatch_step_task(mission_id: str, step_id: str) -> dict:
         raise ValueError(
             f"Step '{step_id}' (kind '{step.kind}') is never "
             "auto-dispatched")
-    urls = dispatch_source_urls(step)
-    if not urls:
-        raise ValueError(
-            f"Step '{step_id}' has no source URLs to dispatch")
     with connection() as db:
         rows = db.execute(
-            "SELECT id, payload FROM tasks WHERE mission_id=? "
+            "SELECT id, kind, payload FROM tasks WHERE mission_id=? "
             "AND status IN ('queued','assigned')",
             (mission.mission_id,)).fetchall()
     live: dict[str, int] = {}
+    step_live: list[int] = []
     for row in rows:
         try:
             payload = load(row["payload"] or "{}")
         except ValueError:
             continue
         if (isinstance(payload, dict)
-                and payload.get("mission_step_id") == step_id
-                and isinstance(payload.get("url"), str)):
-            live[str(payload["url"])] = int(row["id"])
+                and payload.get("mission_step_id") == step_id):
+            if str(row["kind"] or "") == "code.review":
+                step_live.append(int(row["id"]))
+            if isinstance(payload.get("url"), str):
+                live[str(payload["url"])] = int(row["id"])
     task_ids: list[int] = []
     created_ids: list[int] = []
-    for target in urls:
-        if target in live:
-            task_ids.append(live[target])
-            continue
-        spec = dispatchable_task(step, url=target)
-        if spec is None:  # pragma: no cover - urls validated above
-            continue
-        made = create_task(TaskCreate(
-            kind=str(spec["kind"]),
-            payload=dict(spec["payload"]),
-            required_capabilities=list(
-                spec["required_capabilities"]),
-            mission_id=mission.mission_id))
-        task_ids.append(int(made["id"]))
-        created_ids.append(int(made["id"]))
+    if step.kind == "analysis":
+        if step_live:
+            task_ids.extend(step_live)
+        else:
+            spec = dispatchable_task(step)
+            if spec is None:
+                raise ValueError(
+                    f"Step '{step_id}' has no goal to dispatch")
+            made = create_task(TaskCreate(
+                kind=str(spec["kind"]),
+                payload=dict(spec["payload"]),
+                required_capabilities=list(
+                    spec["required_capabilities"]),
+                mission_id=mission.mission_id))
+            task_ids.append(int(made["id"]))
+            created_ids.append(int(made["id"]))
+    else:
+        urls = dispatch_source_urls(step)
+        if not urls:
+            raise ValueError(
+                f"Step '{step_id}' has no source URLs to dispatch")
+        for target in urls:
+            if target in live:
+                task_ids.append(live[target])
+                continue
+            spec = dispatchable_task(step, url=target)
+            if spec is None:  # pragma: no cover - urls validated above
+                continue
+            made = create_task(TaskCreate(
+                kind=str(spec["kind"]),
+                payload=dict(spec["payload"]),
+                required_capabilities=list(
+                    spec["required_capabilities"]),
+                mission_id=mission.mission_id))
+            task_ids.append(int(made["id"]))
+            created_ids.append(int(made["id"]))
     old_status, old_step = mission.status, mission.current_step
     mission = set_step(
         mission, step_id, status="dispatched",
@@ -4964,6 +5891,31 @@ def camera_observations(device_id: str) -> list[dict]:
             for obs in list_observations(device_id)]
 
 
+@app.post("/api/v1/cameras/probe", status_code=200)
+def cameras_probe(body: dict | None = None) -> dict:
+    """Isolated USB imaging discovery probe. Enumeration runs in
+    a short-lived child process with a hard timeout, so a driver
+    crash can never take down the coordinator. Reports found /
+    none_found / timeout / crashed / error — at most ``detected``
+    in camera-state vocabulary, never capturable. Registers
+    nothing, opens nothing."""
+    from .capture_probe import (
+        MAX_TIMEOUT_SECONDS,
+        run_probe,
+    )
+    payload = body if isinstance(body, dict) else {}
+    try:
+        timeout = float(payload.get("timeout", 30.0))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=422,
+                            detail="timeout must be a number")
+    if not 1.0 <= timeout <= MAX_TIMEOUT_SECONDS:
+        raise HTTPException(
+            status_code=422,
+            detail=f"timeout must be 1..{MAX_TIMEOUT_SECONDS:g}s")
+    return run_probe(timeout=timeout)
+
+
 @app.post("/api/v1/cameras/{device_id}/snapshot", status_code=201)
 def camera_snapshot(device_id: str) -> dict:
     device = get_device(device_id)
@@ -4977,6 +5929,290 @@ def camera_snapshot(device_id: str) -> dict:
         raise HTTPException(status_code=409, detail=str(error))
     save_observation(observation)
     return observation.model_dump(mode="json")
+
+
+@app.post("/api/v1/cameras/{device_id}/probe-grab", status_code=201)
+def camera_probe_grab(device_id: str,
+                      body: dict | None = None) -> dict:
+    """One real frame via the isolated grab child, then a stored
+    CameraObservation plus a WorldObservation. Flow: validate ->
+    adapter maps to a closed grabber literal -> child grabs one
+    frame with a hard timeout -> parent re-verifies file + SHA256
+    -> store both observations. Only a verified frame stores
+    anything: no frame means a named non-frame verdict (504/502/
+    409) and zero writes. World observation claims no entity
+    (entity_ref empty, confidence 0.0): a frame proves presence
+    of pixels, never recognition. No INVENTory write."""
+    from .capture_probe import MAX_TIMEOUT_SECONDS
+    payload = body if isinstance(body, dict) else {}
+    try:
+        timeout = float(payload.get("timeout", 30.0))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=422,
+                            detail="timeout must be a number")
+    if not 1.0 <= timeout <= MAX_TIMEOUT_SECONDS:
+        raise HTTPException(
+            status_code=422,
+            detail=f"timeout must be 1..{MAX_TIMEOUT_SECONDS:g}s")
+    grab, observation, world_obs, _grabber = _probe_grab_records(
+        device_id, timeout, str(payload.get("node_id") or ""))
+    return {"grab": grab,
+            "camera_observation": observation.model_dump(mode="json"),
+            "world_observation": world_obs.model_dump(mode="json")}
+
+
+@app.get("/api/v1/cameras/observations/{observation_id}/image")
+def camera_observation_image(observation_id: str):
+    """Serve one stored capture frame as image bytes (1-click view).
+
+    Read-only: the observation id selects a CameraObservation row;
+    its media_ref is served through the allow-listed
+    read_vision_media (camera/screen temp dirs, suffix + size
+    caps). No caller-supplied paths ever reach the filesystem:
+    unknown ids 404, missing/unreadable media 409.
+    """
+    from fastapi import Response as _Response
+    oid = str(observation_id or "").strip()
+    if (not oid or len(oid) > 80
+            or not all(c.isalnum() or c in "-_"
+                       for c in oid)):
+        raise HTTPException(status_code=422,
+                            detail="invalid observation id")
+    from .database import chat_connection, init_chat_database, load
+    init_chat_database()
+    with chat_connection() as db:
+        row = db.execute(
+            "SELECT record FROM camera_observations "
+            "WHERE observation_id=?", (oid,)).fetchone()
+    if row is None:
+        raise HTTPException(
+            status_code=404, detail="observation not found")
+    try:
+        record = load(row["record"]) or {}
+    except Exception:
+        raise HTTPException(
+            status_code=404, detail="observation not found")
+    media_ref = str((record or {}).get("media_ref", "")
+                    or "").strip()
+    if not media_ref:
+        raise HTTPException(
+            status_code=409,
+            detail="observation has no media")
+    from .vision_provider import (
+        VisionRefusedError, read_vision_media)
+    try:
+        data, mime = read_vision_media(media_ref)
+    except VisionRefusedError as error:
+        raise HTTPException(status_code=409, detail=str(error))
+    return _Response(content=data, media_type=mime
+                     or "image/jpeg")
+
+
+def _probe_grab_records(device_id: str, timeout: float,
+                        node_id: str = "") -> tuple:
+    """Shared grab core: validate -> isolated child grab -> store
+    CameraObservation + WorldObservation. Raises HTTPException on
+    every failure path; stores nothing unless the frame verifies.
+    Returns (grab verdict, CameraObservation, WorldObservation,
+    grabber name)."""
+    import time as _time
+    from .capture_probe import run_grab
+    device = get_device(device_id)
+    if device is None:
+        raise HTTPException(404, "Camera not found")
+    if "snapshot" not in device.kinds:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Device '{device_id}' has no snapshot capability")
+    adapter = adapter_for(device_id)
+    if adapter is None and device.source != "insta360":
+        raise HTTPException(
+            status_code=409,
+            detail=(f"No capture adapter registered for "
+                    f"'{device_id}'; refusing instead of fabricating "
+                    "image data"))
+    # source=insta360 needs no registered adapter: the isolated
+    # dshow grabber below is the reviewed runtime (fail-closed).
+    from .cameras import TestCameraAdapter
+    from .vision_ingest import (
+        TEST_ORIGIN_MARK,
+        FileIngestAdapter,
+        UnavailableAdapterMixin,
+    )
+    test_origin = (
+        getattr(adapter, "name", "") in ("synthetic-test", "test-only")
+        or isinstance(adapter, TestCameraAdapter))
+    if isinstance(adapter, UnavailableAdapterMixin):
+        raise HTTPException(status_code=409,
+                            detail=adapter.unavailable_reason())
+    if isinstance(adapter, FileIngestAdapter):
+        spec = {"grabber": "file", "filename": adapter.filename}
+    elif test_origin:
+        spec = {"grabber": "test"}
+    elif device.source == "insta360":
+        spec = {"grabber": "insta360"}
+    else:
+        raise HTTPException(
+            status_code=422,
+            detail="No isolated grab path for this adapter type; "
+                   "refusing instead of running unknown capture code")
+    grab = run_grab(spec, timeout=timeout)
+    state = grab.get("state", "")
+    if state == "timeout":
+        raise HTTPException(status_code=504, detail=grab.get(
+            "reason", "grab timed out"))
+    if state == "crashed":
+        raise HTTPException(status_code=502, detail=grab.get(
+            "reason", "grab child crashed"))
+    if state == "unavailable":
+        raise HTTPException(status_code=409, detail=grab.get(
+            "reason", "grab unavailable"))
+    if state != "frame_acquired":
+        raise HTTPException(status_code=502, detail=grab.get(
+            "reason", "grab failed"))
+    from .cameras import (
+        new_observation as _new_cam_obs,
+        prune_captures,
+    )
+    try:
+        observation = _new_cam_obs(
+            f"obs-{int(_time.time() * 1000):x}", device_id,
+            "snapshot", media_ref=grab["media_ref"],
+            width=grab["width"], height=grab["height"])
+    except CameraRefusedError as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    notes = str(observation.provenance.notes or "")
+    notes += (f" | out-of-process probe-grab "
+              f"(grabber={spec['grabber']}, "
+              f"sha256={grab['sha256'][:16]}...)")
+    if test_origin:
+        notes += " | " + TEST_ORIGIN_MARK
+    observation = observation.model_copy(update={
+        "provenance": observation.provenance.model_copy(update={
+            "notes": notes.strip(" |")})})
+    save_observation(observation)
+    prune_captures()
+    from .world_observations import (
+        WorldObservationRefusedError,
+        new_observation as _new_wobs,
+        save_observation as _save_wobs,
+    )
+    try:
+        world_obs = _new_wobs(
+            node_id or device_id, "camera",
+            entity_ref="", confidence=0.0,
+            provenance={"by": f"camera:{device_id}",
+                        "camera_observation_id":
+                            observation.observation_id,
+                        "grabber": spec["grabber"],
+                        "sha256": grab["sha256"]},
+            note=("probe-grab frame presence only; no recognition, "
+                  "no entity, no position"),
+            media_ref=grab["media_ref"])
+    except WorldObservationRefusedError as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    _save_wobs(world_obs)
+    logger.info("camera_probe_grab device_id=%s observation_id=%s "
+                "world_obs_id=%s", device_id,
+                observation.observation_id, world_obs.obs_id)
+    emit_event("observation.created",
+               f"Probe-grab {observation.observation_id} via "
+               f"{device_id} (+ world {world_obs.obs_id})",
+               node_id=device_id)
+    return grab, observation, world_obs, spec["grabber"]
+
+
+@app.post("/api/v1/vision/grab-analyze", status_code=201)
+async def vision_grab_analyze(body: dict) -> dict:
+    """Full perception step in one call: isolated frame grab ->
+    local VLM analysis -> WorldObservation with VLM labels.
+
+    Body {device_id, timeout?, node_id?, question?, provider?}.
+    The VLM result is ADVICE: labels land in a world-observation
+    note with the model's own top confidence, entity_ref stays
+    empty — a detection never becomes an INVENTory object here
+    (entity linking stays a separate proposal step). VLM down ->
+    502, grab failure -> the grab verdict status, nothing stored
+    unless the frame verifies."""
+    from .capture_probe import MAX_TIMEOUT_SECONDS
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=422,
+                            detail="invalid JSON body")
+    device_id = str(body.get("device_id", "") or "").strip()
+    if not device_id:
+        raise HTTPException(status_code=422,
+                            detail="device_id is required")
+    try:
+        timeout = float(body.get("timeout", 30.0))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=422,
+                            detail="timeout must be a number")
+    if not 1.0 <= timeout <= MAX_TIMEOUT_SECONDS:
+        raise HTTPException(
+            status_code=422,
+            detail=f"timeout must be 1..{MAX_TIMEOUT_SECONDS:g}s")
+    grab, observation, _frame_wobs, grabber = _probe_grab_records(
+        device_id, timeout, str(body.get("node_id") or ""))
+    try:
+        provider = get_vision_provider(body.get("provider") or None)
+    except VisionRefusedError as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    request = VisionRequest(
+        observation_id=observation.observation_id,
+        device_id=observation.device_id,
+        media_ref=observation.media_ref or "",
+        question=str(body.get("question") or "Wat zie je op deze foto?"))
+    try:
+        result = await provider.analyze(request)
+    except VisionRefusedError as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    except VisionUnavailable as error:
+        raise HTTPException(status_code=502, detail=str(error))
+    record = VisionAnalysisRecord(
+        analysis_id=result.analysis_id,
+        observation_id=observation.observation_id,
+        device_id=observation.device_id,
+        result=result.model_dump(mode="json"),
+        created_at=result.observed_at)
+    try:
+        save_analysis(record)
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    candidates = identification_candidates(result)
+    top_label = candidates[0][0] if candidates else ""
+    top_score = candidates[0][1] if candidates else 0.0
+    label_text = "; ".join(
+        f"{label} ({score:.2f})" for label, score in candidates[:5])
+    from .world_observations import (
+        new_observation as _new_wobs,
+        save_observation as _save_wobs,
+    )
+    world_obs = _new_wobs(
+        str(body.get("node_id") or device_id), "camera",
+        entity_ref="", confidence=top_score,
+            provenance={"by": f"camera:{device_id}",
+                        "camera_observation_id": observation.observation_id,
+                        "analysis_id": result.analysis_id,
+                        "grabber": grabber,
+                        "sha256": grab["sha256"]},
+        note=("VLM-advies, geen feit, geen entity: "
+              + (label_text or "geen labels herkend")),
+        media_ref=grab["media_ref"])
+    _save_wobs(world_obs)
+    logger.info("vision_grab_analyzed device_id=%s observation_id=%s "
+                "analysis_id=%s", device_id,
+                observation.observation_id, result.analysis_id)
+    emit_event("observation.analyzed",
+               f"VLM-advies {result.analysis_id} over "
+               f"{observation.observation_id}"
+               + (f": {top_label}" if top_label else ""),
+               node_id=device_id)
+    return {"grab": grab,
+            "camera_observation": observation.model_dump(mode="json"),
+            "analysis": result.model_dump(mode="json"),
+            "candidates": [{"label": label, "confidence": score}
+                           for label, score in candidates],
+            "world_observation": world_obs.model_dump(mode="json")}
 
 
 # =============================================================================
@@ -5061,10 +6297,45 @@ def camera_availability(device_id: str) -> dict:
     except Exception:
         detected = False
     try:
-        return probe_availability(device, adapter_for(device_id),
-                                  detected=detected)
+        report = probe_availability(device, adapter_for(device_id),
+                                    detected=detected)
     except IngestRefusedError as error:
         raise HTTPException(status_code=422, detail=str(error))
+    report["last_frame"] = _last_frame_facts(device_id)
+    report["grab"] = {
+        "endpoint": f"/api/v1/cameras/{device_id}/probe-grab",
+        "method": "POST",
+        "note": ("Isolated single-frame grab with a hard timeout; "
+                 "stores a CameraObservation + WorldObservation only "
+                 "on a verified frame, never a live preview."),
+    }
+    return report
+
+
+def _last_frame_facts(device_id: str) -> dict:
+    """Latest stored frame metadata (timestamp/node/source/hash).
+    Metadata only, never pixels; missing or unreadable media
+    reports honestly instead of failing the endpoint."""
+    facts: dict = {"observation_id": "", "observed_at": "",
+                   "media_ref": "", "sha256": ""}
+    try:
+        latest = list_observations(device_id, limit=1)
+    except Exception:
+        return facts
+    if not latest:
+        return facts
+    first = latest[0]
+    facts["observation_id"] = first.observation_id
+    facts["observed_at"] = first.created_at
+    facts["media_ref"] = first.media_ref or ""
+    if facts["media_ref"]:
+        try:
+            from .vision_ingest import media_facts
+            facts["sha256"] = media_facts(
+                facts["media_ref"]).sha256
+        except Exception:
+            facts["sha256"] = ""
+    return facts
 
 
 @app.post("/api/v1/cameras/{device_id}/ingest", status_code=201)
@@ -5368,13 +6639,48 @@ def printer_register(body: PrinterRegisterBody) -> dict:
         device = new_printer(
             printer_id, body.name, list(body.capabilities),
             inventory_hardware_id=body.inventory_hardware_id,
-            notes=body.notes)
+            notes=body.notes, model=body.model)
     except PrinterDeviceRefusedError as error:
         raise HTTPException(status_code=422, detail=str(error))
     save_printer(device)
     logger.info("printer_registered printer_id=%s caps=%s",
                 printer_id, ",".join(device.capabilities))
     return device.model_dump(mode="json")
+
+
+@app.post("/api/v1/printers/{printer_id}/connect")
+def printer_connect(printer_id: str,
+                    body: dict | None = None) -> dict:
+    """Attach the Bambu adapter to a registered printer.
+
+    Operator-triggered only. One bounded read-only telemetry
+    check; the adapter registers solely on valid telemetry.
+    Connectivity/readiness only: never starts a print, never
+    publishes motion, never uploads, never touches the YES-gate.
+    Secrets stay in env (never stored, logged or returned).
+    """
+    from .printer3d import (
+        PrinterRefusedError,
+        PrinterUnavailable,
+        connect_printer,
+        get_printer,
+        load_printer,
+    )
+    if get_printer(printer_id) is None and load_printer(
+            printer_id) is None:
+        raise HTTPException(404, "Printer not found")
+    payload = body if isinstance(body, dict) else {}
+    try:
+        timeout = float(payload.get("timeout", 20.0) or 20.0)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=422,
+                            detail="timeout must be numeric")
+    try:
+        return connect_printer(printer_id, timeout=timeout)
+    except PrinterRefusedError as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    except PrinterUnavailable as error:
+        raise HTTPException(status_code=422, detail=str(error))
 
 
 @app.get("/api/v1/printers")
@@ -5429,7 +6735,9 @@ def print_propose(body: PrintProposeBody) -> dict:
         check_profile(body.profile)
         job = new_job(job_id, body.printer_id, reference,
                       body.gcode_sha256.lower(), body.profile,
-                      body.actor)
+                      body.actor,
+                      spool_id=body.spool_id or "",
+                      slot=body.slot or "")
         proposal = propose_print(
             body.proposal_id or f"wrt-{_secrets.token_hex(4)}",
             job, safety_verdict=safety.verdict, actor=body.actor)
@@ -5967,6 +7275,22 @@ def coordinator_status() -> dict:
         pending_missions = db.execute(
             "SELECT COUNT(*) AS n FROM missions WHERE "
             "status='pending_approval'").fetchone()["n"]
+        try:
+            wobs = db.execute(
+                "SELECT COUNT(*) AS n FROM world_observations"
+            ).fetchone()["n"]
+        except Exception:
+            wobs = -1
+    import os as _os
+    from .vision_provider import (
+        DEFAULT_VISION_MODEL as _vision_model,
+    )
+    try:
+        from . import vision_ingest as _ingest
+        _adapters = sorted(str(name) for name in
+                           (getattr(_ingest, "_ADAPTERS", {}) or {}))
+    except Exception:
+        _adapters = []
     return {
         "coordinator": "online",
         "nodes": {"total": len(node_rows), "online": online,
@@ -5979,6 +7303,12 @@ def coordinator_status() -> dict:
             "write_proposals": proposed_writes,
             "missions": pending_missions,
         },
+        "world_observations": {"total": wobs},
+        "vision": {"model": _os.environ.get(
+            "VISION_MODEL", _vision_model),
+            "adapters": _adapters},
+        "hermes": {"configured": bool(
+            _os.environ.get("HERMES_API_KEY", ""))},
     }
 
 
@@ -8303,6 +9633,26 @@ def filament_check(spool_id: str, grams: float) -> dict:
         raise HTTPException(status_code=422, detail=str(error))
 
 
+@app.post("/api/v1/filament/spools/{spool_id}/assign")
+def filament_spool_assign(spool_id: str, body: dict) -> dict:
+    """Pin one spool to a printer + AMS slot (M1/BIG57).
+
+    Stores ``printer_id/slot`` in the existing location field.
+    The printer must be registered when named.
+    """
+    from .fabrication import FabricationRefusedError as _Refused
+    from .fabrication import assign_spool_location as _assign
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=422, detail="JSON body required")
+    try:
+        spool = _assign(
+            spool_id, printer_id=str(body.get("printer_id", "")),
+            slot=str(body.get("slot", "")))
+    except _Refused as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    return spool.model_dump(mode="json")
+
+
 @app.post("/api/v1/fab/select-printer")
 def fab_select_printer(body: PrinterSelectBody) -> dict:
     from .fabrication import FabricationRefusedError as _Refused
@@ -9803,7 +11153,186 @@ async def _world_craft_html(entity_id: str) -> str:
         f"{_ui.esc(entity_id)}\">Open craft tree →</a></p></div>")
 
 
-def _world_quest_trails_html() -> str:
+#: Predicates that express containment hierarchy and therefore define
+#: canvas areas. Direction matters: contains flows area -> member,
+#: part_of flows member -> area. No other predicate becomes an area,
+#: no coordinates are invented, nothing is persisted.
+AREA_PREDICATES = frozenset({"contains", "part_of"})
+MAX_AREAS = 30
+MAX_AREA_MEMBERS = 60
+
+
+def _world_areas(graph: dict) -> list[dict]:
+    """Derive spatial areas from an existing world-graph payload.
+
+    Pure derivation over graph nodes ({id,type,label}) and edges
+    ({from,predicate,to}): no new queries, no new relationships.
+    Areas without members present in the node set are dropped;
+    output is bounded. Each area is {id, label, members:[ids]}."""
+    nodes = graph.get("nodes", []) or []
+    edges = graph.get("edges", []) or []
+    labels = {str(node.get("id", "")): str(node.get("label", "")
+                                           or node.get("id", ""))
+              for node in nodes
+              if isinstance(node, dict) and node.get("id")}
+    members: dict[str, set[str]] = {}
+    for edge in edges:
+        if not isinstance(edge, dict):
+            continue
+        predicate = str(edge.get("predicate", ""))
+        if predicate == "contains":
+            area_id, member_id = (str(edge.get("from", "")),
+                                  str(edge.get("to", "")))
+        elif predicate == "part_of":
+            area_id, member_id = (str(edge.get("to", "")),
+                                  str(edge.get("from", "")))
+        else:
+            continue
+        if not area_id or not member_id or area_id == member_id:
+            continue
+        if member_id not in labels:
+            continue
+        members.setdefault(area_id, set()).add(member_id)
+    areas = []
+    for area_id in sorted(members):
+        ids = sorted(members[area_id])[:MAX_AREA_MEMBERS]
+        if not ids:
+            continue
+        areas.append({"id": area_id,
+                      "label": labels.get(area_id, area_id[:24]),
+                      "members": ids})
+        if len(areas) >= MAX_AREAS:
+            break
+    return areas
+
+
+def _world_workspace_roots(wid: str) -> set[str]:
+    """Workspace root ids from existing stores (read-only, best-effort).
+
+    Sources, all pre-existing semantics: INVENTory entity ids tied to
+    the workspace (``inventory_project_refs``: workspace-id, mission
+    context, research links), mission + conversation ids of the
+    workspace (``get_workspace`` join), research run ids with this
+    ``project_ref``. Each source fails soft independently; unscoped
+    entities are never assigned — they are simply not roots."""
+    roots: set[str] = set()
+    try:
+        from .workspaces import inventory_project_refs
+        for entry in inventory_project_refs(wid):
+            candidate = str(entry.get("entity_id", ""))
+            if candidate:
+                roots.add(candidate)
+    except Exception:
+        pass
+    try:
+        from .workspaces import get_workspace
+        view = get_workspace(wid)
+        for mission in view.get("missions", []) or []:
+            if mission.get("mission_id"):
+                roots.add(str(mission["mission_id"]))
+        for conversation in view.get("conversations", []) or []:
+            if conversation.get("conversation_id"):
+                roots.add(str(conversation["conversation_id"]))
+    except Exception:
+        pass
+    try:
+        from .research_engine import list_runs
+        for run in list_runs(limit=50):
+            try:
+                if run.project_ref == wid and run.run_id:
+                    roots.add(str(run.run_id))
+            except Exception:
+                continue
+    except Exception:
+        pass
+    return roots
+
+
+def _world_workspace_filter(graph: dict, wid: str,
+                              roots: set[str]) -> dict:
+    """Scope a fetched graph to workspace roots + 1-hop neighborhood.
+
+    Rule (stated on the page): a node is shown when it IS a workspace
+    root (entity/mission/conversation/run id), when it is an overlay
+    node carrying this ``project_ref`` in metadata, or when an
+    existing edge links it directly to a kept node. Edges survive
+    only with both ends kept. Unscoped entities are hidden, never
+    reassigned."""
+    nodes = [node for node in (graph.get("nodes", []) or [])
+             if isinstance(node, dict) and node.get("id")]
+    edges = [edge for edge in (graph.get("edges", []) or [])
+             if isinstance(edge, dict)]
+    by_id = {str(node["id"]): node for node in nodes}
+    keep = {node_id for node_id in by_id if node_id in roots}
+    for node_id, node in by_id.items():
+        metadata = node.get("metadata", {}) or {}
+        if str(metadata.get("project_ref", "") or "") == wid:
+            keep.add(node_id)
+    neighbours: set[str] = set()
+    for edge in edges:
+        frm, to = str(edge.get("from", "")), str(edge.get("to", ""))
+        if frm in keep and to in by_id:
+            neighbours.add(to)
+        if to in keep and frm in by_id:
+            neighbours.add(frm)
+    keep |= neighbours
+    kept_edges = [edge for edge in edges
+                  if str(edge.get("from", "")) in keep
+                  and str(edge.get("to", "")) in keep]
+    out = dict(graph)
+    out["nodes"] = [by_id[node_id] for node_id in sorted(keep)
+                    if node_id in by_id]
+    out["edges"] = kept_edges
+    return out
+
+
+def _world_scoped_graph(graph: dict, workspace: str,
+                        back_params: dict,
+                        base: str = "/world") -> tuple:
+    """Shared workspace scope for /world and /canvas.
+
+    Returns ``(graph, wid, notice_html, keep_or_None)``: the graph
+    filtered to workspace roots + 1-hop closure (areas derive after),
+    the validated workspace id ("" = global), an explicit notice for
+    invalid/empty scopes, and the kept node-id set for quest-trail
+    scoping (None = unscoped). ``back_params`` are the page's current
+    filters reused for the Back-to-All link."""
+    from . import ui as _ui
+    wid = (workspace or "").strip()[:80]
+    ws_notice = ""
+    ws_keep: set[str] | None = None
+    if wid:
+        try:
+            from .workspaces import check_workspace_id
+            wid = check_workspace_id(wid)
+        except Exception:
+            ws_notice = ("<p class=\"muted\">⚠️ Unknown workspace "
+                         f"{_ui.esc(wid)} — showing the global graph. "
+                         "Pick a workspace below.</p>")
+            wid = ""
+    if wid:
+        roots = _world_workspace_roots(wid)
+        graph = _world_workspace_filter(graph, wid, roots)
+        ws_keep = {str(node.get("id", ""))
+                   for node in graph.get("nodes", []) or []}
+        if not ws_keep:
+            from urllib.parse import urlencode as _urlencode
+            back_query = _urlencode({
+                key: value for key, value in
+                back_params.items() if value})
+            back_href = base + (f"?{back_query}" if back_query else "")
+            ws_notice = ("<div class=\"panel\"><h2>No world entities "
+                         "in this workspace yet.</h2>"
+                         "<p class=\"muted\">Nothing here links to "
+                         f"{_ui.esc(wid)} yet — no projects, missions, "
+                         "conversations or runs. The global graph is "
+                         "one click away.</p>"
+                         f"<p><a href=\"{back_href}\">← Back to "
+                         "All workspaces</a></p></div>")
+    return graph, wid, ws_notice, ws_keep
+
+
+def _world_quest_trails_html(keep: set[str] | None = None) -> str:
     """Open quest trails beside the graph (quest-trails slice).
 
     Read-only composition over existing quest derivation: open
@@ -9811,7 +11340,12 @@ def _world_quest_trails_html() -> str:
     with the existing quest-trail helper. Mission halo nodes
     already render inside the graph itself via the missions
     overlay; this panel makes their quest framing visible.
-    Empty when no open quest exists — never filler."""
+    Empty when no open quest exists — never filler.
+
+    When ``keep`` (a scoped node-id set) is given, a quest is
+    shown only if every non-empty step ref lives inside it, so a
+    workspace never leaks another workspace's entities. Quests
+    without refs (global seeds) stay visible everywhere."""
     from . import ui as _ui
     try:
         from .quests import list_quest_details
@@ -9819,6 +11353,15 @@ def _world_quest_trails_html() -> str:
                    if detail.get("state") not in ("COMPLETED", "FAILED")]
     except Exception:
         return ""
+    if keep is not None:
+        scoped = []
+        for detail in details:
+            refs = [str(step.get("ref", "") or "")
+                    for step in detail.get("steps", []) or []]
+            refs = [ref for ref in refs if ref]
+            if all(ref in keep for ref in refs):
+                scoped.append(detail)
+        details = scoped
     if not details:
         return ""
     cards = []
@@ -10013,11 +11556,62 @@ def _world_state_strip() -> str:
         return ""
 
 
+def _world_workspace_selector(current: str, params: dict,
+                              base: str = "/world") -> str:
+    """Workspace chips over existing workspaces (selector, no model).
+
+    Lists ``list_workspaces()`` (seeds + used project_refs) with
+    conversation/mission counts, plus an All state. Links preserve
+    the current entity/depth/filter params against ``base``
+    (/world or /canvas). Empty on store failure — the page works
+    without it."""
+    from . import ui as _ui
+    from urllib.parse import urlencode as _urlencode
+    try:
+        from .workspaces import list_workspaces
+        spaces = list_workspaces(limit=20)
+    except Exception:
+        return ""
+    if not spaces:
+        return ""
+
+    def _href(wid: str) -> str:
+        query = {key: str(value) for key, value in params.items()
+                 if value is not None and str(value) != ""}
+        if wid:
+            query["workspace"] = wid
+        else:
+            query.pop("workspace", None)
+        return base + (f"?{_urlencode(query)}" if query else "")
+
+    chips = [f"<a class=\"chip\" href=\"{_href('')}\">"
+             f"{'●' if not current else '○'} All</a>"]
+    for space in spaces:
+        wid = str(space.get("workspace_id", ""))
+        if not wid:
+            continue
+        mark = "●" if wid == current else "○"
+        counts = (f"{space.get('conversations', 0)}💬 "
+                  f"{space.get('missions', 0)}⚔")
+        chips.append(
+            f"<a class=\"chip\" href=\"{_href(wid)}\">{mark} "
+            f"{_ui.esc(space.get('title', wid)[:30])} "
+            f"<span class=\"muted\">{counts}</span></a>")
+    return ("<div class=\"panel\"><h2>Workspaces</h2>"
+            f"<p class=\"flowline\">{' '.join(chips)}</p>"
+            "<p class=\"muted\">Scoping shows workspace roots "
+            "(projects, missions, conversations, runs) plus their "
+            "direct relationships. Unscoped entities hide — nothing "
+            "is reassigned. Full view lives in "
+            "<a href=\"/workspaces\">Workspaces</a>.</p></div>")
+
+
 @app.get("/world", response_class=HTMLResponse)
 async def world_page(entity_id: str = "", depth: int = 1,
                      show: str = "missions,nodes",
                      truth: str = "all", source: str = "all",
-                     kind: str = "all", since: str = "") -> str:
+                     kind: str = "all", since: str = "",
+                     workspace: str = "") -> str:
     """Full world-graph explorer: pan, zoom, select, focus,
     neighborhood expansion, source + type filters. Real data
     only, bounded depth, keyboard navigable."""
@@ -10033,6 +11627,29 @@ async def world_page(entity_id: str = "", depth: int = 1,
     if entity_id:
         graph, error = await _graph_data(entity_id, depth,
                                          flags, filters)
+    # Workspace scoping: WORKSPACE FILTER → GRAPH DATA → AREAS → RENDER.
+    # Shared helper keeps /world and /canvas consistent. An invalid
+    # wid keeps the global graph with an explicit notice (never
+    # silent). No new model, no reassignment.
+    graph, wid, ws_notice, ws_keep = _world_scoped_graph(
+        graph, workspace,
+        {"entity_id": entity_id, "depth": depth, "show": show,
+         "truth": truth, "source": source, "kind": kind,
+         "since": since}, base="/world")
+    # Area grouping: derive spatial areas from the (possibly scoped)
+    # graph (contains/part_of only). Empty graph or no hierarchy
+    # yields no areas — never fake regions.
+    try:
+        graph["areas"] = _world_areas(graph) if graph.get("nodes") else []
+    except Exception:
+        graph["areas"] = []
+    if entity_id and graph.get("nodes") and not graph.get("areas"):
+        areas_hint = ("<p class=\"muted\">🗺️ No spatial groups here yet — "
+                      "locations linked with <code>contains</code> / "
+                      "<code>part_of</code> relationships appear as areas "
+                      "behind the graph.</p>")
+    else:
+        areas_hint = ""
     # BIG #44 living world panels (all best-effort, "" when
     # their stores are empty — never filler).
     try:
@@ -10055,6 +11672,14 @@ async def world_page(entity_id: str = "", depth: int = 1,
         f"<option value='{name}'"
         + (" selected" if name == filters["truth"] else "")
         + f">{name}</option>" for name in sorted(TRUTH_FILTERS))
+    from urllib.parse import urlencode as _urlencode_c
+    _canvas_query = _urlencode_c({
+        key: value for key, value in
+        (("entity_id", entity_id), ("depth", depth), ("show", show),
+         ("workspace", wid))
+        if value})
+    _canvas_href = "/canvas" + (
+        f"?{_canvas_query}" if _canvas_query else "")
     shown = len(graph.get("nodes", []))
     loaded = graph.get("node_count", shown)
     filter_note = (
@@ -10077,21 +11702,26 @@ async def world_page(entity_id: str = "", depth: int = 1,
     {_world_state_strip()}</div>
     {_world_hud_html()}
     {_last_flow_panel()}
+    {_world_workspace_selector(wid, {"entity_id": entity_id, "depth": depth, "show": show, "truth": truth, "source": source, "kind": kind, "since": since})}
+    {ws_notice}
     <div class="panel"><h2>Layers & truth</h2>
     <form method="get" action="/world" aria-label="Graph layers and filters">
     <input type="hidden" name="entity_id" value="{_ui.esc(entity_id)}">
     <input type="hidden" name="depth" value="{depth}">
+    <input type="hidden" name="workspace" value="{_ui.esc(wid)}">
     <label>Overlays <input type="text" name="show" value="{_ui.esc(show)}" style="width:14rem" aria-label="Overlays"></label>
     <label>Truth <select name="truth" aria-label="Truth filter">{truth_options}</select></label>
     <label>Source <select name="source" aria-label="Source filter"><option value="all">all</option><option value="inventory">world</option><option value="mycelium">mycelium</option></select></label>
     <label>Since <input type="text" name="since" placeholder="2026-01-01" value="{_ui.esc(filters['since'])}" style="width:7rem" aria-label="Since date"></label>
     <button type="submit">Grow</button></form>
+    <p class="muted">Arrange this graph spatially in the <a href="{_canvas_href}">Infinite Canvas →</a> (same data, session-only layout).</p>
     <p class="muted">Overlay layers: missions, nodes, hardware, compute, research, observations, printers, memory, candidates, conversations. Truth: all · verified · memory · candidate · observation. Health never enters the graph.</p></div>
     {filter_note}
     <p class="muted">Every node is real: world entities from INVENTory, overlays from Mycelium. Select to inspect — the context rail opens here, no page jump — or open a neighborhood to grow.</p>
-    {_ui.graph_panel(_json.dumps(graph), "/world", entity_id, depth, show, error)}
+    {_ui.graph_panel(_json.dumps(graph), "/world", entity_id, depth, show, error, workspace=wid)}
+    {areas_hint}
     {_world_campaign_html()}
-    {_world_quest_trails_html()}
+    {_world_quest_trails_html(keep=ws_keep)}
     {_world_objects_html()}
     {_symbiosis_panel}
     {_connections_panel}
@@ -10110,6 +11740,219 @@ async def world_page(entity_id: str = "", depth: int = 1,
     return _ui.shell("World Graph", "/world", _ui.living_bg() + main,
                      context,
                      _ui.command_bar())
+
+
+@app.get("/canvas", response_class=HTMLResponse)
+async def canvas_page(entity_id: str = "", depth: int = 1,
+                      show: str = "missions,nodes",
+                      workspace: str = "") -> str:
+    """Infinite-canvas workshop: an intentional lens over the same
+    world-graph truth as /world. Additive page — /world is
+    untouched. Nodes drag (session-only offsets), camera pans and
+    zooms without bounds, search focuses, selection inspects.
+    Nothing here writes: no positions persist, no entities change,
+    no gates bypassed."""
+    from . import ui as _ui
+    import json as _json
+    flags = {part.strip() for part in show.split(",")}
+    graph, error = ({"nodes": [], "edges": []}, "")
+    if entity_id:
+        graph, error = await _graph_data(entity_id, depth,
+                                         flags, {"truth": "all",
+                                                 "source": "all",
+                                                 "kind": "all",
+                                                 "since": ""})
+    graph, wid, ws_notice, ws_keep = _world_scoped_graph(
+        graph, workspace,
+        {"entity_id": entity_id, "depth": depth, "show": show},
+        base="/canvas")
+    try:
+        graph["areas"] = _world_areas(graph) if graph.get("nodes") else []
+    except Exception:
+        graph["areas"] = []
+    from urllib.parse import urlencode as _urlencode
+    back_params = {key: value for key, value in
+                   (("entity_id", entity_id), ("depth", depth),
+                    ("show", show), ("workspace", wid))
+                   if value}
+    back_href = "/world" + (
+        f"?{_urlencode(back_params)}" if back_params else "")
+    shown = len(graph.get("nodes", []))
+    main = f"""<h1>🔧 Infinite Canvas — intentional workshop</h1>
+    {_ui.journey_strip("/world")}
+    <p class="muted">The same world truth as <a href="{back_href}">World</a>, arranged by you. Drag nodes (session only), pan anywhere, zoom freely. Select to inspect — actions live behind existing links and gates.</p>
+    {_world_workspace_selector(wid, {"entity_id": entity_id, "depth": depth, "show": show}, base="/canvas")}
+    {ws_notice}
+    <p class="muted">{shown} nodes · {len(graph.get('edges', []))} relations · {len(graph.get('areas', []))} areas{_ui.esc(f' · scope: {wid}') if wid else ' · scope: all'}{_ui.esc(f' · {error}') if error else ''}</p>
+    {_ui.canvas_panel(_json.dumps(graph), workspace=wid, back_to_world_href=back_href)}
+    {_world_quest_trails_html(keep=ws_keep)}"""
+    return _ui.shell("Infinite Canvas", "/canvas",
+                     _ui.living_bg() + main, "",
+                     _ui.command_bar())
+
+
+@app.get("/solarpunk", response_class=HTMLResponse)
+async def solarpunk_page() -> str:
+    """Solar Punk City, fase 1: read-only top-down projectie van de
+    wereld-store (INVENTory locations als districten). Additive page —
+    geen bestaande route geraakt. Niets schrijft: geen posities, geen
+    entities, geen gates. Offline store -> eerlijk paneel, nooit raden."""
+    from . import solarpunk as _solarpunk
+    districts: list = []
+    error = ""
+    try:
+        found = await InventoryReader().browse(type="locations")
+        districts = _solarpunk.district_payload(found.results)
+    except (InventoryRefusedError, InventoryUnavailable) as exc:
+        error = str(exc) or "INVENTory unavailable"
+    except Exception:
+        error = "INVENTory unavailable"
+    from fastapi.responses import HTMLResponse as _HTML
+    return _HTML(
+        content=_solarpunk.render(districts, error),
+        headers={"Cache-Control": "no-store"})
+
+
+@app.get("/homebase", response_class=HTMLResponse)
+async def homebase_page() -> str:
+    """SP Home Base in 3D (Three.js, procedureel naar referentiefoto).
+    Additive page — geen bestaande route geraakt. Render-only: geen
+    writes. Three.js komt van gepinde CDN met eerlijke fallback;
+    dit is een expliciete uitzondering op de geen-Three.js-regel."""
+    from . import homebase as _homebase
+    return _homebase.render()
+
+
+@app.post("/api/v1/town/conversations", status_code=201)
+def town_conversation_open(body: dict | None = None) -> dict:
+    """Open een stadsgesprek (fase 3). Bestaande chat-tabellen,
+    geen nieuwe schema's."""
+    from .town_chat import TownRefusedError, open_town_conversation
+    payload = body if isinstance(body, dict) else {}
+    try:
+        return open_town_conversation(
+            payload.get("title", ""),
+            payload.get("participants", ["you"]))
+    except TownRefusedError as error:
+        raise HTTPException(status_code=422, detail=str(error))
+
+
+@app.get("/api/v1/town/conversations/{conversation_id}/messages")
+def town_conversation_messages(conversation_id: str,
+                               limit: int = 50) -> list:
+    from .town_chat import TownRefusedError, list_town_messages
+    try:
+        return list_town_messages(conversation_id, limit)
+    except KeyError as error:
+        raise HTTPException(status_code=404, detail=str(error))
+    except TownRefusedError as error:
+        raise HTTPException(status_code=422, detail=str(error))
+
+
+@app.post("/api/v1/town/conversations/{conversation_id}/messages",
+          status_code=201)
+def town_conversation_say(conversation_id: str,
+                          body: dict | None = None) -> dict:
+    """Eén bericht + hooguit één NPC-beurt (round-robin, geen lussen)."""
+    from .town_chat import TownRefusedError, post_town_message
+    payload = body if isinstance(body, dict) else {}
+    try:
+        return post_town_message(
+            conversation_id, payload.get("speaker", "you"),
+            payload.get("role", "human"), payload.get("text", ""),
+            payload.get("npc_id", ""))
+    except KeyError as error:
+        raise HTTPException(status_code=404, detail=str(error))
+    except TownRefusedError as error:
+        raise HTTPException(status_code=422, detail=str(error))
+
+
+@app.get("/api/v1/town/actors", status_code=200)
+def town_actors_list() -> dict:
+    """NPC-aanwezigheid (fase 5a): posities, eerlijke
+    status uit echte signalen, en de activiteitsfeed.
+    Lezen alleen — hier gebeurt niets."""
+    from .town_actors import (
+        activity_feed, list_actors, sync_from_signals)
+    try:
+        actors = sync_from_signals(tasks=list_tasks())
+    except Exception:
+        actors = list_actors()
+    return {"actors": actors,
+            "activity": activity_feed(limit=20)}
+
+
+@app.post("/api/v1/town/npc/{npc_id}/delegate",
+            status_code=201)
+def town_npc_delegate(npc_id: str,
+                      body: dict | None = None) -> dict:
+    """NPC stelt werk voor (fase 5b): model schrijft een
+    spec, de engine bewaart hem als voorstel. Status
+    proposed (of auto-queued bij een geldige dial-regel).
+    Zonder model eerlijk 409."""
+    from .town_proposals import ProposalRefusedError, draft_proposal
+    payload = body if isinstance(body, dict) else {}
+    try:
+        return draft_proposal(npc_id, payload.get("request", ""))
+    except KeyError as error:
+        raise HTTPException(status_code=404, detail=str(error))
+    except ProposalRefusedError as error:
+        raise HTTPException(status_code=409, detail=str(error))
+
+
+@app.get("/api/v1/town/proposals", status_code=200)
+def town_proposals_list(limit: int = 50) -> dict:
+    """Bureau-overzicht: alle voorstellen met de vier
+    velden + status + wie besliste. Lezen alleen."""
+    from .town_proposals import list_proposals
+    return {"proposals": list_proposals(limit=limit)}
+
+
+@app.post("/api/v1/town/proposals/{proposal_id}/decide",
+          status_code=200)
+def town_proposal_decide(proposal_id: str,
+                         body: dict | None = None) -> dict:
+    """Exact-YES: alleen letterlijk ``YES`` queued één
+    taak; al het andere wijst af. Tweede beslissing
+    weigert 409."""
+    from .town_proposals import ProposalRefusedError, decide_proposal
+    payload = body if isinstance(body, dict) else {}
+    try:
+        return decide_proposal(
+            proposal_id, payload.get("decision", ""),
+            payload.get("decided_by", "you"))
+    except KeyError as error:
+        raise HTTPException(status_code=404, detail=str(error))
+    except ProposalRefusedError as error:
+        raise HTTPException(status_code=409, detail=str(error))
+
+
+@app.get("/api/v1/town/autonomy", status_code=200)
+def town_autonomy_show() -> dict:
+    """De dial, eerlijk getoond: welke NPC welk kind
+    autonoom mag queue'n (default: niemand, niets), plus
+    welke kinds ooit mogen en welke nooit."""
+    from .town_proposals import (
+        NPC_AUTONOMOUS_KINDS, NPC_PROPOSABLE_KINDS,
+        autonomy_rules)
+    return {"rules": autonomy_rules(),
+            "may_ever": sorted(NPC_AUTONOMOUS_KINDS),
+            "proposable": sorted(NPC_PROPOSABLE_KINDS),
+            "never": "hardware, desktop-input, fabricage: "
+                     "altijd exact-YES"}
+
+
+@app.post("/api/v1/town/reflect", status_code=200)
+def town_reflect(body: dict | None = None) -> dict:
+    """Reflecteer namens een agent (fase 4). Zonder bereikbaar model
+    eerlijk 409 — nooit een nep-reflectie."""
+    from .town_memory import TownRefusedError, reflect
+    payload = body if isinstance(body, dict) else {}
+    try:
+        return reflect(payload.get("agent", ""),
+                       payload.get("limit", 10))
+    except TownRefusedError as error:
+        raise HTTPException(status_code=409, detail=str(error))
 
 
 def _workspace_research_html(workspace_id: str) -> str:
@@ -11420,6 +13263,7 @@ def devices_page() -> str:
         for item in list_familiars())
     main = f"""<h1>Devices</h1>
     <p class="muted">One capability model for every helper. Physical execution stays behind safety gates — nothing here moves on its own.</p>
+    <p class="muted">Muis/toetsenbord overnemen op een verbonden machine? Dat loopt via <a href="/nodes">Nodes</a> (Digital-World-pad: expliciete YES-sessie, alles gelogd).</p>
     <div class="grove">{cards or _ui.empty('No devices registered.')}</div>"""
     return _ui.shell("Devices", "/devices", main, "",
                      _ui.command_bar())
@@ -14050,6 +15894,303 @@ def _mesh_panel_html() -> str:
         f"the normal task queue.</p></div>")
 
 
+def _workbench_readiness_html() -> str:
+    """M0 (BIG57): honest environment readiness for local printing.
+
+    Real, current probes (forge.print_workshop_readiness): slicer
+    binaries with CLI proof, MQTT transport, library root, spools,
+    printers. Every row carries state + reason + next step; nothing
+    green is invented, SIMULATED stays labeled.
+    """
+    from . import ui as _ui
+    try:
+        from .forge import print_workshop_readiness
+        ready = print_workshop_readiness()
+    except Exception:
+        return ("<div class=\"panel\"><h2>Readiness</h2>"
+                "<p class=\"muted\">Readiness unreadable right now — "
+                "no status invented.</p></div>")
+    chips = []
+    for entry in ready.get("slicers", []) or []:
+        state = str(entry.get("state", "?"))
+        mark = ("🟢" if state == "CLI_OK" else
+                "🟡" if state in ("PRESENT_CLI_UNPROVEN",) else "🔴")
+        chips.append(
+            f"<li>{mark} <b>Slicer: {_ui.esc(entry.get('label', '?'))}"
+            f"</b> {_ui.esc(state)} — "
+            f"<span class=\"muted\">"
+            f"{_ui.esc(entry.get('reason', ''))[:160]} → "
+            f"{_ui.esc(entry.get('next', ''))[:160]}</span></li>")
+    mqtt = ready.get("mqtt", {}) or {}
+    chips.append(
+        f"<li>{'🟢' if mqtt.get('state') == 'AVAILABLE' else '🔴'} "
+        f"<b>MQTT-transport</b> {_ui.esc(mqtt.get('state', '?'))} — "
+        f"<span class=\"muted\">{_ui.esc(mqtt.get('reason', ''))[:160]}"
+        f" → {_ui.esc(mqtt.get('next', ''))[:160]}</span></li>")
+    lib = ready.get("library", {}) or {}
+    chips.append(
+        f"<li>{'🟢' if lib.get('state') == 'OK' else '🔴'} "
+        f"<b>Bibliotheek</b> {_ui.esc(lib.get('state', '?'))} "
+        f"<code>{_ui.esc(lib.get('root', ''))[:80]}</code> — "
+        f"<span class=\"muted\">{_ui.esc(lib.get('reason', ''))[:160]}"
+        f" → {_ui.esc(lib.get('next', ''))[:160]}</span></li>")
+    spools = ready.get("spools", {}) or {}
+    chips.append(
+        f"<li>{'🟢' if spools.get('state') == 'OK' else '🔴'} "
+        f"<b>Spoelen</b> {_ui.esc(spools.get('state', '?'))} "
+        f"({_ui.esc(str(spools.get('total', 0)))}) — "
+        f"<span class=\"muted\">{_ui.esc(spools.get('reason', ''))[:160]}"
+        f" → {_ui.esc(spools.get('next', ''))[:160]}</span></li>")
+    printers = ready.get("printers", []) or []
+    try:
+        from .printer3d import last_bambu_reading
+        _live_of = last_bambu_reading
+    except Exception:
+        _live_of = lambda printer_id: None
+    if printers:
+        rows = ""
+        for item in printers[:6]:
+            live = _live_of(str(item.get("printer_id", ""))) or {}
+            live_txt = ""
+            if live:
+                state = str(live.get("state", ""))
+                if state in ("printing", "idle", "paused",
+                             "preparing"):
+                    live_txt = (f" — 🟢 REAL/CONNECTED {state} "
+                                f"(gelezen "
+                                f"{str(live.get('last_read_at', ''))[:16]})")
+                else:
+                    live_txt = (f" — ⚪ {state or 'UNKNOWN'} "
+                                f"({_ui.esc(str(live.get('reason', ''))[:100])})")
+            rows += (
+                f"<li>{_ui.esc(item.get('name', ''))[:60]} "
+                f"({_ui.esc(item.get('printer_id', ''))[:30]}): "
+                f"{_ui.chip(item.get('state', '?'))}{live_txt}</li>")
+        chips.append("<li><b>Printers</b><ul>" + rows + "</ul></li>")
+    else:
+        chips.append("<li>🔴 <b>Printers</b> geen printers "
+                     "geregistreerd — <span class=\"muted\">register "
+                     "eerst een printer vóór hardwarewerk</span></li>")
+    return ("<div class=\"panel\"><h2>Readiness — lokale printketen"
+            "</h2><ul>" + "".join(chips) + "</ul>"
+            "<p class=\"muted\">Echte controles, geen cache: groen "
+            "betekent bewezen. SIMULATED geldt nooit als uitvoering."
+            "</p></div>")
+
+
+def _license_use_chip(value) -> str:
+    """Tri-state use chip: JA / NEE / ONBEKEND. None is never
+    rendered as permission."""
+    from . import ui as _ui
+    if value is True:
+        return _ui.chip("JA")
+    if value is False:
+        return _ui.chip("NEE")
+    return _ui.chip("ONBEKEND")
+
+
+def _workbench_model_libraries_html(lib_source: str = "",
+                                    lib_q: str = "") -> str:
+    """Modelbibliotheken: search external sources, inspect license
+    terms, start an import proposal. Searching is read-only;
+    Importvoorstel only builds a proposal through the existing
+    write flow (YES-gate untouched). No auto-downloads."""
+    from . import ui as _ui
+    from .library_sources import LIBRARY_SOURCES, library_catalog
+    try:
+        catalog = library_catalog()
+    except Exception:
+        catalog = []
+    source = (lib_source or "").strip()[:40]
+    if source not in LIBRARY_SOURCES:
+        source = "wikimedia-commons"
+    query = (lib_q or "").strip()[:120]
+    cards = "".join(
+        f"<div class=\"sprout\"><b>{_ui.esc(item.get('name', ''))}</b><br>"
+        f"<span class=\"muted\">{_ui.esc(', '.join(item.get('formats', [])))}</span><br>"
+        f"<span class=\"muted\">{_ui.esc(item.get('license_policy', '')[:120])}</span><br>"
+        f"automatisering: {_ui.chip(item.get('automation', '?'))}<br>"
+        f"<a href=\"{_ui.esc(item.get('portal_url', ''))}\">portaal</a></div>"
+        for item in catalog)
+    options = "".join(
+        f"<option value=\"{_ui.esc(key)}\""
+        f"{' selected' if key == source else ''}>"
+        f"{_ui.esc(info.get('name', key))}</option>"
+        for key, info in LIBRARY_SOURCES.items())
+    body = (f"<div class=\"panel\"><h2>Modelbibliotheken</h2>"
+            f"<p class=\"muted\">Externe 3D-modellen met licentie erbij. "
+            f"Zoeken is alleen lezen; <b>Importvoorstel</b> maakt een "
+            f"voorstel in <a href=\"/writes\">Writes</a> — registreren "
+            f"eist exact YES. “Open” betekent nooit automatisch "
+            f"verkoopbaar.</p>"
+            f"<div class=\"grove\">{cards}</div>"
+            f"<form method=\"get\" action=\"/3d\">"
+            f"<select name=\"lib_source\" aria-label=\"Bron\">"
+            f"{options}</select> "
+            f"<input type=\"text\" name=\"lib_q\" placeholder=\"zoekterm (bv. moon gear)\" "
+            f"value=\"{_ui.esc(query)}\" style=\"width:40%\" aria-label=\"Zoekterm\"> "
+            f"<button type=\"submit\">Zoeken</button></form>")
+    if query and source == "wikimedia-commons":
+        try:
+            from .library_sources import search_commons
+            found = search_commons(query)
+            results = found.get("results", [])
+        except Exception as error:
+            results = []
+            body += (f"<p class=\"muted\">Zoeken mislukt "
+                     f"({_ui.esc(str(error)[:160])}) — offline is "
+                     f"eerlijk UNAVAILABLE, nooit verzonnen.</p>")
+        else:
+            if not results:
+                body += ("<p class=\"muted\">Geen resultaten met "
+                         "bruikbare licentiegegevens.</p>")
+        for item in results:
+            preview = (f"<img src=\"{_ui.esc(item.get('preview_url', ''))}\" "
+                       f"alt=\"preview\" style=\"max-width:120px\">"
+                       if item.get("preview_url") else
+                       "<span class=\"muted\">geen preview</span>")
+            body += (
+                f"<div class=\"sprout\"><b>{_ui.esc(item.get('title', ''))}</b><br>"
+                f"{preview}<br>"
+                f"<span class=\"muted\">{_ui.esc(item.get('author', ''))} · "
+                f"licentie: {_ui.esc(item.get('license', ''))}</span><br>"
+                f"commercieel: {_license_use_chip(item.get('commercial_use'))} "
+                f"remix: {_license_use_chip(item.get('remix_allowed'))} "
+                f"attributie: {_license_use_chip(item.get('attribution_required'))}<br>"
+                f"<span class=\"muted\">{_ui.esc(item.get('terms_note', '')[:120])}</span><br>"
+                f"<a href=\"{_ui.esc(item.get('page_url', ''))}\">originele bron</a> "
+                f"<span class=\"muted\">{_ui.esc(str(item.get('size_bytes', 0)))} bytes</span>"
+                f"<form method=\"post\" action=\"/web/workshop/libraries/import\">"
+                f"<input type=\"hidden\" name=\"source\" value=\"wikimedia-commons\">"
+                f"<input type=\"hidden\" name=\"file_url\" value=\"{_ui.esc(item.get('file_url', ''))}\">"
+                f"<input type=\"hidden\" name=\"author\" value=\"{_ui.esc(item.get('author', ''))}\">"
+                f"<input type=\"hidden\" name=\"license\" value=\"{_ui.esc(item.get('license', ''))}\">"
+                f"<input type=\"hidden\" name=\"original_model_url\" value=\"{_ui.esc(item.get('page_url', ''))}\">"
+                f"<select name=\"intended_use\" aria-label=\"Gebruik\">"
+                f"<option value=\"private\">privé printen</option>"
+                f"<option value=\"remix\">remixen</option>"
+                f"<option value=\"commercial\">verkopen</option></select> "
+                f"<button type=\"submit\">Importvoorstel</button></form></div>")
+    elif query:
+        info = LIBRARY_SOURCES.get(source, {})
+        body += (
+            f"<p class=\"muted\">{_ui.esc(info.get('name', source))} heeft "
+            f"geen machineleesbare zoek-API — zoek op het "
+            f"<a href=\"{_ui.esc(info.get('portal_url', ''))}\">portaal</a>, "
+            f"download het bestand en plak hieronder de gegevens over "
+            f"(licentie wordt gevalideerd, nooit aangenomen).</p>"
+            f"<form method=\"post\" action=\"/web/workshop/libraries/import\">"
+            f"<input type=\"hidden\" name=\"source\" value=\"{_ui.esc(source)}\">"
+            f"<input type=\"text\" name=\"file_url\" placeholder=\"directe bestands-URL (https://…)\" style=\"width:40%\" aria-label=\"Bestands-URL\">"
+            f"<input type=\"text\" name=\"filename\" placeholder=\"naam.stl\" style=\"width:14%\" aria-label=\"Bestandsnaam\">"
+            f"<input type=\"text\" name=\"author\" placeholder=\"auteur\" style=\"width:12%\" aria-label=\"Auteur\">"
+            f"<input type=\"text\" name=\"license\" placeholder=\"bv. CC-BY-NC-4.0\" style=\"width:14%\" aria-label=\"Licentie\">"
+            f"<input type=\"text\" name=\"original_model_url\" placeholder=\"originele modelpagina\" style=\"width:30%\" aria-label=\"Originele bron\">"
+            f"<select name=\"intended_use\" aria-label=\"Gebruik\">"
+            f"<option value=\"private\">privé printen</option>"
+            f"<option value=\"remix\">remixen</option>"
+            f"<option value=\"commercial\">verkopen</option></select> "
+            f"<button type=\"submit\">Importvoorstel</button></form>")
+    return body + "</div>"
+
+
+def _workbench_library_html() -> str:
+    """M1 (BIG57): E:\\Mycelium-bibliotheek — inrichten, scannen,
+    geregistreerde modellen met oordeel in gewone taal."""
+    from . import ui as _ui
+    try:
+        from .forge import library_root
+        from .workshop3d import library_models, verdict_oordeel
+        root = library_root()
+        models = library_models(limit=24)
+    except Exception:
+        root = ""
+        models = []
+    cards = "".join(
+        f"<div class=\"sprout\"><b>{_ui.esc(item.get('filename', '')[:50])}</b><br>"
+        f"<code>{_ui.esc(item.get('model_id', '')[:20])}</code> "
+        f"{_ui.chip(str(item.get('inspection', {}).get('mesh_verdict', 'UNKNOWN')))}<br>"
+        f"<span class=\"muted\">{_ui.esc(verdict_oordeel(str(item.get('inspection', {}).get('mesh_verdict', 'UNKNOWN'))))}</span><br>"
+        f"<span class=\"muted\">sha {_ui.esc(str(item.get('sha256', ''))[:12])}… · "
+        f"{_ui.esc(str(item.get('size_bytes', 0)))} bytes</span></div>"
+        for item in models) or _ui.empty(
+            "Nog geen bibliotheekmodellen — richt in en scan de map.")
+    return (
+        f"<div class=\"panel\"><h2>Bibliotheek</h2>"
+        f"<p class=\"muted\">Modellenmap: <code>{_ui.esc(root + '/bibliotheek')[:100]}</code> — "
+        f"grote bestanden blijven hier staan; alleen hashes en "
+        f"metadata gaan het register in. Goedgekeurde file_-records "
+        f"verschijnen in <a href=\"/writes\">Writes</a>.</p>"
+        f"<form method=\"post\" action=\"/web/workshop/library/setup\" "
+        f"style=\"display:inline\">"
+        f"<button type=\"submit\">Map inrichten</button></form> "
+        f"<form method=\"post\" action=\"/web/workshop/library/scan\" "
+        f"style=\"display:inline\">"
+        f"<button type=\"submit\">Map scannen</button></form>"
+        f"<div class=\"grove\">{cards}</div></div>")
+
+
+def _workbench_spools_html() -> str:
+    """M1 (BIG57): filamentvoorraad met printer/slot-toewijzing."""
+    from . import ui as _ui
+    try:
+        from .fabrication import list_spools
+        spools = [item.model_dump(mode="json")
+                  for item in list_spools() or []]
+    except Exception:
+        spools = []
+    try:
+        from .printer3d import list_stored_printers
+        printers = [str(printer.printer_id or "")
+                    for printer in list_stored_printers() or []]
+    except Exception:
+        printers = []
+    rows = "".join(
+        f"<li><b>{_ui.esc(item.get('material', ''))} "
+        f"{_ui.esc(item.get('color', ''))}</b> "
+        f"{_ui.esc(str(item.get('weight_remaining_g', 0)))}g · "
+        f"<span class=\"muted\">locatie: "
+        f"{_ui.esc(item.get('location', '') or '— plankvoorraad')}</span></li>"
+        for item in spools[:12]) or "<li>Nog geen spoelen.</li>"
+    spool_opts = "".join(
+        f"<option value=\"{_ui.esc(item.get('spool_id', ''))}\">"
+        f"{_ui.esc(item.get('material', ''))} "
+        f"{_ui.esc(item.get('color', ''))}</option>"
+        for item in spools[:50])
+    printer_opts = "".join(
+        f"<option value=\"{_ui.esc(printer_id)}\">"
+        f"{_ui.esc(printer_id)}</option>"
+        for printer_id in printers[:12])
+    return (
+        f"<div class=\"panel\"><h2>Spoelen</h2><ul>{rows}</ul>"
+        f"<form method=\"post\" action=\"/web/filament/spools\">"
+        f"<input type=\"text\" name=\"material\" placeholder=\"PLA\" "
+        f"style=\"width:12%\" aria-label=\"Materiaal\">"
+        f"<input type=\"text\" name=\"color\" placeholder=\"kleur\" "
+        f"style=\"width:12%\" aria-label=\"Kleur\">"
+        f"<input type=\"text\" name=\"weight_g\" placeholder=\"gewicht g\" "
+        f"style=\"width:12%\" aria-label=\"Gewicht\">"
+        f"<input type=\"text\" name=\"location\" placeholder=\"locatie\" "
+        f"style=\"width:18%\" aria-label=\"Locatie\">"
+        f"<input type=\"text\" name=\"compatible_profiles\" "
+        f"placeholder=\"profielen (komma-gescheiden, leeg = alle)\" "
+        f"style=\"width:24%\" aria-label=\"Compatibele profielen\">"
+        f"<button type=\"submit\">Spoel toevoegen</button></form>"
+        f"<form method=\"post\" action=\"/web/filament/spools/assign\">"
+        f"<select name=\"spool_id\" aria-label=\"Spoel\">"
+        f"{spool_opts}</select>"
+        f"<select name=\"printer_id\" aria-label=\"Printer\">"
+        f"<option value=\"\">— plank —</option>{printer_opts}</select>"
+        f"<input type=\"text\" name=\"slot\" placeholder=\"slot (bv. AMS-2)\" "
+        f"style=\"width:18%\" aria-label=\"Slot\">"
+        f"<button type=\"submit\">Toewijzen</button></form>"
+        f"<p class=\"muted\">Toewijzing eist een geregistreerde printer; "
+        f"hetzelfde slot kan niet twee spoelen bevatten; "
+        f"compatibiliteit wordt bij vrijgave (M3) afgedwongen. "
+        f"Spoelen zijn printfilament-voorraad; Materialen hieronder "
+        f"zijn algemene werkplaatsbenodigdheden.</p></div>")
+
+
 def _workbench_models_html() -> str:
     """Model library: register + inspect + progress."""
     from . import ui as _ui
@@ -14137,11 +16278,57 @@ def _workbench_fabjobs_html() -> str:
         if stage == "designed":
             actions = _w3_action(job["job_id"], "prepare", "Prepare")
         elif stage == "prepared":
-            actions = _w3_action(job["job_id"], "slice", "Slice (TEST)")
+            actions = (
+                f"<form method=\"post\" action=\"/web/workshop/fabjobs/"
+                f"{_ui.esc(job['job_id'])}/slice\" "
+                f"style=\"display:inline\">"
+                f"<select name=\"slicer\" aria-label=\"Slicer\">"
+                f"<option value=\"prusa-console\">Slice (lokaal)</option>"
+                f"<option value=\"test-slicer\">Slice (TEST)</option>"
+                f"{_w3_bambu_option()}"
+                f"</select> "
+                f"<button type=\"submit\">Slicen</button></form>")
         elif stage == "gcode-ready":
             actions = _w3_action(job["job_id"], "propose",
-                                 "Propose print (needs YES)")
-        elif stage in ("proposed", "approved", "printing-simulated",
+                                 "Propose print (needs YES)") + " " + \
+                _w3_action(job["job_id"], "preflight",
+                           "Pre-flight controleren")
+        elif stage == "proposed":
+            gate = job.get("preflight", {}) or {}
+            blockers = gate.get("blockers", []) or []
+            approved = False
+            try:
+                record = _write_load(
+                    str(job.get("proposal_id", "") or ""))
+                approved = record is not None and \
+                    str(record.get("status", "")) == "approved"
+            except Exception:
+                approved = False
+            if gate and not blockers and approved:
+                actions = _w3_action(job["job_id"], "enqueue",
+                                     "In wachtrij plaatsen")
+            elif gate and not blockers:
+                actions = ("<span class=\"muted\">Wacht op exacte YES "
+                           "→ <a href=\"/writes\">Writes</a></span> "
+                           + _w3_action(job["job_id"], "preflight",
+                                        "Opnieuw controleren"))
+            else:
+                actions = _w3_action(job["job_id"], "preflight",
+                                     "Pre-flight controleren")
+        elif stage in ("queued",):
+            actions = _w3_action(job["job_id"], "preflight",
+                                 "Opnieuw controleren")
+        elif stage == "printing":
+            actions = _w3_action(job["job_id"], "observe-print",
+                                 "Printerstatus opvragen") + " " + \
+                _w3_action(job["job_id"], "finalize",
+                           "Afronden na FINISH") + " " + \
+                _w3_action(job["job_id"], "cancel",
+                           "Stoppen + annuleren")
+        elif stage == "printed":
+            actions = _w3_action(job["job_id"], "verify",
+                                 "Verifiëren (camera)")
+        elif stage in ("approved", "printing-simulated",
                        "printed-simulated"):
             actions = _w3_action(job["job_id"], "sync", "Sync")
         cards += (
@@ -14150,28 +16337,197 @@ def _workbench_fabjobs_html() -> str:
             f"<span class=\"muted\">model "
             f"{_ui.esc(job.get('model_id', '')[:16])} · printer "
             f"{_ui.esc(job.get('printer_id', 'none'))}</span><br>"
-            f"{actions}</div>")
+            + (f"<span class=\"muted\">G-code "
+               f"{_ui.esc(job.get('gcode_verdict', ''))} · "
+               f"{_ui.esc(job.get('slicer_engine', ''))} · sha "
+               f"{_ui.esc(str(job.get('gcode_sha256', ''))[:12])}…"
+               f"</span><br>"
+               if job.get("gcode_verdict") else "")
+            + _w3_preflight_html(job)
+            + f"{actions}</div>")
     progress = _ui.stage_progress(
         "Fabrication",
         [(f"{job['job_id'][:24]}", job.get("stage", "open"))
          for job in jobs[:8]]) if jobs else ""
+    try:
+        from .printer3d import list_stored_printers
+        _printers = [str(printer.printer_id or "")
+                     for printer in list_stored_printers() or []]
+    except Exception:
+        _printers = []
+    try:
+        from .slicer3d import SLICER_PROFILES
+        _profiles = sorted(SLICER_PROFILES)
+    except Exception:
+        _profiles = []
+    try:
+        from .fabrication import list_spools
+        _spools = [(spool.spool_id, spool.material,
+                    spool.color or "")
+                   for spool in list_spools() or []]
+    except Exception:
+        _spools = []
+    _printer_opts = "".join(
+        f"<option value=\"{_ui.esc(printer_id)}\">"
+        f"{_ui.esc(printer_id)}</option>"
+        for printer_id in _printers[:12])
+    _profile_opts = "".join(
+        f"<option value=\"{_ui.esc(name)}\">{_ui.esc(name)}</option>"
+        for name in _profiles)
+    _spool_opts = "".join(
+        f"<option value=\"{_ui.esc(spool_id)}\">"
+        f"{_ui.esc(material)} {_ui.esc(color)}</option>"
+        for spool_id, material, color in _spools[:50])
     return (
         f"<div class=\"panel\"><h2>Fabrication</h2>"
         f"<form method=\"post\" action=\"/web/workshop/fabjobs\">"
         f"<input type=\"text\" name=\"model_id\" placeholder=\"mdl_…\" "
-        f"style=\"width:22%\" aria-label=\"Model id\">"
+        f"style=\"width:18%\" aria-label=\"Model id\">"
         f"<input type=\"text\" name=\"material_ref\" placeholder=\"material\" "
-        f"style=\"width:18%\" aria-label=\"Material\">"
-        f"<input type=\"text\" name=\"printer_id\" placeholder=\"prt_…\" "
-        f"style=\"width:18%\" aria-label=\"Printer\">"
-        f"<input type=\"text\" name=\"profile\" placeholder=\"profile\" "
-        f"style=\"width:14%\" aria-label=\"Profile\">"
+        f"style=\"width:12%\" aria-label=\"Material\">"
+        f"<select name=\"printer_id\" aria-label=\"Printer\">"
+        f"<option value=\"\">printer…</option>{_printer_opts}</select>"
+        f"<select name=\"profile\" aria-label=\"Profile\">"
+        f"<option value=\"\">profiel…</option>{_profile_opts}</select>"
+        f"<select name=\"spool_id\" aria-label=\"Spool\">"
+        f"<option value=\"\">spoel…</option>{_spool_opts}</select>"
         f"<button type=\"submit\">Start fab job</button></form>"
         f"<p class=\"muted\">Execution only via "
         f"<a href=\"/writes\">Writes</a> exact YES; here you prepare, "
-        f"slice (TEST), propose and sync honest stages.</p>"
+        f"slice (lokaal of TEST — TEST nooit naar printer), propose "
+        f"and sync honest stages.</p>"
         f"<div class=\"grove\">{cards or _ui.empty('No fab jobs yet.')}</div>"
         f"{progress}</div>")
+
+
+def _w3_preflight_html(job: dict) -> str:
+    """Stored pre-flight outcome: blockers + estimate, if ran."""
+    from . import ui as _ui
+    gate = job.get("preflight", {}) or {}
+    if not gate:
+        return ""
+    parts = []
+    for blocker in (gate.get("blockers", []) or [])[:4]:
+        parts.append(f"⛔ {_ui.esc(str(blocker))[:140]}")
+    for warning in (gate.get("warnings", []) or [])[:3]:
+        parts.append(f"⚠️ {_ui.esc(str(warning))[:140]}")
+    grams = gate.get("estimate_g")
+    if grams is not None:
+        parts.append(
+            f"⛽ ±{_ui.esc(str(grams))}g "
+            f"({_ui.esc(str(gate.get('estimate_basis', ''))[:40])})")
+    if not parts:
+        parts.append("✅ pre-flight geslaagd")
+    return "<span class=\"muted\">" + "<br>".join(parts) + "</span><br>"
+
+
+def _workbench_printqueue_html() -> str:
+    """M3 (BIG57): ordered persistent print queue on tasks."""
+    from . import ui as _ui
+    try:
+        items = [task for task in list_tasks() or []
+                 if str(task.get("kind", "")) == "print.execute"]
+    except Exception:
+        items = []
+    items.sort(key=lambda task: int(task.get("id", 0) or 0))
+    rows = ""
+    for task in items:
+        payload = task.get("payload", {}) or {}
+        status = str(task.get("status", ""))
+        cancel = ""
+        if status == "queued":
+            cancel = (
+                f" <form method=\"post\" "
+                f"action=\"/web/tasks/{_ui.esc(str(task.get('id', '')))}/cancel\" "
+                f"style=\"display:inline\">"
+                f"<input type=\"hidden\" name=\"back\" value=\"/3d\">"
+                f"<button type=\"submit\">Annuleren</button></form>")
+        rows += (
+            f"<li>#{_ui.esc(str(task.get('id', '')))} "
+            f"{_ui.chip(status)} "
+            f"<code>{_ui.esc(str(task.get('kind', ''))[:24])}</code> "
+            f"<span class=\"muted\">job "
+            f"{_ui.esc(str(payload.get('print_job_id', ''))[:24])} · "
+            f"printer {_ui.esc(str(payload.get('printer_id', ''))[:24])} · "
+            f"slot {_ui.esc(str(payload.get('slot', ''))[:12] or '—')} · "
+            f"profiel {_ui.esc(str(payload.get('profile', ''))[:24])} · "
+            f"voorstel {_ui.esc(str(payload.get('proposal_id', ''))[:16])}"
+            f"</span>{cancel}</li>")
+    return (
+        f"<div class=\"panel\"><h2>Wachtrij</h2>"
+        f"<ul>{rows or '<li>Nog geen prints in de wachtrij.</li>'}</ul>"
+        f"<form method=\"post\" action=\"/web/maintenance/sweep\" "
+        f"style=\"display:inline\">"
+        f"<button type=\"submit\">Herstellen (sweep)</button></form> "
+        f"<a href=\"/tasks\">Taken</a>"
+        f"<p class=\"muted\">Volgorde = aanmaakvolgorde; herstartbestendig. "
+        f"Uitvoering pas in M4; rijen wachten eerlijk op hardware.</p>"
+        f"</div>")
+
+
+def _workbench_history_html() -> str:
+    """M5 (BIG57): per-print dossier — model, profiel, spoel,
+    G-code-verdict, taak, voorstel, geschiedenis. Alles via
+    bestaande records; reconstructie zonder nieuwe stores."""
+    from . import ui as _ui
+    try:
+        from .workshop3d import list_fabjobs
+        jobs = list_fabjobs(limit=12)
+    except Exception:
+        jobs = []
+    rows = ""
+    for job in jobs:
+        history = job.get("history", []) or []
+        task_state = ""
+        task_slot = ""
+        task_id = int(job.get("queue_task_id", 0) or 0)
+        if task_id:
+            try:
+                record = get_task(task_id)
+                task_state = str(record.get("status", ""))
+                payload = record.get("payload", {}) or {}
+                if isinstance(payload, dict):
+                    task_slot = str(payload.get("slot", "") or "")
+            except Exception:
+                task_state = "onbekend"
+        rows += (
+            f"<li><b>{_ui.esc(job['job_id'][:28])}</b> "
+            f"{_ui.chip(job.get('stage', ''))}"
+            f"{(' ' + _ui.chip('taak:' + task_state)) if task_state else ''}<br>"
+            f"<span class=\"muted\">model "
+            f"{_ui.esc(str(job.get('model_id', ''))[:20])} · profiel "
+            f"{_ui.esc(str(job.get('profile', ''))[:24])} · spoel "
+            f"{_ui.esc(str(job.get('spool_id', ''))[:24] or '—')} · "
+            f"slot {_ui.esc(task_slot[:12] or '—')} · "
+            f"printer {_ui.esc(str(job.get('printer_id', ''))[:24])}"
+            f"</span><br>"
+            f"<span class=\"muted\">G-code "
+            f"{_ui.esc(str(job.get('gcode_verdict', '')) or '—')} · "
+            f"sha {_ui.esc(str(job.get('gcode_sha256', ''))[:12])}… · "
+            f"taak {_ui.esc(str(job.get('queue_task_id', 0) or '—'))} · "
+            f"voorstel "
+            f"{_ui.esc(str(job.get('proposal_id', ''))[:16] or '—')} · "
+            f"{len(history)} historie-regels</span></li>")
+    return (
+        f"<div class=\"panel\"><h2>Geschiedenis</h2>"
+        f"<ul>{rows or '<li>Nog geen prints.</li>'}</ul>"
+        f"<p class=\"muted\">Elke print reconstrueerbaar uit records: "
+        f"model, profiel, spoel, G-code-sha, taak, voorstel. "
+        f"Voorraad-afboeking pas bij echte uitvoering (M4).</p>"
+        f"</div>")
+
+
+def _w3_bambu_option() -> str:
+    """Bambu slice option only after manual CLI proof (M3.5).
+
+    The Bambu Studio CLI is UNPROVEN on this installation; offering
+    the button would fake availability. Shown once BAMBU_CLI_PROVEN
+    documents a real headless slice.
+    """
+    import os as _os
+    if _os.environ.get("BAMBU_CLI_PROVEN", "") == "1":
+        return "<option value=\"bambu-studio\">Slice (Bambu)</option>"
+    return ""
 
 
 def _w3_action(job_id: str, action: str, label: str) -> str:
@@ -14198,6 +16554,38 @@ def _w3_printer_badge(printer_id: str) -> str:
     return ""
 
 
+def _w3_live_printer_html(printer_id: str) -> str:
+    """Last read-only Bambu reading for one printer (M4.1).
+
+    REAL/CONNECTED only with a fresh valid push (<60s); otherwise
+    UNAVAILABLE/UNKNOWN with reason. Never infers READY.
+    """
+    from . import ui as _ui
+    try:
+        from .printer3d import last_bambu_reading
+        reading = last_bambu_reading(printer_id) or {}
+    except Exception:
+        reading = {}
+    if not reading:
+        return ""
+    state = str(reading.get("state", "") or "")
+    if state in ("printing", "idle", "paused", "preparing"):
+        mark = "🟢 REAL/CONNECTED"
+    elif state == "failed":
+        mark = "🔴 REAL/FAILED"
+    else:
+        mark = "⚪ UNKNOWN"
+    detail = str(reading.get("reason", "") or "")
+    if not detail:
+        detail = (f"{state} · nozzle "
+                  f"{reading.get('nozzle_c', '—')}°C · bed "
+                  f"{reading.get('bed_c', '—')}°C · "
+                  f"{reading.get('progress_pct', '—')}% · "
+                  f"gelezen {str(reading.get('last_read_at', ''))[:16]}")
+    return (f" <span class=\"muted\">[{_ui.esc(mark)} "
+            f"{_ui.esc(detail[:160])}]</span>")
+
+
 def _workbench_machines_html() -> str:
     """Printers + mesh-capable nodes. Read-only."""
     from . import ui as _ui
@@ -14208,9 +16596,15 @@ def _workbench_machines_html() -> str:
         printers = []
     rows = "".join(
         f"<li><b>{_ui.esc(device.name)}</b> "
-        f"({_ui.esc(device.printer_id)}) — "
+        f"({_ui.esc(device.printer_id)})"
+        f"{(' · ' + _ui.esc(device.model)) if device.model else ''} — "
         f"{_ui.esc(', '.join(device.capabilities))}"
-        f"{_w3_printer_badge(device.printer_id)}</li>"
+        f"{_w3_printer_badge(device.printer_id)}"
+        f"{_w3_live_printer_html(device.printer_id)} "
+        f"<form method=\"post\" "
+        f"action=\"/web/printers/{_ui.esc(device.printer_id)}/read-status\" "
+        f"style=\"display:inline\">"
+        f"<button type=\"submit\">Lezen</button></form></li>"
         for device in printers) or "<li>No printers</li>"
     mesh_nodes = ""
     try:
@@ -14229,14 +16623,67 @@ def _workbench_machines_html() -> str:
         mesh_nodes = "<li>Mesh unavailable</li>"
     return (
         f"<div class=\"panel\"><h2>Machines</h2><ul>{rows}</ul>"
+        f"<form method=\"post\" action=\"/web/printers/register\">"
+        f"<input type=\"text\" name=\"name\" placeholder=\"Bambu Lab A1 Mini\" "
+        f"style=\"width:24%\" aria-label=\"Printernaam\">"
+        f"<input type=\"text\" name=\"model\" placeholder=\"model (bv. A1 mini)\" "
+        f"style=\"width:20%\" aria-label=\"Model\">"
+        f"<button type=\"submit\">Printer registreren</button></form>"
         f"<h3>Mesh-capable nodes</h3><ul>{mesh_nodes}</ul>"
         f"<p class=\"muted\">Nodes only run allowlisted "
         f"capabilities via <a href=\"/nodes\">task claims</a>; "
         f"no shell, no direct control.</p></div>")
 
 
+@app.post("/web/printers/register")
+async def web_printer_register(request: Request) -> Response:
+    """Smallest UI bridge onto printer registration: record only,
+    no motion, no adapter probing."""
+    import secrets as _secrets
+    from .printer3d import PrinterRefusedError, new_printer, save_printer
+    fields = await _form_fields(request)
+    try:
+        device = new_printer(
+            f"prt-{_secrets.token_hex(4)}",
+            fields.get("name", "") or "printer",
+            ["printer.status", "printer.telemetry"],
+            model=fields.get("model", ""))
+        save_printer(device)
+    except (PrinterRefusedError, ValueError):
+        pass
+    return RedirectResponse("/3d", status_code=303)
+
+
+@app.post("/web/printers/{printer_id}/read-status")
+async def web_printer_read_status(printer_id: str) -> Response:
+    """One bounded read-only Bambu status read (M4.1).
+
+    Connects (TLS), waits for a valid push, records the snapshot,
+    disconnects. Never publishes, never moves hardware. Failure
+    records an honest UNAVAILABLE reason; nothing raises out.
+    """
+    from .printer3d import (
+        PrinterRefusedError,
+        PrinterUnavailable,
+        read_bambu_once,
+        record_bambu_reading,
+    )
+    try:
+        snapshot = read_bambu_once(printer_id, timeout=15.0)
+        record_bambu_reading(printer_id, snapshot)
+    except (PrinterUnavailable, PrinterRefusedError) as error:
+        record_bambu_reading(printer_id, {
+            "state": "UNAVAILABLE", "reason": str(error)[:160]})
+    except Exception as error:
+        record_bambu_reading(printer_id, {
+            "state": "UNKNOWN",
+            "reason": f"onverwachte fout ({type(error).__name__})"})
+    return RedirectResponse("/3d", status_code=303)
+
+
 @app.get("/3d", response_class=HTMLResponse)
-def model_3d_page(entity_id: str = "") -> str:
+def model_3d_page(entity_id: str = "", lib_source: str = "",
+                 lib_q: str = "") -> str:
     """3D workbench: models, materials, projects, fabrication,
     machines, observations, verification — one workshop, honest
     stage chips, no fake meshes, no fake prints."""
@@ -14298,6 +16745,12 @@ def model_3d_page(entity_id: str = "") -> str:
     <span class="step">PRINTER</span><span class="arrow">→</span>
     <span class="step">VERIFY</span></div>
     <p class="muted">Stages: READY / WAITING / SIMULATED / TEST / HARDWARE_REQUIRED / UNAVAILABLE. OBJECT → CREATE 3D MODEL uses the existing procedural/test workflow; true reconstruction transport is UNAVAILABLE and says so. No fake generated mesh. Prints need exact YES in <a href="/writes">Writes</a>; SIMULATED execution never becomes REAL.</p></div>
+    {_workbench_readiness_html()}
+    {_workbench_library_html()}
+    {_workbench_model_libraries_html(lib_source, lib_q)}
+    {_workbench_spools_html()}
+    {_workbench_printqueue_html()}
+    {_workbench_history_html()}
     {_workbench_models_html()}
     {_workbench_materials_html()}
     {presence_html}
@@ -16784,6 +19237,135 @@ def api_workshop_model_inspect(model_id: str) -> dict:
         raise HTTPException(status_code=422, detail=str(exc))
 
 
+@app.post("/api/v1/workshop/library/setup")
+def api_workshop_library_setup() -> dict:
+    """Ensure the E:\\Mycelium folder layout. Explicit action only;
+    probes never create. Idempotent."""
+    from .workshop3d import setup_library
+    try:
+        return setup_library()
+    except OSError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)[:200])
+
+
+@app.post("/api/v1/workshop/library/scan")
+def api_workshop_library_scan(body: dict | None = None) -> dict:
+    """Scan the library folder once: register new models locally
+    and propose INVENTory file_ records (approval in /writes).
+    Writes nothing to INVENTory by itself."""
+    import secrets as _secrets
+    from .inventory_writes import InventoryWriteRefusedError
+    from .inventory_writes import propose_inventory_write
+    from .workshop3d import (
+        WorkshopRefusedError,
+        library_file_fields,
+        scan_library,
+    )
+    actor = ""
+    if isinstance(body, dict):
+        actor = str(body.get("actor", "") or "")[:40]
+    try:
+        summary = scan_library(actor=actor or "scan")
+    except WorkshopRefusedError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    proposals = []
+    from .workshop3d import get_model
+    for entry in summary.get("registered", []):
+        record = get_model(str(entry.get("model_id", "")) or "")
+        if record is None:
+            continue
+        try:
+            fields = library_file_fields(record)
+            proposal = propose_inventory_write(
+                f"wrt-{_secrets.token_hex(4)}", "create", "file",
+                fields, actor=actor or "bibliotheek-scan")
+        except (InventoryWriteRefusedError, ValueError):
+            continue
+        try:
+            _write_save(proposal, "proposed")
+        except Exception:
+            continue
+        proposals.append(proposal.proposal_id)
+    summary["proposals"] = proposals
+    return summary
+
+
+@app.get("/api/v1/workshop/libraries")
+def api_workshop_libraries() -> dict:
+    """Registered external model libraries. Read-only."""
+    from .library_sources import library_catalog
+    return {"libraries": library_catalog()}
+
+
+@app.post("/api/v1/workshop/libraries/search")
+def api_workshop_libraries_search(body: dict | None = None) -> dict:
+    """Search one library (explicit operator action, read-only).
+    Wikimedia Commons runs live; manual sources answer honestly
+    with a portal hint instead of invented results."""
+    from .library_sources import (
+        LIBRARY_SOURCES,
+        LibraryRefusedError,
+        search_commons,
+    )
+    payload = body if isinstance(body, dict) else {}
+    source = str(payload.get("source", "") or "").strip()[:40]
+    if source not in LIBRARY_SOURCES:
+        raise HTTPException(
+            status_code=422,
+            detail="unknown library source")
+    if LIBRARY_SOURCES[source]["search"] != "commons-api":
+        return {"source": source, "query": "",
+                "results": [],
+                "hint": "deze bron heeft geen machineleesbare "
+                        "zoek-API; zoek op het portaal en importeer "
+                        "via model-URL + licentie"}
+    try:
+        return search_commons(str(payload.get("query", "") or ""))
+    except LibraryRefusedError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+
+@app.post("/api/v1/workshop/libraries/import")
+def api_workshop_libraries_import(
+        body: dict | None = None) -> dict:
+    """Gated library import (explicit operator action): license
+    gate -> download -> mdl_ record -> file_ proposal through the
+    existing write flow. Approval (exact YES) stays required;
+    nothing registers in INVENTory by itself."""
+    import secrets as _secrets
+    from .inventory_writes import InventoryWriteRefusedError
+    from .inventory_writes import propose_inventory_write
+    from .library_sources import LibraryRefusedError, import_downloaded
+    from .workshop3d import WorkshopRefusedError
+    payload = body if isinstance(body, dict) else {}
+    lic = payload.get("license", {}) or {}
+    if isinstance(lic, str):
+        lic = {"license": lic}
+    try:
+        result = import_downloaded(
+            source=str(payload.get("source", "") or ""),
+            file_url=str(payload.get("file_url", "") or ""),
+            filename=str(payload.get("filename", "") or ""),
+            license=dict(lic) if isinstance(lic, dict) else {},
+            intended_use=str(payload.get("intended_use", "private")
+                             or "private"),
+            actor=str(payload.get("actor", "") or "")[:40]
+            or "bibliotheek-import")
+    except (LibraryRefusedError, WorkshopRefusedError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    try:
+        proposal = propose_inventory_write(
+            f"wrt-{_secrets.token_hex(4)}", "create", "file",
+            result["fields"], actor="bibliotheek-import")
+        _write_save(proposal, "proposed")
+    except (InventoryWriteRefusedError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    return {"model_id": result["model"]["model_id"],
+            "sha256": result["model"]["sha256"],
+            "proposal_id": proposal.proposal_id,
+            "gate_note": result.get("gate_note", "")}
+
+
 @app.post("/api/v1/workshop/materials", status_code=201)
 def api_workshop_material_create(body: dict) -> dict:
     from .workshop3d import WorkshopRefusedError, create_material
@@ -16845,6 +19427,7 @@ def api_workshop_fabjob_create(body: dict) -> dict:
             material_ref=str(body.get("material_ref", "")),
             printer_id=str(body.get("printer_id", "")),
             profile=str(body.get("profile", "")),
+            spool_id=str(body.get("spool_id", "")),
             actor=str(body.get("actor", "api")))
     except WorkshopRefusedError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
@@ -16872,8 +19455,12 @@ def api_workshop_fabjob_get(job_id: str) -> dict:
 def api_workshop_fabjob_action(job_id: str, action: str,
                                body: dict | None = None) -> dict:
     from .workshop3d import (WorkshopRefusedError, cancel_job,
-                             observe_job, prepare_job, propose_job_print,
-                             slice_job, sync_job, verify_job)
+                             close_print_task, enqueue_print_job,
+                             finalize_print_task, observe_job,
+                             observe_print_job, preflight_print_job,
+                             prepare_job, propose_job_print,
+                             set_job_spool, slice_job, sync_job,
+                             verify_job)
     payload = body if isinstance(body, dict) else {}
     try:
         if action == "prepare":
@@ -16885,6 +19472,48 @@ def api_workshop_fabjob_action(job_id: str, action: str,
         if action == "propose":
             return propose_job_print(
                 job_id, actor=str(payload.get("actor", "api")))
+        if action == "preflight":
+            return preflight_print_job(job_id)
+        if action == "observe-print":
+            return observe_print_job(
+                job_id,
+                timeout=float(payload.get("timeout", 45.0) or 45.0),
+                actor=str(payload.get("actor", "api")))
+        if action == "finalize":
+            task_id = payload.get("task_id")
+            if task_id is None:
+                from .workshop3d import get_fabjob as _get_job
+                job = _get_job(job_id)
+                task_id = (job or {}).get("queue_task_id", 0)
+            return finalize_print_task(
+                task_id, actor=str(payload.get("actor", "api")))
+        if action == "enqueue":
+            from .workshop3d import get_fabjob
+            job = get_fabjob(job_id)
+            if job is None:
+                raise HTTPException(404, "Fab job not found")
+            proposal_id = str(payload.get("proposal_id", "") or "") \
+                or str(job.get("proposal_id", "") or "")
+            if not proposal_id:
+                raise HTTPException(
+                    status_code=422,
+                    detail="job carries no proposal; propose + "
+                           "exact YES first")
+            record = _write_load(proposal_id)
+            if record is None:
+                raise HTTPException(status_code=422,
+                                    detail="proposal not found")
+            if str(record.get("status", "")) != "approved":
+                raise HTTPException(
+                    status_code=409,
+                    detail="proposal is not approved; exact YES "
+                           "first, never queue before approval")
+            return enqueue_print_job(
+                job_id, actor=str(payload.get("actor", "api")),
+                approved_proposal=record)
+        if action == "spool":
+            return set_job_spool(
+                job_id, str(payload.get("spool_id", "")))
         if action == "sync":
             return sync_job(job_id)
         if action == "observe":
@@ -16901,7 +19530,8 @@ def api_workshop_fabjob_action(job_id: str, action: str,
         raise HTTPException(status_code=422, detail=str(exc))
     raise HTTPException(
         status_code=422,
-        detail="action must be prepare, slice, propose, sync, "
+        detail="action must be prepare, slice, propose, preflight, "
+               "observe-print, finalize, enqueue, spool, sync, "
                "observe, verify or cancel")
 
 
@@ -17096,6 +19726,129 @@ async def web_workshop_model_register(request: Request) -> Response:
     return RedirectResponse("/3d", status_code=303)
 
 
+@app.post("/web/workshop/library/setup")
+async def web_workshop_library_setup(request: Request) -> Response:
+    from .workshop3d import setup_library
+    try:
+        setup_library()
+    except OSError:
+        pass
+    return RedirectResponse("/3d", status_code=303)
+
+
+@app.post("/web/workshop/library/scan")
+async def web_workshop_library_scan(request: Request) -> Response:
+    import secrets as _secrets
+    from .inventory_writes import InventoryWriteRefusedError
+    from .inventory_writes import propose_inventory_write
+    from .workshop3d import (
+        WorkshopRefusedError,
+        get_model,
+        library_file_fields,
+        scan_library,
+    )
+    fields = await _form_fields(request)
+    actor = str(fields.get("actor", "") or "")[:40]
+    try:
+        summary = scan_library(actor=actor or "web")
+    except WorkshopRefusedError:
+        return RedirectResponse("/3d", status_code=303)
+    for entry in summary.get("registered", []):
+        record = get_model(str(entry.get("model_id", "")) or "")
+        if record is None:
+            continue
+        try:
+            proposal = propose_inventory_write(
+                f"wrt-{_secrets.token_hex(4)}", "create", "file",
+                library_file_fields(record),
+                actor=actor or "bibliotheek-scan")
+            _write_save(proposal, "proposed")
+        except (InventoryWriteRefusedError, ValueError, Exception):
+            continue
+    return RedirectResponse("/3d", status_code=303)
+
+
+@app.post("/web/workshop/libraries/import")
+async def web_workshop_libraries_import(request: Request) -> Response:
+    """Importvoorstel from the /3d Modelbibliotheken section.
+    Builds an mdl_ record + file_ proposal through the existing
+    write flow, then lands on /writes for the exact-YES gate.
+    Refusals return to /3d (same pattern as library scan)."""
+    import secrets as _secrets
+    from .inventory_writes import InventoryWriteRefusedError
+    from .inventory_writes import propose_inventory_write
+    from .library_sources import LibraryRefusedError, import_downloaded
+    from .workshop3d import WorkshopRefusedError
+    fields = await _form_fields(request)
+    actor = str(fields.get("actor", "") or "")[:40]
+    license_fields = {
+        "source_library": str(fields.get("source", "") or "")[:80],
+        "source_url": str(fields.get("source_url", "") or "")[:500],
+        "author": str(fields.get("author", "") or "")[:200],
+        "license": str(fields.get("license", "") or "")[:120],
+        "original_model_url": str(
+            fields.get("original_model_url", "") or "")[:500],
+    }
+    try:
+        result = import_downloaded(
+            source=str(fields.get("source", "") or ""),
+            file_url=str(fields.get("file_url", "") or ""),
+            filename=str(fields.get("filename", "") or ""),
+            license=license_fields,
+            intended_use=str(fields.get("intended_use", "private")
+                             or "private"),
+            actor=actor or "bibliotheek-import")
+        proposal = propose_inventory_write(
+            f"wrt-{_secrets.token_hex(4)}", "create", "file",
+            result["fields"], actor=actor or "bibliotheek-import")
+        _write_save(proposal, "proposed")
+    except (LibraryRefusedError, WorkshopRefusedError,
+            InventoryWriteRefusedError, ValueError):
+        return RedirectResponse("/3d", status_code=303)
+    return RedirectResponse("/writes", status_code=303)
+
+
+@app.post("/web/filament/spools")
+async def web_filament_spool_create(request: Request) -> Response:
+    from .fabrication import FabricationRefusedError as _Refused
+    from .fabrication import new_spool as _new
+    from .fabrication import save_spool as _save
+    fields = await _form_fields(request)
+    try:
+        try:
+            weight = float(fields.get("weight_g", "") or 0)
+        except (TypeError, ValueError):
+            weight = 0.0
+        compat = [part.strip()[:40]
+                  for part in
+                  str(fields.get("compatible_profiles", "") or "")
+                  .replace(";", ",").split(",")
+                  if part.strip()][:10]
+        spool = _new(
+            fields.get("material", "") or "PLA", weight,
+            color=fields.get("color", ""),
+            compatible_profiles=compat,
+            location=fields.get("location", ""))
+        _save(spool)
+    except _Refused:
+        pass
+    return RedirectResponse("/3d", status_code=303)
+
+
+@app.post("/web/filament/spools/assign")
+async def web_filament_spool_assign(request: Request) -> Response:
+    from .fabrication import FabricationRefusedError as _Refused
+    from .fabrication import assign_spool_location as _assign
+    fields = await _form_fields(request)
+    try:
+        _assign(fields.get("spool_id", ""),
+                printer_id=fields.get("printer_id", ""),
+                slot=fields.get("slot", ""))
+    except _Refused:
+        pass
+    return RedirectResponse("/3d", status_code=303)
+
+
 @app.post("/web/workshop/materials")
 async def web_workshop_material_create(request: Request) -> Response:
     from .workshop3d import WorkshopRefusedError, create_material
@@ -17122,7 +19875,8 @@ async def web_workshop_fabjob_create(request: Request) -> Response:
             fields.get("model_id", ""),
             material_ref=fields.get("material_ref", ""),
             printer_id=fields.get("printer_id", ""),
-            profile=fields.get("profile", ""), actor="web")
+            profile=fields.get("profile", ""),
+            spool_id=fields.get("spool_id", ""), actor="web")
     except WorkshopRefusedError:
         pass
     return RedirectResponse("/3d", status_code=303)
@@ -17132,8 +19886,11 @@ async def web_workshop_fabjob_create(request: Request) -> Response:
 async def web_workshop_fabjob_action(job_id: str, action: str,
                                      request: Request) -> Response:
     from .workshop3d import (WorkshopRefusedError, cancel_job,
-                             observe_job, prepare_job,
-                             propose_job_print, slice_job, sync_job,
+                             close_print_task, enqueue_print_job,
+                             finalize_print_task, observe_job,
+                             observe_print_job, preflight_print_job,
+                             prepare_job, propose_job_print,
+                             set_job_spool, slice_job, sync_job,
                              verify_job)
     fields = await _form_fields(request)
     try:
@@ -17144,6 +19901,33 @@ async def web_workshop_fabjob_action(job_id: str, action: str,
                                                 "test-slicer"))
         elif action == "propose":
             propose_job_print(job_id, actor="web")
+        elif action == "preflight":
+            preflight_print_job(job_id)
+        elif action == "observe-print":
+            observe_print_job(job_id, actor="web")
+        elif action == "finalize":
+            task_id = fields.get("task_id", "")
+            if not task_id:
+                from .workshop3d import get_fabjob as _get_job
+                job = _get_job(job_id)
+                task_id = (job or {}).get("queue_task_id", 0)
+            finalize_print_task(task_id, actor="web")
+        elif action == "enqueue":
+            from .workshop3d import get_fabjob
+            job = get_fabjob(job_id)
+            if job is not None:
+                proposal_id = str(fields.get("proposal_id", "")
+                                  or "") or str(job.get(
+                                      "proposal_id", "") or "")
+                record = _write_load(proposal_id) \
+                    if proposal_id else None
+                if record is not None and \
+                        str(record.get("status", "")) == "approved":
+                    enqueue_print_job(
+                        job_id, actor="web",
+                        approved_proposal=record)
+        elif action == "spool":
+            set_job_spool(job_id, fields.get("spool_id", ""))
         elif action == "sync":
             sync_job(job_id)
         elif action == "observe":
@@ -18485,7 +21269,25 @@ def play_page() -> str:
         live["tracker"] = []
     live["questlines"] = []
     try:
+        _mission_status_by_id = {
+            str(_m.mission_id): str(_m.status)
+            for _m in _all_missions}
+    except Exception:
+        _mission_status_by_id = {}
+    try:
         for _qd in _questlines[:20]:
+            _linked = []
+            for _step in _qd.get("steps", []) or []:
+                if not isinstance(_step, dict):
+                    continue
+                if str(_step.get("kind", "")) != "mission":
+                    continue
+                _ref = str(_step.get("ref", "") or "")
+                if _ref and _ref not in [m["id"] for m in _linked]:
+                    _linked.append({
+                        "id": _ref[:80],
+                        "status": _mission_status_by_id.get(
+                            _ref, "unknown")})
             live["questlines"].append({
                 "quest_id": _text(_qd.get("quest_id", ""), 80),
                 "title": _text(_qd.get("title", "")),
@@ -18493,7 +21295,8 @@ def play_page() -> str:
                 "progress": _text(_qd.get("progress", ""), 20),
                 "glyph": ("✓" if _qd.get("state") == "COMPLETED"
                           else "!" if _qd.get("state") in
-                          ("FAILED", "BLOCKED") else "○")})
+                          ("FAILED", "BLOCKED") else "○"),
+                "missions": _linked[:5]})
     except Exception:
         live["questlines"] = []
     # -- Discoveries: bestaande evidence-only vondsten --
@@ -18962,7 +21765,7 @@ def play_page() -> str:
     </script>
     <div class="panel"><canvas id="stage" width="960" height="600" style="width:100%;height:auto;background:#0b0f0b;border:1px solid var(--line);border-radius:var(--r)" role="img" aria-label="Speelbare homebase en bosrand. Beweeg met WASD of pijltjes, praat met Luma via E, meldingen via N."></canvas>
     <div id="interact" class="muted" role="status" style="min-height:1.6em"></div></div>
-    <div class="panel"><h2>🍄 Fungi-netwerk <span class="muted">wereldgeheugen (afgeleid, {live_fungi_total} knopen)</span></h2>
+    <div class="panel"><h2>🍄 Fungi-netwerk <span class="muted">wereldgeheugen (afgeleid, <span id="fungi-total">{live_fungi_total}</span> knopen · <span id="fungi-done">0</span> ✓)</span></h2>
     <p class="muted">{live_fungi_honesty}</p>
     <div class="grove">{fungi_html}</div>
     <p><a href="/game">Game-overzicht</a> · <a href="/world">World</a></p></div>
@@ -19031,7 +21834,7 @@ def play_page() -> str:
      }}
     const CHOICES = {{
        luma: [{{v: "files", l: "Bestanden bekijken"}}, {{v: "lumaflow", l: "Analyse starten"}},
-              {{v: "journey", l: "🧭 Reis"}}, {{v: "mission", l: "Missievoorstel"}}, {{v: "later", l: "Sluiten"}}],
+                {{v: "journey", l: "🧭 Reis"}}, {{v: "mission", l: "Missievoorstel"}}, {{v: "oracle", l: "🌱 Ask Oracle"}}, {{v: "research", l: "🔬 Research"}}, {{v: "knowledge", l: "🧠 Knowledge"}}, {{v: "workshop", l: "⚙️ Workshop — workers & taken"}}, {{v: "later", l: "Sluiten"}}],
        forge: [{{v: "panel", l: "Bekijk"}}, {{v: "abilities", l: "Wat kun je?"}},
                {{v: "print", l: "Help mij iets te printen"}}, {{v: "quest", l: "Missie-evidence"}}, {{v: "later", l: "Later"}}]
     }};
@@ -19080,6 +21883,35 @@ def play_page() -> str:
     function luma() {{
       return ((window.PLAYDATA && PLAYDATA.luma) || {{}});
     }}
+    // BIG48 player session: server-side position, hervatbaar na
+    // refresh. LocalStorage bewaart alleen de session_id; de
+    // waarheid staat server-side. Save-throttle staat server-side.
+    let playSession = null;
+    async function playSessionOpen() {{
+      try {{
+        const stored = (window.localStorage)
+          ? window.localStorage.getItem("mycelium_play_session") : "";
+        const opened = await postJSON("/api/v1/play/session",
+          stored ? {{session_id: stored}} : {{}});
+        playSession = opened;
+        if (opened && typeof opened.x === "number") player.x = opened.x;
+        if (opened && typeof opened.y === "number") player.y = opened.y;
+        if (window.localStorage && opened && opened.session_id)
+          window.localStorage.setItem("mycelium_play_session",
+            opened.session_id);
+      }} catch (e) {{}}
+    }}
+    async function playSessionSave() {{
+      if (!playSession || !playSession.session_id) return;
+      try {{
+        await postJSON("/api/v1/play/position",
+          {{session_id: playSession.session_id,
+            x: Math.round(player.x), y: Math.round(player.y),
+            zone: zoneAt()}});
+      }} catch (e) {{}}
+    }}
+    playSessionOpen();
+    setInterval(playSessionSave, 2500);
     function circleHitsRect(cx, cy, r, rc) {{
       const nx = Math.max(rc.x, Math.min(cx, rc.x + rc.w));
       const ny = Math.max(rc.y, Math.min(cy, rc.y + rc.h));
@@ -19325,13 +22157,235 @@ def play_page() -> str:
        const m = {{draft: "beschikbaar — aannemen via Missies", pending_approval: "wacht op exacte YES", approved: "kan tikken — drijft tot gate", running: "kan tikken — drijft tot gate", paused: "hervatten via Missies-pagina", completed: "afgerond", failed: "aandacht nodig — zie Missies", cancelled: "geannuleerd", blocked: "aandacht nodig — zie Missies"}};
        return m[status] || status;
      }}
-     function renderJourney() {{
-       let h = "<h3>🧭 Reis — echte voortgang, geen XP</h3>";
-       const qs = journeyData();
-       h += "<h3>Quests (" + qs.length + ")</h3>";
-       h += qs.length ? "<ul>" + qs.map((q) =>
-         '<li>' + escHtml(q.glyph || "○") + ' <b>' + escHtml(q.title) + '</b> <span class="muted">[' + escHtml(q.state || "?") + " " + escHtml(q.progress || "") + "]</span></li>").join("") + "</ul>"
-         : '<p class="muted">Nog geen quests — leg ze aan via <a href="/quests">Quests</a>.</p>';
+      let oracleLast = null;
+      function oracleSourceLink(id) {{
+        const s = String(id || "");
+        if (/^(obj_|proj_|idea_|loc_|hw_|file_)/.test(s))
+          return '<a href="/world?entity_id=' + encodeURIComponent(s) + '">' + escHtml(s.slice(0, 40)) + "</a>";
+        if (s.startsWith("mem_")) return '<a href="/memory"><code>' + escHtml(s.slice(0, 40)) + "</code></a>";
+        if (s.startsWith("mission_")) return '<a href="/missions/' + encodeURIComponent(s) + '">' + escHtml(s.slice(0, 40)) + "</a>";
+        return "<code>" + escHtml(s.slice(0, 40)) + "</code>";
+      }}
+      function renderOracle() {{
+        let h = "<h3>🌱 Ask Oracle — advies uit je wereld</h3>"
+          + '<p class="muted">Leest INVENTory (alleen lokaal), vraagt het lokale model, bewaart niets. Onbereikbaar model = eerlijk UNAVAILABLE, nooit verzonnen.</p>'
+          + '<p><input type="text" id="oracle-q" placeholder="Wat kan ik maken met mijn onderdelen?" style="width:70%" aria-label="Vraag"> '
+          + '<button data-act="oracleask">Vragen</button></p>'
+          + '<div id="oracle-result" role="status">';
+        if (oracleLast) h += oracleLast;
+        else h += '<p class="muted">Nog geen vraag gesteld.</p>';
+        h += '</div><p><button data-act="journey">Bekijk Reis</button></p>'
+          + '<div id="flow-result" class="muted" role="status"></div>';
+        return h;
+      }}
+      let resRuns = [];
+      let resDetail = "";
+      function renderResearch() {{
+        let h = "<h3>🔬 Research — vragen worden dossiers worden missies</h3>"
+          + '<p class="muted">Queue is open POST; uitvoeren draait bestaande providers; plannen maakt een inert pending-approval missie — nooit auto-YES, nooit auto-dispatch.</p>'
+          + '<p><input type="text" id="res-q" placeholder="Welke vraag moet Mycelium uitzoeken?" style="width:60%" aria-label="Onderzoeksvraag"> '
+          + '<button data-act="resqueue">In queue zetten</button> '
+          + '<button data-act="resrun">Queue 1× uitvoeren</button> '
+          + '<button data-act="resrefresh">Verversen</button></p>'
+          + '<div id="res-detail" role="status">';
+        h += resDetail || '<p class="muted">Nog geen dossier geopend.</p>';
+        h += '</div><h3>Wachtrij & runs</h3>';
+        h += resRuns.length ? "<ul>" + resRuns.slice(0, 10).map((r) =>
+          "<li><b>" + escHtml(String(r.question || "").slice(0, 90)) + "</b> [" + escHtml(r.status || "?") + "]"
+          + ' <span class="muted">' + escHtml(r.run_id || "") + (r.dossier_id ? " · dossier ✓" : "") + "</span><br>"
+          + (r.dossier_id ? '<button data-act="resdossier" data-id="' + escHtml(r.dossier_id) + '">Dossier</button> ' : "")
+          + '<button data-act="resplan" data-id="' + escHtml(r.dossier_id || r.run_id || "") + '">🧭 Plan → missie</button></li>').join("") + "</ul>"
+          : '<p class="muted">Queue leeg — stel hierboven een vraag.</p>';
+        h += '<p><button data-act="journey">Bekijk Reis</button> <a href="/research">Volledig Research →</a></p>'
+          + '<div id="flow-result" class="muted" role="status"></div>';
+        return h;
+      }}
+      async function resRefreshRuns() {{
+        const list = await postJSON("/api/v1/research/runs?limit=20", null, "GET");
+        resRuns = Array.isArray(list) ? list : [];
+      }}
+      let knowList = [];
+      let knowDetail = "";
+      function renderKnowledge() {{
+        let h = "<h3>🧠 Knowledge — van waarneming naar feit</h3>"
+          + '<p class="muted">OBSERVATION → CANDIDATE → SUPPORTED → PROMOTED. Support telt (2 nodig), Reject legt vast, Promote maakt memory — fact-tier eist een verified_by naam. Niets wordt stilzwijgend feit.</p>'
+          + '<p><button data-act="knowrefresh">Verversen</button> <a href="/knowledge">Volledig Knowledge →</a></p>'
+          + '<div id="know-detail" role="status">';
+        h += knowDetail || '<p class="muted">Nog geen kandidaat geopend.</p>';
+        h += '</div><h3>Open kandidaten</h3>';
+        h += knowList.length ? "<ul>" + knowList.slice(0, 12).map((c) =>
+          "<li><b>" + escHtml(String(c.title || "").slice(0, 90)) + "</b> [" + escHtml(c.state || "?") + "]"
+          + ' <span class="muted">' + escHtml(c.candidate_type || "") + " · ♥ " + escHtml(String(c.supporters ?? "?")) + "</span><br>"
+          + '<button data-act="knowdetail" data-id="' + escHtml(c.candidate_id || "") + '">Openen</button></li>').join("") + "</ul>"
+          : '<p class="muted">Geen open kandidaten — observaties en research vullen dit vanzelf.</p>';
+        h += '<p><button data-act="journey">Bekijk Reis</button></p>'
+          + '<div id="flow-result" class="muted" role="status"></div>';
+        return h;
+      }}
+      async function knowRefreshList() {{
+        const res = await postJSON("/api/v1/candidates?limit=30", null, "GET");
+        const all = (res && res.candidates) || [];
+        knowList = all.filter((c) => ["observation", "candidate", "supported"].includes(String(c.state || "")));
+      }}
+      async function knowOpenDetail(cid) {{
+        const c = await postJSON("/api/v1/candidates/" + encodeURIComponent(cid), null, "GET");
+        const ev = (c.evidence || []).slice(0, 4).map((e) =>
+          "<li><small>" + escHtml(String((e && e.text) || e || "").slice(0, 160)) + "</small></li>").join("");
+        const active = ["observation", "candidate", "supported"].includes(String(c.state || ""));
+        knowDetail = "<h3>🔎 " + escHtml(String(c.title || "").slice(0, 140)) + "</h3>"
+          + "<p>" + escHtml(String(c.summary || "").slice(0, 400)) + "</p>"
+          + '<p class="muted">[' + escHtml(c.state || "?") + "] · " + escHtml(c.candidate_type || "")
+          + " · ♥ " + escHtml(String(c.supporters ?? "?"))
+          + (c.promoted_to ? " → memory <a href='/memory'>" + escHtml(String(c.promoted_to).slice(0, 40)) + "</a>" : "") + "</p>"
+          + (ev ? "<ul>" + ev + "</ul>" : "")
+          + (active ? '<p><button data-act="knowsupport" data-id="' + escHtml(c.candidate_id || "") + '">Support</button> '
+            + '<button data-act="knowreject" data-id="' + escHtml(c.candidate_id || "") + '">Reject</button></p>'
+            + '<p><input type="text" id="know-truth" placeholder="truth (leeg = auto)" style="width:9rem" aria-label="Truth"> '
+            + '<input type="text" id="know-vby" placeholder="verified_by (fact-tier)" style="width:10rem" aria-label="Verified by"> '
+            + '<button data-act="knowpromote" data-id="' + escHtml(c.candidate_id || "") + '">Promote</button></p>'
+            + '<p class="muted">Promote zonder verified_by werkt alleen voor AI-tiers; fact-tier weigert eerlijk.</p>'
+            : '<p class="muted">Afgesloten — geen acties meer; audit trail blijft.</p>');
+      }}
+      // BIG47 shared lifecycle helper: maps ONLY real backend states
+      // onto the workshop chain. No invented states — unknown values
+      // render verbatim so the game can never claim more than the
+      // backend proves.
+      function lifecycleLegend() {{
+        return '<span class="muted">INTENT → AI RESPONSE → PROPOSED ACTION → GATE → TASK → WORKER → RESULT → EVENT</span>';
+      }}
+      function stageChip(stage) {{
+        return ' <span class="muted">[' + escHtml(stage || "?") + "]</span>";
+      }}
+      let wsCache = null;
+      function renderWorkshop() {{
+        let h = "<h3>⚙️ Workshop — levende werkplaats</h3>"
+          + '<p class="muted">Echte queue, echte workers, echte automation. Niets start zichzelf: taken wachten op een worker, automation wacht op Drive, fysiek werk wacht op exacte YES.</p>'
+          + "<p><b>Lifecycle:</b> " + lifecycleLegend() + "</p>"
+          + '<p><button data-act="wsrefresh">Verversen</button> <a href="/tasks">Volledige Tasks →</a> <a href="/nodes">Nodes →</a> <a href="/automation">Automation →</a></p>'
+          + '<div id="ws-detail" role="status">';
+        h += wsCache ? wsHtml(wsCache) : '<p class="muted">Nog niet geladen — druk op Verversen.</p>';
+        h += '</div><h3>Nieuw bounded code-werk</h3>'
+          + '<p><input type="text" id="ws-goal" placeholder="Bijv. review de quest-missie koppeling" style="width:60%" aria-label="Taakdoel"> '
+          + '<select id="ws-kind" aria-label="Taaksoort"><option>code.review</option><option>code.patch</option><option>code.test</option></select> '
+          + '<button data-act="wsqueue">In queue zetten</button></p>'
+          + '<p class="muted">Alleen code.review / code.patch / code.test — de worker blijft bounded, geen printer/desktop/money-authority.</p>'
+          + '<div id="flow-result" class="muted" role="status"></div>';
+        return h;
+      }}
+      function wsHtml(s) {{
+        const t = (s && s.tasks) || {{counts: {{}}, open: []}};
+        const n = (s && s.nodes) || {{nodes: [], code_capable: 0}};
+        const a = (s && s.automation) || {{open: []}};
+        const m = (s && s.missions) || {{items: []}};
+        const ev = (s && s.events) || [];
+        const live = (s && s.liveness) || {{}};
+        const fab = (s && s.fabrication) || [];
+        const c = t.counts || {{}};
+        let h = "<h3>Taken (" + (c.queued || 0) + " open / " + (c.assigned || 0) + " bezig / " + (c.completed || 0) + " klaar)</h3>";
+        h += (t.open || []).length ? "<ul>" + t.open.map((x) =>
+          "<li><b>" + escHtml(x.kind || "?") + "</b> #" + escHtml(String(x.id ?? "?")) + stageChip(x.stage)
+          + ' <span class="muted">' + (x.node ? "→ " + escHtml(x.node) : "wacht op worker") + "</span>"
+          + ' <a href="/tasks/' + escHtml(String(x.id ?? "")) + '">Taak</a></li>').join("") + "</ul>"
+          : '<p class="muted">Geen taken — zet hierboven bounded werk in de queue.</p>';
+        h += "<h3>Workers (" + (n.code_capable || 0) + " code-capabel online)</h3>";
+        h += (n.nodes || []).length ? "<ul>" + n.nodes.slice(0, 8).map((w) =>
+          "<li><b>" + escHtml(w.node_id || "?") + "</b> [" + escHtml(w.state || "?") + "]"
+          + (w.busy ? " · werkt" : "") + (w.code_capable ? " · code" : " · geen code-cap")
+          + ' <span class="muted">gezien ' + escHtml(w.seen || "?") + "</span></li>").join("") + "</ul>"
+          : '<p class="muted">UNAVAILABLE — geen worker geregistreerd. Start bijv. <code>python -m code_worker.main --coordinator http://127.0.0.1:8000 --node-id seed-01 --capability code.review</code>.</p>';
+        h += "<h3>Automation (Drive = bestaande runs, geen scheduler)</h3>";
+        h += (a.open || []).length ? "<ul>" + a.open.slice(0, 6).map((r) =>
+          "<li><b>" + escHtml(String(r.goal || "").slice(0, 90)) + "</b> [" + escHtml(r.state || "?") + " " + escHtml(String(r.done ?? "?")) + "/" + escHtml(String(r.total ?? "?")) + "]" + stageChip(r.stage)
+          + (r.state === "running" ? ' <button data-act="wsdrive" data-id="' + escHtml(r.run_id || "") + '">Drive 10 stappen</button>' : "")
+          + ' <a href="/automation/' + escHtml(r.run_id || "") + '">Run</a></li>').join("") + "</ul>"
+          : '<p class="muted">Geen automation-runs — start er een via <a href="/automation">Automation</a>.</p>';
+        h += "<h3>Missies (" + (m.items || []).length + " open)</h3>";
+        h += (m.items || []).length ? "<ul>" + m.items.slice(0, 6).map((x) =>
+          '<li><a href="/missions/' + escHtml(x.id || "") + '">' + escHtml(String(x.goal || "").slice(0, 90)) + "</a> [" + escHtml(x.status || "?") + "]" + stageChip(x.stage)
+          + ((x.status === "approved" || x.status === "running") ? ' <button data-act="mtick" data-id="' + escHtml(x.id || "") + '">Tik</button>' : "")
+          + (x.status === "pending_approval" ? ' <button data-act="myes" data-id="' + escHtml(x.id || "") + '">YES — starten</button>' : "") + "</li>").join("") + "</ul>"
+          : '<p class="muted">Geen open missies.</p>';
+        const ol = live.ollama || {{}};
+        const iv = live.inventory || {{}};
+        h += "<h3>Levendigheid</h3><ul>"
+          + "<li>Ollama: <b>" + escHtml(ol.state || "?") + "</b> <span class='muted'>" + escHtml(ol.model || ol.detail || "") + "</span></li>"
+          + "<li>INVENTory: <b>" + escHtml(iv.state || "?") + "</b></li>"
+          + "</ul>";
+        h += "<h3>Fabricageketen (per transitie)</h3>";
+        h += fab.length ? "<ul>" + fab.map((f) =>
+          "<li>" + escHtml(f.step || "?") + ": <b>" + escHtml(f.state || "?") + "</b> <span class='muted'>— " + escHtml(f.via || "") + (f.detail ? " (" + escHtml(f.detail) + ")" : "") + "</span></li>").join("") + "</ul>"
+          : '<p class="muted">Keten onbekend.</p>';
+        h += "<h3>Events</h3>";
+        h += ev.length ? "<ul>" + ev.map((e) =>
+          "<li><b>" + escHtml(e.type || "") + "</b> " + escHtml(e.summary || "") + ' <span class="muted">' + escHtml(e.created || "") + "</span></li>").join("") + "</ul>"
+          : '<p class="muted">Nog geen events.</p>';
+        return h;
+      }}
+      async function wsRefresh() {{
+        wsCache = await postJSON("/api/v1/play/status", null, "GET");
+      }}
+      // BIG48: journey-data verversen zonder page reload. Hergebruikt
+      // door jrefresh én door refreshAfterAction na elke game-actie.
+      async function refreshJourneyData() {{
+        const ml = await postJSON("/api/v1/missions", null, "GET");
+        const list = Array.isArray(ml) ? ml : [];
+        const tracks = [];
+        for (const m of list) {{
+          const st = String((m && m.status) || "");
+          if (st === "cancelled") continue;
+          const mid = String((m && (m.mission_id || m.id)) || "");
+          tracks.push({{id: mid, goal: String((m && m.goal) || ""), status: st, glyph: trackGlyph(st), needs: trackNeeds(st), href: "/missions/" + mid}});
+          if (tracks.length >= 12) break;
+        }}
+        tracks.sort((a, b) => (a.id < b.id ? -1 : 1));
+        if (window.PLAYDATA) PLAYDATA.tracker = tracks;
+        const ql = await postJSON("/api/v1/quests?limit=20", null, "GET");
+        const qs = ((ql && ql.quests) || []);
+        const stById = {{}};
+        for (const t of tracks) stById[t.id] = t.status;
+        if (window.PLAYDATA) PLAYDATA.questlines = qs.slice(0, 20).map((q) => {{
+          const linked = [];
+          for (const s of ((q && q.steps) || [])) {{
+            if (s && s.kind === "mission" && s.ref && !linked.some((m) => m.id === s.ref))
+              linked.push({{id: String(s.ref).slice(0, 80), status: stById[String(s.ref)] || "unknown"}});
+          }}
+          return {{quest_id: q.quest_id || "", title: q.title || "", state: q.state || "", progress: q.progress || "", glyph: q.state === "COMPLETED" ? "✓" : (q.state === "FAILED" || q.state === "BLOCKED") ? "!" : "○", missions: linked.slice(0, 5)}};
+        }});
+      }}
+      // BIG48: na queue/tick/drive/YES/mission: workshop + journey +
+      // wereldtellingen bijwerken in dezelfde sessie. Geen polling,
+      // geen reload — alleen verse reads na een echte actie.
+      async function refreshAfterAction() {{
+        try {{ await wsRefresh(); }} catch (e) {{}}
+        try {{ await refreshJourneyData(); }} catch (e) {{}}
+        try {{
+          const s = wsCache || await postJSON("/api/v1/play/status", null, "GET");
+          const w = (s && s.world) || {{}};
+          const el = document.getElementById("fungi-total");
+          if (el) el.textContent = String(w.fungi_total ?? "?");
+          const ec = document.getElementById("fungi-done");
+          if (ec) ec.textContent = String(w.fungi_completed ?? 0);
+          const ls = document.getElementById("live-strip");
+          if (ls && s.tasks) {{
+            const c = s.tasks.counts || {{}};
+            ls.innerHTML = "taken: <b>" + (c.queued || 0) + " open / " + (c.assigned || 0) + " bezig / " + (c.completed || 0) + " klaar</b>"
+              + " · wereld: <b>" + String(w.fungi_total ?? "?") + " knopen / " + String(w.fungi_completed ?? 0) + " ✓</b>";
+          }}
+        }} catch (e) {{}}
+      }}
+      function renderJourney() {{
+        let h = "<h3>🧭 Reis — echte voortgang, geen XP</h3>";
+        h += "<p><b>Lifecycle:</b> " + lifecycleLegend() + "</p>";
+        const qs = journeyData();
+        h += "<h3>Quests (" + qs.length + ")</h3>";
+        h += qs.length ? "<ul>" + qs.map((q) => {{
+          const linked = (q.missions || []).filter((m) => m && m.id);
+          const links = linked.length ? "<br>→ missie: " + linked.map((m) =>
+            '<a href="/missions/' + escHtml(m.id) + '">' + escHtml(m.id.slice(0, 24)) + '</a> [' + escHtml(m.status || "?") + "]").join(" · ")
+            : '<br><span class="muted">nog geen missie — </span><button data-act="playmission" data-goal="' + escHtml(q.title || "") + '">🎮 Start quest + missie</button>';
+          return '<li>' + escHtml(q.glyph || "○") + ' <b>' + escHtml(q.title) + '</b> <span class="muted">[' + escHtml(q.state || "?") + " " + escHtml(q.progress || "") + "]</span>" + links + "</li>";
+        }}).join("") + "</ul>"
+          : '<p class="muted">Nog geen quests — leg ze aan via <a href="/quests">Quests</a>.</p>';
        const ms = trackerData();
        h += "<h3>Missies (" + ms.length + ")</h3>";
        h += ms.length ? "<ul>" + ms.map((m) =>
@@ -19633,6 +22687,61 @@ def play_page() -> str:
       const el = document.getElementById("flow-result");
       if (el) el.textContent = msg;
     }}
+    function flowResultHtml(html) {{
+      const el = document.getElementById("flow-result");
+      if (el) el.innerHTML = html;
+    }}
+    function missionNextHint(status) {{
+      const m = {{pending_approval: "wacht op exacte YES — geen tik vooraf",
+        approved: "tik om te drijven tot de eerstvolgende gate",
+        running: "tik om te drijven tot de eerstvolgende gate",
+        paused: "hervat via de Missies-pagina",
+        completed: "afgerond — resultaat hieronder",
+        failed: "aandacht nodig — open de missie",
+        blocked: "aandacht nodig — open de missie"}};
+      return m[status] || "open de missie voor details";
+    }}
+    async function renderMissionResult(mid) {{
+      const det = await postJSON("/api/v1/missions/" + encodeURIComponent(mid), null, "GET");
+      const steps = await postJSON("/api/v1/missions/" + encodeURIComponent(mid) + "/steps", null, "GET");
+      const evts = await postJSON("/api/v1/missions/" + encodeURIComponent(mid) + "/events", null, "GET");
+      const tasks = await postJSON("/api/v1/tasks", null, "GET");
+      const nodes = await postJSON("/api/v1/nodes", null, "GET");
+      const mine = (Array.isArray(tasks) ? tasks : []).filter((t) => String((t && t.mission_id) || "") === String(mid));
+      const nodeById = {{}};
+      for (const n of (Array.isArray(nodes) ? nodes : [])) nodeById[n.node_id || n.id] = n;
+      const stepList = (Array.isArray(steps) ? steps : []).map((s) =>
+        "<li>" + escHtml(s.kind || "?") + " — " + escHtml(s.status || "?") + "</li>").join("");
+      const taskList = mine.length ? "<ul>" + mine.map((t) => {{
+        const nid = String(t.assigned_node_id || "");
+        const node = nodeById[nid];
+        let nstate = "niet geclaimd";
+        if (node) {{
+          nstate = String(node.derived_status || node.status || "?");
+          const seen = String(node.last_seen || "").slice(0, 16);
+          if (seen) nstate += " · gezien " + seen;
+          const cur = node.current_task || {{}};
+          if (cur.task_id !== undefined && cur.task_id !== null
+              && String(cur.task_id) === String(t.id || ""))
+            nstate += " · werkt hieraan";
+        }} else if (nid) {{
+          nstate = "? (node onbekend)";
+        }}
+        return "<li><b>" + escHtml(t.kind || "?") + "</b> [" + escHtml(t.status || "?") + "]"
+          + " · node: " + escHtml(nid ? nid + " (" + nstate + ")" : "— (wacht op worker)")
+          + ' · <a href="/tasks/' + escHtml(String(t.id || "")) + '">Taak</a></li>';
+      }}).join("") + "</ul>" : '<p class="muted">Nog geen taken uit deze missie — queue via de Missies-pagina.</p>';
+      const evtList = (Array.isArray(evts) ? evts : []).slice(-3).map((e) =>
+        "<li><small>" + escHtml(String(e.created_at || "").slice(0, 16)) + "</small> <b>" + escHtml(e.event_type || "") + "</b> " + escHtml(String(e.message || "").slice(0, 160)) + "</li>").join("");
+      const st = String((det && det.status) || "?");
+      flowResultHtml("<p><b>Missie " + escHtml(st) + "</b> · stap " + escHtml(String((det && det.current_step) ?? "?")) + "/" + escHtml(String((det && (det.steps || []).length) ?? "?"))
+        + ' · <a href="/missions/' + escHtml(mid) + '">Open missie →</a></p>'
+        + "<ul>" + stepList + "</ul>" + taskList
+        + (evtList ? "<ul>" + evtList + "</ul>" : "")
+        + '<p><button data-act="mrefresh" data-id="' + escHtml(mid) + '">🔄 Taken verversen</button>'
+        + ' <span class="muted">ook 1× automatisch na tik — geen polling</span></p>'
+        + '<p class="muted">Volgende: ' + escHtml(missionNextHint(st)) + "</p>");
+    }}
     function openDialog(npc, view) {{
       dialogOpen = true;
       dialogNpc = npc;
@@ -19657,6 +22766,10 @@ def play_page() -> str:
       else if (dialogView === "mission") dialogBody.innerHTML = renderMission(npc);
        else if (dialogView === "files") dialogBody.innerHTML = renderFiles();
        else if (dialogView === "journey") dialogBody.innerHTML = renderJourney();
+       else if (dialogView === "oracle") dialogBody.innerHTML = renderOracle();
+       else if (dialogView === "knowledge") dialogBody.innerHTML = renderKnowledge();
+       else if (dialogView === "research") dialogBody.innerHTML = renderResearch();
+       else if (dialogView === "workshop") dialogBody.innerHTML = renderWorkshop();
        else if (dialogView === "discovery") dialogBody.innerHTML = renderDiscovery();
       else if (dialogView === "lumaflow") dialogBody.innerHTML = renderLumaFlow();
       else if (dialogView === "candidates") dialogBody.innerHTML = renderCandidates();
@@ -19812,48 +22925,230 @@ def play_page() -> str:
          }} else if (act === "pickmodel") {{
            printModel = parseInt(btn.getAttribute("data-i") || "0", 10) || 0;
            dialogBody.innerHTML = renderPrintDetail();
-         }} else if (act === "journey") {{
-           dialogBody.innerHTML = renderJourney();
-         }} else if (act === "jrefresh") {{
-           flowResult("Voortgang verversen (read-only)…");
-           try {{
-             const ml = await postJSON("/api/v1/missions", null, "GET");
-             const list = Array.isArray(ml) ? ml : [];
-             const tracks = [];
-             for (const m of list) {{
-               const st = String((m && m.status) || "");
-               if (st === "cancelled") continue;
-               const mid = String((m && (m.mission_id || m.id)) || "");
-               tracks.push({{id: mid, goal: String((m && m.goal) || ""), status: st, glyph: trackGlyph(st), needs: trackNeeds(st), href: "/missions/" + mid}});
-               if (tracks.length >= 12) break;
-             }}
-             tracks.sort((a, b) => (a.id < b.id ? -1 : 1));
-             if (window.PLAYDATA) PLAYDATA.tracker = tracks;
-             const ql = await postJSON("/api/v1/quests?limit=20", null, "GET");
-             const qs = ((ql && ql.quests) || []);
-             if (window.PLAYDATA) PLAYDATA.questlines = qs.slice(0, 20).map((q) => ({{quest_id: q.quest_id || "", title: q.title || "", state: q.state || "", progress: q.progress || "", glyph: q.state === "COMPLETED" ? "✓" : (q.state === "FAILED" || q.state === "BLOCKED") ? "!" : "○"}}));
-           }} catch (eJ) {{
-             flowResult("Verversen geweigerd: " + ((eJ && eJ.message) || ""));
-             return;
-           }}
-           dialogBody.innerHTML = renderJourney();
-           flowResult("Voortgang bijgewerkt uit bestaande records.");
-         }} else if (act === "mtick") {{
-           const mid = btn.getAttribute("data-id") || "";
-           if (!mid) throw new Error("missie onbekend");
-           flowResult("Tik loopt — drijft tot de eerstvolgende gate…");
-           const res = await postJSON("/api/v1/missions/" + encodeURIComponent(mid) + "/tick", {{}});
-           const st = String((res && (res.status || (res.mission && res.mission.status))) || "?");
-           flowResult("Tik klaar: missie-status " + st + ". Ververs de Reis voor het volledige beeld.");
-         }} else if (act === "myes") {{
+          }} else if (act === "journey") {{
+            dialogBody.innerHTML = renderJourney();
+          }} else if (act === "oracleask") {{
+            const input = document.getElementById("oracle-q");
+            const question = (input && input.value || "").trim();
+            if (!question) throw new Error("stel eerst een vraag");
+            flowResult("Oracle leest je wereld (read-only)…");
+            try {{
+              const ans = await postJSON("/api/v1/advise", {{q: question.slice(0, 200), question: question.slice(0, 500)}});
+              const srcs = (ans && ans.sources) || [];
+              const items = srcs.slice(0, 8).map((s) =>
+                "<li>" + oracleSourceLink(s.entity_id) + ' <span class="muted">' + escHtml(s.source_type || "?")
+                + " · " + (s.human_verified ? "verified" : "unverified") + "</span></li>").join("");
+              const goal = question.slice(0, 200);
+              oracleLast = "<p><b>Vraag:</b> " + escHtml(question.slice(0, 500)) + "</p>"
+                + "<p>" + escHtml(String((ans && ans.advice) || "").slice(0, 2000)) + "</p>"
+                + '<p class="muted">model ' + escHtml(String((ans && ans.model) || "?")) + " · "
+                + escHtml(String((ans && ans.records_used) ?? "?")) + " records · "
+                + escHtml(String((ans && ans.retrieval_mode) || "?")) + "</p>"
+                + "<ul>" + (items || "<li>Geen bronnen.</li>") + "</ul>"
+                + '<p><a href="/missions?goal=' + encodeURIComponent(goal) + '">🚀 Start mission from this advice →</a></p>'
+                + '<p><button data-act="playmission" data-goal="' + escHtml(goal) + '">🎮 Quest + missie starten (game)</button> '
+                + '<span class="muted">maakt quest + pending_approval missie met review-step — YES blijft vereist</span></p>'
+                + '<p><input type="text" id="oracle-task" value="' + escHtml(goal.slice(0, 200)) + '" style="width:60%" aria-label="Taakdoel"> '
+                + '<select id="oracle-kind" aria-label="Taaksoort"><option>code.review</option><option>code.patch</option><option>code.test</option></select> '
+                + '<button data-act="oraclequeue">⚙️ Queue code-task</button></p>'
+                + '<p class="muted">INTENT → AI RESPONSE → PROPOSED ACTION: advies wordt een bounded taak; de worker claimt via de bestaande queue.</p>';
+            }} catch (eO) {{
+              const msg = String((eO && eO.message) || "");
+              const unavailable = msg.indexOf("502") !== -1;
+              oracleLast = "<p><b>Vraag:</b> " + escHtml(question.slice(0, 500)) + "</p>"
+                + "<p>" + (unavailable ? "🔌 <b>UNAVAILABLE</b> — model of wereld onbereikbaar. Niets verzonnen; probeer later opnieuw."
+                  : "⛔ <b>BLOCKED</b> — " + escHtml(msg.slice(0, 200))) + "</p>";
+            }}
+            dialogBody.innerHTML = renderOracle();
+          }} else if (act === "oraclequeue") {{
+            const goalInput = document.getElementById("oracle-task");
+            const kindSel = document.getElementById("oracle-kind");
+            const tGoal = (goalInput && goalInput.value || "").trim().slice(0, 500);
+            if (!tGoal) throw new Error("geen taakdoel — stel eerst een vraag");
+            const tKind = (kindSel && kindSel.value || "code.review").trim();
+            flowResult("Bounded taak in queue zetten (geen executie hier)…");
+            const created = await postJSON("/api/v1/play/code-task", {{goal: tGoal, kind: tKind}});
+            await refreshAfterAction();
+            flowResult("✅ Taak #" + String(created.id) + " (" + String(created.kind) + ") queued — een worker met code-cap claimt via de bestaande queue. Volg in ⚙️ Workshop.");
+          }} else if (act === "playmission") {{
+            const pGoal = (btn.getAttribute("data-goal") || "").trim().slice(0, 500);
+            if (!pGoal) throw new Error("geen doel voor missie");
+            flowResult("Quest + missie aanmaken via bestaande gates (niets approved)…");
+            const made = await postJSON("/api/v1/play/mission", {{goal: pGoal, context: pGoal}});
+            flow = flow || {{steps: {{}}}};
+            flow.lastMission = {{mid: made.mission_id, step: made.step_id, goal: pGoal, quest: made.quest_id}};
+            await refreshAfterAction();
+            dialogBody.innerHTML = renderJourney();
+            flowResultHtml("<p>🎮 Quest + missie <b>" + escHtml(made.status) + "</b> — exacte YES blijft vereist.</p>"
+              + '<p><a href="/missions/' + escHtml(made.mission_id || "") + '">Open missie →</a> '
+              + '<button data-act="myes" data-id="' + escHtml(made.mission_id || "") + '">YES — starten</button> '
+              + '<button data-act="stepqueue">⚙️ Queue review-taak voor deze step</button></p>'
+              + '<p class="muted">Na YES: queue de taak, de worker claimt, de step sluit automatisch.</p>');
+          }} else if (act === "stepqueue") {{
+            const lm = flow && flow.lastMission;
+            if (!lm || !lm.mid || !lm.step) throw new Error("geen missie-step — start eerst een quest + missie");
+            flowResult("Bounded review-taak met step-binding in queue zetten…");
+            const sq = await postJSON("/api/v1/play/code-task", {{goal: String(lm.goal || "review").slice(0, 500), kind: "code.review", mission_id: lm.mid, step_id: lm.step}});
+            await refreshAfterAction();
+            dialogBody.innerHTML = renderJourney();
+            flowResult("✅ Taak #" + String(sq.id) + " queued met step-binding — worker claimt via bestaande queue; daarna sluit de step automatisch. Ververs voortgang om het te zien.");
+          }} else if (act === "wsrefresh") {{
+            flowResult("Workshop-snapshot laden (read-only)…");
+            await wsRefresh();
+            dialogBody.innerHTML = renderWorkshop();
+          }} else if (act === "wsqueue") {{
+            const goalInput = document.getElementById("ws-goal");
+            const kindSel = document.getElementById("ws-kind");
+            const wGoal = (goalInput && goalInput.value || "").trim().slice(0, 500);
+            if (!wGoal) throw new Error("geef eerst een taakdoel");
+            const wKind = (kindSel && kindSel.value || "code.review").trim();
+            flowResult("Bounded taak in queue zetten (geen executie hier)…");
+            const created = await postJSON("/api/v1/play/code-task", {{goal: wGoal, kind: wKind}});
+            await refreshAfterAction();
+            dialogBody.innerHTML = renderWorkshop();
+            flowResult("✅ Taak #" + String(created.id) + " (" + String(created.kind) + ") queued — wacht op een code-capabele worker.");
+          }} else if (act === "wsdrive") {{
+            const rid = btn.getAttribute("data-id") || "";
+            if (!rid) throw new Error("run onbekend");
+            flowResult("Drive 10 stappen via bestaande automation-engine…");
+            await postJSON("/api/v1/automation/runs/" + encodeURIComponent(rid) + "/drive", {{budget_steps: 10}});
+            await refreshAfterAction();
+            dialogBody.innerHTML = renderWorkshop();
+            flowResult("Drive klaar — run-record hierboven, gates blijven staan.");
+          }} else if (act === "resrefresh") {{
+            flowResult("Runs verversen (read-only)…");
+            await resRefreshRuns();
+            dialogBody.innerHTML = renderResearch();
+          }} else if (act === "resqueue") {{
+            const input = document.getElementById("res-q");
+            const question = (input && input.value || "").trim();
+            if (!question) throw new Error("stel eerst een onderzoeksvraag");
+            flowResult("Vraag in queue zetten…");
+            const created = await postJSON("/api/v1/research/queue", {{question: question.slice(0, 500)}});
+            await resRefreshRuns();
+            resDetail = "<p>✅ Queued: <b>" + escHtml(question.slice(0, 160)) + "</b>"
+              + ' <span class="muted">' + escHtml(String((created && created.run_id) || "")) + " ["
+              + escHtml(String((created && created.status) || "?")) + "]</span></p>";
+            dialogBody.innerHTML = renderResearch();
+          }} else if (act === "resrun") {{
+            flowResult("Queue 1× uitvoeren (bestaande provider)…");
+            try {{
+              const done = await postJSON("/api/v1/research/queue/run-once", {{}});
+              await resRefreshRuns();
+              if (done && done.ran)
+                resDetail = "<p>✅ Run uitgevoerd: <b>" + escHtml(String(done.run_id || "")) + "</b>"
+                  + ' <span class="muted">dossier volgt bij runs met resultaat</span></p>';
+              else
+                resDetail = "<p>⏸️ Niet uitgevoerd: " + escHtml(String((done && done.reason) || "queue leeg")) + "</p>";
+            }} catch (eR) {{
+              resDetail = "<p>⛔ <b>BLOCKED</b> — " + escHtml(String((eR && eR.message) || "").slice(0, 200)) + "</p>";
+            }}
+            dialogBody.innerHTML = renderResearch();
+          }} else if (act === "resdossier") {{
+            const did = btn.getAttribute("data-id") || "";
+            if (!did) throw new Error("dossier onbekend");
+            flowResult("Dossier ophalen (read-only)…");
+            const d = await postJSON("/api/v1/research/dossiers/" + encodeURIComponent(did), null, "GET");
+            const findings = (d.key_findings || []).slice(0, 6).map((f) =>
+              "<li>" + escHtml(String((f && f.text) || f || "").slice(0, 200)) + "</li>").join("");
+            const sources = (d.sources || []).slice(0, 6).map((s) =>
+              "<li>" + escHtml(String((s && s.title) || (s && s.source_id) || "?").slice(0, 120)) + "</li>").join("");
+            resDetail = "<h3>📄 " + escHtml(String(d.title || did).slice(0, 160)) + "</h3>"
+              + "<p>" + escHtml(String(d.summary || "").slice(0, 800)) + "</p>"
+              + (findings ? "<ul>" + findings + "</ul>" : '<p class="muted">Nog geen key findings.</p>')
+              + (sources ? "<p><b>Bronnen</b></p><ul>" + sources + "</ul>" : "")
+              + '<p><button data-act="resplan" data-id="' + escHtml(did) + '">🧭 Plan → missie</button> '
+              + '<a href="/research/' + escHtml(did) + '">Volledig dossier →</a></p>';
+            dialogBody.innerHTML = renderResearch();
+          }} else if (act === "resplan") {{
+            const rid = btn.getAttribute("data-id") || "";
+            if (!rid) throw new Error("onderzoek onbekend");
+            flowResult("Inert missieplan voorstellen…");
+            const plan = await postJSON("/api/v1/research/" + encodeURIComponent(rid) + "/plan", {{}});
+            const mid = String((plan && plan.mission_id) || "");
+            const mst = String((plan && plan.status) || "pending_approval");
+            resDetail = "<p>🧭 Missieplan: <b>" + escHtml(String((plan && plan.goal) || "").slice(0, 160)) + "</b> [" + escHtml(mst) + "]</p>"
+              + (mid ? '<p><a href="/missions/' + escHtml(mid) + '">Open missie →</a>'
+                + ' <span class="muted">wacht op exacte YES — niets start vanzelf</span></p>' : "");
+            await resRefreshRuns();
+            dialogBody.innerHTML = renderResearch();
+          }} else if (act === "knowrefresh") {{
+            flowResult("Kandidaten verversen (read-only)…");
+            await knowRefreshList();
+            knowDetail = "";
+            dialogBody.innerHTML = renderKnowledge();
+          }} else if (act === "knowdetail") {{
+            const cid = btn.getAttribute("data-id") || "";
+            if (!cid) throw new Error("kandidaat onbekend");
+            flowResult("Kandidaat ophalen (read-only)…");
+            await knowOpenDetail(cid);
+            dialogBody.innerHTML = renderKnowledge();
+          }} else if (act === "knowsupport") {{
+            const cid = btn.getAttribute("data-id") || "";
+            if (!cid) throw new Error("kandidaat onbekend");
+            flowResult("Support vastleggen…");
+            await postJSON("/api/v1/candidates/" + encodeURIComponent(cid) + "/support", {{supporter: "jelles", rationale: ""}});
+            await knowRefreshList();
+            await knowOpenDetail(cid);
+            dialogBody.innerHTML = renderKnowledge();
+          }} else if (act === "knowreject") {{
+            const cid = btn.getAttribute("data-id") || "";
+            if (!cid) throw new Error("kandidaat onbekend");
+            flowResult("Reject vastleggen…");
+            await postJSON("/api/v1/candidates/" + encodeURIComponent(cid) + "/reject", {{reason: "", decided_by: "jelles"}});
+            await knowRefreshList();
+            await knowOpenDetail(cid);
+            dialogBody.innerHTML = renderKnowledge();
+          }} else if (act === "knowpromote") {{
+            const cid = btn.getAttribute("data-id") || "";
+            if (!cid) throw new Error("kandidaat onbekend");
+            const truthInput = document.getElementById("know-truth");
+            const vbyInput = document.getElementById("know-vby");
+            const truth = (truthInput && truthInput.value || "").trim().slice(0, 40);
+            const vby = (vbyInput && vbyInput.value || "").trim().slice(0, 80);
+            flowResult("Promoten (bestaande gates)…");
+            try {{
+              const done = await postJSON("/api/v1/candidates/" + encodeURIComponent(cid) + "/promote", {{truth: truth, verified_by: vby, importance: 0.6}});
+              await knowRefreshList();
+              await knowOpenDetail(cid);
+              dialogBody.innerHTML = renderKnowledge();
+              flowResult("Gepromoveerd naar " + String((done && done.memory_id) || "?") + " — feit per truth-tier, geen stilzwijgen.");
+            }} catch (eP) {{
+              flowResult("Promote geweigerd door bestaande gate: " + String((eP && eP.message) || "").slice(0, 200));
+            }}
+          }} else if (act === "jrefresh") {{
+            flowResult("Voortgang verversen (read-only)…");
+            try {{
+              await refreshJourneyData();
+            }} catch (eJ) {{
+              flowResult("Verversen geweigerd: " + ((eJ && eJ.message) || ""));
+              return;
+            }}
+            dialogBody.innerHTML = renderJourney();
+            flowResult("Voortgang bijgewerkt uit bestaande records.");
+          }} else if (act === "mtick") {{
+            const mid = btn.getAttribute("data-id") || "";
+            if (!mid) throw new Error("missie onbekend");
+            flowResult("Tik loopt — drijft tot de eerstvolgende gate…");
+            await postJSON("/api/v1/missions/" + encodeURIComponent(mid) + "/tick", {{}});
+            await renderMissionResult(mid);
+            await refreshAfterAction();
+            setTimeout(() => {{ renderMissionResult(mid).catch(() => {{}}); }}, 10000);
+          }} else if (act === "mrefresh") {{
+            const mid = btn.getAttribute("data-id") || "";
+            if (!mid) throw new Error("missie onbekend");
+            flowResult("Taken verversen (read-only)…");
+            await renderMissionResult(mid);
+          }} else if (act === "myes") {{
            const mid = btn.getAttribute("data-id") || "";
            if (!mid) throw new Error("missie onbekend");
            flowResult("Exacte YES vastleggen via bestaande gate…");
            const res = await postJSON("/api/v1/missions/" + encodeURIComponent(mid) + "/approve", {{response: "YES", decided_by: "jelles"}});
            const st = String((res && (res.status || (res.mission && res.status))) || "?");
-           if (st !== "approved") throw new Error("YES geweigerd door bestaande gate (" + st + ")");
-           flowResult("Missie approved — tik nu om te drijven.");
-           dialogBody.innerHTML = renderJourney();
+            if (st !== "approved") throw new Error("YES geweigerd door bestaande gate (" + st + ")");
+            flowResult("Missie approved — tik nu om te drijven.");
+            await refreshAfterAction();
+            dialogBody.innerHTML = renderJourney();
          }} else if (act === "gotoprint") {{
            dialogBody.innerHTML = renderPrintModels();
          }} else if (act === "worldrefresh") {{
@@ -20227,6 +23522,2526 @@ def play_page() -> str:
     window.requestAnimationFrame(step);
     </script>"""
     return _ui.shell("Play", "/play", main, "", _ui.living_bg())
+
+
+# =============================================================================
+# BIG49 — SIDE-VIEW SLICE (/side). Eigen Mycelium-game, Terraria als
+# inspiratie (side-view, springen, verkennen), geen mod, geen engine.
+# Zelfde technologie als /play: server-rendered pagina + inline
+# canvas + vanilla JS. Handgemaakte deterministische wereld.
+# Game-lokaal: physics-frame, XP (optioneel, nooit poort), touch.
+# Mycelium-bron: discovery als echte candidate, advies/research via
+# bestaande flows, quest+missie via POST /api/v1/play/mission,
+# sessie via bestaande play-session endpoints (zone "side").
+# BIG53 CORE LOOP: sessie-inventory (play_inventory/gather/craft/
+# place — game-state, nooit backend-records), nodes, recepten,
+# ghost-plaatsing, sporepuffers (vriendelijk), codex-station,
+# doelenlijst. Geen nieuwe dashboardpanelen als gameplay.
+# Geen nieuwe tabellen buiten play_inventory/play_gather/
+# play_builds, geen executie.
+# =============================================================================
+
+
+@app.get("/side", response_class=HTMLResponse)
+def side_page() -> str:
+    """Kleine side-view slice: homebase + wilderness, springen,
+    werkbank/waterbron/plantplek, één echte discovery, keuze
+    Oracle/Research, quest+missie. Read-only pagina; alle echte
+    flows lopen via bestaande POST-routes."""
+    from . import ui as _ui
+    main = """<h1>Side 🌱 <span class="muted">levende wereld</span></h1>
+    <p class="muted">Lopen: <code>A</code>/<code>D</code> of <code>←</code>/<code>→</code> · Springen: <code>W</code>/<code>↑</code>/spatie · Interactie: <code>E</code>. Aanraken: knoppen onder het veld.</p>
+    <style>
+    .side-world{position:relative;padding:0;overflow:hidden}
+    .side-world canvas{display:block}
+    .side-hud-top{position:absolute;top:8px;left:8px;right:8px;display:flex;gap:10px;align-items:center;background:rgba(10,14,10,.62);border:1px solid rgba(125,155,106,.35);border-radius:10px;padding:5px 12px;font-size:13px;color:#ece7d8}
+    .side-hud-top #side-inv{font-weight:600;color:#c9d66b}
+    .side-hud-top #side-area{color:#a5c48a}
+    .side-hud-top #side-xp{margin-left:auto;color:#e8d98a}
+    .side-hud-top button{flex:none}
+    .side-hud-bottom{position:absolute;left:8px;right:8px;bottom:8px;text-align:center;background:rgba(10,14,10,.62);border:1px solid rgba(125,155,106,.35);border-radius:10px;min-height:1.7em;padding:2px 10px;color:#ece7d8}
+    #side-goals{line-height:1.7}
+    details.side-web{margin-top:8px}
+    details.side-web summary{cursor:pointer;color:#a5c48a}
+    </style>
+    <div class="panel side-world"><div class="side-hud-top"><span id="side-area">…</span><span id="side-inv">leeg</span><span id="side-xp">0 XP</span><button id="journal-open">📓 Journal</button></div>
+    <canvas id="sidestage" width="960" height="540" style="width:100%;height:auto;background:#141a20;" role="img" aria-label="Side-view homebase en wildernis. Beweeg met A D, spring met W, interactie met E."></canvas>
+    <div id="side-prompt" class="side-hud-bottom" role="status"></div></div>
+    <div class="panel"><div id="side-objective" class="muted">doel laden…</div>
+    <div id="side-goals" class="muted" style="margin:4px 0"></div>
+    <p class="muted" style="margin:4px 0">✨ XP is alleen een beloning <span class="muted">(optioneel — blokkeert niets)</span></p></div>
+    <div class="panel"><div id="touch" aria-label="Aanraakbediening" style="display:flex;gap:10px;justify-content:center;padding:4px">
+    <button data-k="left" aria-label="Links" style="min-width:64px;min-height:52px;font-size:20px">◀</button>
+    <button data-k="right" aria-label="Rechts" style="min-width:64px;min-height:52px;font-size:20px">▶</button>
+    <button data-k="jump" aria-label="Spring" style="min-width:64px;min-height:52px;font-size:20px">⤒</button>
+    <button data-k="act" aria-label="Interactie" style="min-width:64px;min-height:52px;font-size:20px">E</button></div>
+    <p class="muted" style="text-align:center">Knoppen werken ook met muis · toetsenbord blijft volledig bruikbaar</p></div>
+    <div id="sidedialog" class="panel"><h2 id="sidedlg-title">Veldnotities</h2>
+    <div id="sidedlg-body"><p class="muted">Loop naar een object en druk op <code>E</code>.</p><div id="side-result" class="muted" role="status"></div></div></div>
+    <div id="hotbar" class="muted" style="display:flex;gap:8px;margin:6px 0"></div>
+    <div id="invOverlay" style="display:none;position:fixed;inset:0;background:rgba(8,12,8,.82);z-index:50;padding:5vh 8vw;overflow:auto">
+      <div class="panel"><h2>🎒 Voorraad <span class="muted">(I/Esc sluiten)</span></h2><div id="invGrid"></div>
+      <p class="muted">Klik een plaatsbaar item om de plaatsmodus te starten. Server-voorraad is leidend.</p></div>
+    </div>
+    <div id="chestOverlay" style="display:none;position:fixed;inset:0;background:rgba(8,12,8,.82);z-index:50;padding:5vh 8vw;overflow:auto">
+      <div class="panel"><h2>📦 Kist <span class="muted">(Esc sluiten)</span></h2><div id="chestBody"></div></div>
+    </div>
+    <details class="side-web"><summary>Mycelium-web (dashboardlinks, geen gameplay)</summary>
+    <p class="muted"><a href="/play">Top-down /play</a> · <a href="/knowledge">Kennis</a> · <a href="/research">Research</a> · <a href="/quests">Quests</a></p></details>
+    <script>
+    const SW = 3840, GROUND_Y = 480, VW = 960, VH = 540;
+    // Sprongbalans (getest): jump -680 / gravity 1800 = ~128px hoog,
+    // ~195px ver. Platforms liggen binnen comfortbereik (stijging
+    // max 90px, horizontale gaten max 180px).
+    // BIG53: kloof x1050–1270 (220px, niet springbaar) — alleen
+    // een geplaatste plankbrug draagt; vallen = vriendelijke
+    // respawn bij de hut, nooit verlies.
+    // BIG55: verbonden wereld — Homebase/Wildernis/Oostland
+    // (bestaand) + Undergrove/Moeraslab/Outpost (nieuw, zelfde
+    // physics, deterministische data, geen nieuwe engine).
+    const PLATS = [
+      {x: 0, y: 480, w: 1050, h: 60},
+      {x: 1270, y: 480, w: 650, h: 60},
+      {x: 1920, y: 480, w: 640, h: 60},
+      {x: 2560, y: 480, w: 640, h: 60},
+      {x: 3200, y: 480, w: 640, h: 60},
+      {x: 300, y: 390, w: 160, h: 20},
+      {x: 580, y: 300, w: 160, h: 20},
+      {x: 920, y: 340, w: 180, h: 20},
+      {x: 1980, y: 380, w: 170, h: 20},
+      {x: 2220, y: 300, w: 170, h: 20},
+      {x: 2620, y: 380, w: 170, h: 20},
+      {x: 3260, y: 380, w: 180, h: 20}
+    ];
+    const GAP = {x0: 1050, x1: 1270, cx: 1160};
+    // BIG55: regio's met eigen identiteit (naam, tint, gate).
+    const REGIONS = [
+      {id: "home", name: "Homebase", x0: 0, x1: 640, tint: "rgba(201,214,107,0.05)"},
+      {id: "wild", name: "Wildernis", x0: 640, x1: 1280, tint: "rgba(125,155,106,0.05)"},
+      {id: "oost", name: "Oostland", x0: 1280, x1: 1920, tint: "rgba(150,180,220,0.05)"},
+      {id: "grove", name: "Undergrove", x0: 1920, x1: 2560, tint: "rgba(90,70,140,0.10)", dark: true},
+      {id: "moeras", name: "Moeraslab", x0: 2560, x1: 3200, tint: "rgba(90,160,140,0.08)", mist: true},
+      {id: "outpost", name: "Outpost", x0: 3200, x1: 3840, tint: "rgba(217,164,65,0.07)"}
+    ];
+    function regionAt(x) {
+      for (const r of REGIONS) { if (x >= r.x0 && x < r.x1) return r; }
+      return REGIONS[REGIONS.length - 1];
+    }
+    // BIG53: verzamel-nodes (id ↔ server-yield stump/hout,
+    // fiber/vezel, rock/steen; cooldown bewaakt de server).
+    const NODES = [
+      {id: "stump-1", x: 250, glyph: "🪵", label: "Houtstronk"},
+      {id: "stump-2", x: 700, glyph: "🪵", label: "Houtstronk"},
+      {id: "stump-3", x: 1500, glyph: "🪵", label: "Houtstronk"},
+      {id: "stump-4", x: 1100, glyph: "🪵", label: "Houtstronk"},
+      {id: "stump-5", x: 3050, glyph: "🪵", label: "Houtstronk"},
+      {id: "fiber-1", x: 450, glyph: "🌾", label: "Vezelplant"},
+      {id: "fiber-2", x: 1000, glyph: "🌾", label: "Vezelplant"},
+      {id: "fiber-3", x: 1620, glyph: "🌾", label: "Vezelplant"},
+      {id: "rock-1", x: 850, glyph: "🪨", label: "Kei"},
+      {id: "rock-2", x: 1350, glyph: "🪨", label: "Kei"},
+      {id: "rock-3", x: 1780, glyph: "🪨", label: "Kei"},
+      {id: "crystal-1", x: 2100, glyph: "💎", label: "Kristal", needs: "modderhart", needText: "Slapend kristal — versla eerst het Modderhart (moeras)."},
+      {id: "crystal-2", x: 2330, glyph: "💎", label: "Kristal", needs: "modderhart", needText: "Slapend kristal — versla eerst het Modderhart (moeras)."},
+      {id: "reed-1", x: 2700, glyph: "🎋", label: "Rietstengel"},
+      {id: "reed-2", x: 2950, glyph: "🎋", label: "Rietstengel"},
+      {id: "scrap-1", x: 2400, glyph: "⚙️", label: "Schroot"},
+      {id: "scrap-2", x: 3100, glyph: "⚙️", label: "Schroot"}
+    ];
+    // BIG53: recepten (server valideert kosten; hier alleen tonen).
+    // BIG55: uitgebreid naar 9 (lamp/kist/kamer/kompas/zendmast).
+    const RECIPES = [
+      {id: "stick", label: "Stok", cost: "2 hout", desc: "Verlengt je bereik bij het plukken."},
+      {id: "torch", label: "Fakkel", cost: "1 stok + 1 vezel", desc: "Lichtkring, plaatsbaar."},
+      {id: "plank", label: "Plankbrug", cost: "3 hout", desc: "Draagt over de kloof (plaats bij x≈1160)."},
+      {id: "fence", label: "Hekje", cost: "2 hout + 1 steen", desc: "Markeert je plek (decor)."},
+      {id: "lamp", label: "Lamp", cost: "1 stok + 1 kristal", desc: "Grote lichtkring, ook in het donker."},
+      {id: "chest", label: "Kist", cost: "4 hout + 2 steen", desc: "Opslag in de wereld (E om te openen)."},
+      {id: "room", label: "Kamer", cost: "2 plank + 2 hekje", desc: "NPC-woning (plaats + licht erbij)."},
+      {id: "compass", label: "Kompas", cost: "1 kristal + 1 steen", desc: "Wijst naar het ruïnesignaal."},
+      {id: "mast", label: "Zendmast", cost: "2 schroot + 1 kristal", desc: "Repareert de ruïnezender."}
+    ];
+    const PLACEABLE_INFO = {plank: 1, torch: 1, fence: 1, lamp: 1, chest: 1, room: 1, mast: 1};
+    // BIG53: sporepuffers — vriendelijk gevaar: patrol, contact =
+    // terugduw + korte stun, nooit schade of verlies.
+    const PUFFERS = [
+      {x: 1450, min: 1350, max: 1600, dir: 1, speed: 40},
+      {x: 1750, min: 1650, max: 1880, dir: -1, speed: 55}
+    ];
+    let puffTouchAt = 0, stunUntil = 0;
+    // BIG55: NPC-systeem — identiteit, rol, eis, computer-capability.
+    // Spawn-eisen zijn zichtbaar en eerlijk; toewijzing loopt via
+    // POST /play/npc/assign op een geplaatste kamer.
+    const NPCS = [
+      {id: "mos", name: "Mos", x: 560, role: "Gids", needs: null,
+       text: "Gids van de Homebase. Vraag, en ik wijs — uitvoeren doe je zelf.",
+       computer: null},
+      {id: "oracle", name: "Orakel", x: 1700, role: "Orakel", needs: {flag: "gathered", text: "Verzamel eerst iets uit de wereld."},
+       text: "Ik lees Mycelium-advies voor je voor. Wat ik zeg is richting, nooit feit.",
+       computer: "advise"},
+      {id: "smid", name: "Smid", x: 3400, role: "Smid", needs: {flag: "crafted", text: "Craft eerst iets aan een werkbank."},
+       text: "Metaal en hout gehoorzamen wie meet. Mijn smidse toont echte fabricage.",
+       computer: "fabrication"},
+      {id: "archivaris", name: "Archivaris", x: 3500, role: "Archivaris", needs: {flag: "remembered", text: "Laat eerst iets onthouden via research."},
+       text: "Alles wat Mycelium weet, staat hier — met herkomst erbij.",
+       computer: "knowledge"},
+      {id: "voorman", name: "Voorman", x: 3300, role: "Voorman", needs: {flag: "quest", text: "Start eerst een quest + missie."},
+       text: "Werk is werk. Ik toon wat loopt, wat wacht en wat je nog moet doen.",
+       computer: "missions"},
+      {id: "seinwachter", name: "Seinwachter", x: 2500, role: "Seinwachter", needs: {flag: "mystery", text: "Repareer eerst de ruïnezender (zendmast plaatsen)."},
+       text: "Signalen liegen nooit — ze zijn er of ze zijn er niet. Mijn masten tonen echte nodes.",
+       computer: "nodes"}
+    ];
+    // BIG55: encounters — data-gedreven (geen stat-systeem).
+    // kruiper: achtervolgt langzaam; sporen: vertragen;
+    // modderhart: 3-fasen boss (ontdek→bereid→trotseer).
+    // BIG55: ENCOUNTERS-register — kruiper (groeve), sporenzones
+    // (moeras), modderhart-boss (nest), storm/trader als events. Data-gedreven,
+    // geen stat-systeem, nooit straf of verlies.
+    const KRUIPERS = [
+      {x: 2050, min: 1930, max: 2200, dir: 1, speed: 22}
+    ];
+    const SPOREZONES = [
+      {x0: 2620, x1: 2800}, {x0: 2960, x1: 3140}
+    ];
+    const MODDERHART = {x: 2850, r: 90};
+    const RUIN_MACHINE = {x: 2500};
+    // BIG55: events — afgeleid uit klok/dag/voorraad (geen daemon).
+    const EVENTS = [
+      {id: "spore_rain", label: "Sporenregen", when: "night", text: "Sporen dwarrelen — puffers zijn onrustig (sneller)."},
+      {id: "bloom", label: "Bloei", when: "dawn", need: "remembered", text: "Het mycelium bloeit: extra lichtsporen vannacht."},
+      {id: "trader", label: "Handelaar", when: "day3", text: "Een reizende handelaar staat bij de Outpost (praat met Voorman)."},
+      {id: "silence", label: "Stilte", when: "night5", text: "Alles is stil — zelfs de puffers rusten."},
+      {id: "surge", label: "Node-piek", when: "runs", text: "Open automatisering voedt de masten — lichten flikkeren."}
+    ];
+    // BIG55: wereldklok (game-tijd, nooit wandklok-state).
+    let worldClock = {day: 1, minute: 480, phase: "day"};
+    // BIG55: echte nodes als outpost-masten (alleen lezen).
+    let nodeList = [];
+    async function refreshNodes() {
+      try {
+        const nl = await postJSON("/api/v1/nodes?limit=10", null, "GET");
+        const arr = (nl && (nl.nodes || nl)) || [];
+        nodeList = Array.isArray(arr) ? arr.slice(0, 4) : [];
+      } catch (e) { nodeList = []; }
+    }
+    async function tickClock() {
+      if (!sideSession) return;
+      try {
+        const c = await postJSON("/api/v1/play/clock/tick", {session_id: sideSession});
+        if (c) { worldClock = {day: c.day || 1, minute: c.minute || 0, phase: c.phase || "day"}; }
+      } catch (e) {}
+    }
+    const SPOTS = [
+      {id: "bench", name: "Werkbank", x: 180, glyph: "🛠️", text: "Echte fabricageketen, alleen lezen — de werkbank bouwt niets; voorstellen lopen via bestaande flows.", link: "/workshop/3d"},
+      {id: "water", name: "Waterbron", x: 900, glyph: "💧", text: "Helder water, vochtige grond. Hydroponics begint hier — registreer het als ontdekking."},
+      {id: "plant", name: "Plantplek", x: 1400, glyph: "🌱", text: "Proefveldje voor zaailingen. Wat hier groeit, begint als waarneming in Kennis."},
+      {id: "codex", name: "Codex-steen", x: 1700, glyph: "🗿", text: "Oude steen met Mycelium-lijnen. Oracle, Research en quests lopen via bestaande flows — nu vanuit de wereld."},
+      {id: "board", name: "Projectbord", x: 3350, glyph: "📌", text: "Outpost-bord: hydroponics-questline met live vereisten uit echte stores."},
+      {id: "machine", name: "Ruïnezender", x: 2500, glyph: "📡", text: "Dode zender uit de oude tijd. Signaal onvolledig — onderzoek + reparatie nodig."},
+      {id: "nest", name: "Modderhart-nest", x: 2850, glyph: "🪹", text: "Het nest klopt. Wie het trotseert, opent het moeras echt."},
+      {id: "mos", name: "Mos (NPC)", x: 560, glyph: "🧙", npc: true, hints: ["Welkom. Het water oosten vertelt meer dan ik.", "Vraag Oracle om raad, of zet een Research-vraag uit.", "Een ontdekking wordt pas echt als je hem registreert."]}
+    ];
+    const DISCOVERY_TITLE = "Vochtige grond bij de waterbron";
+    const player = {x: 120, y: 400, w: 26, h: 40, vy: 0, ground: false, face: 1};
+    let landMsg = 0;
+    const cam = {x: 0};
+    const keys = {};
+    let mosHint = 0, discoveryId = "", oracleUsed = false, researchUsed = false;
+    // sfeer-state: particles (rook, vonken, plons) + speech-bubble
+    const parts = [];
+    let bubble = null;
+    function puff(x, y, n, col, spread, up) {
+      for (let i = 0; i < n; i++) {
+        if (parts.length > 90) parts.shift();
+        parts.push({x: x + (Math.random() - 0.5) * (spread || 10),
+          y: y + (Math.random() - 0.5) * 8,
+          vx: (Math.random() - 0.5) * 30, vy: -(up || 20) - Math.random() * 25,
+          life: 1.4 + Math.random(), age: 0, col: col});
+      }
+    }
+    function stepParts(dt) {
+      if (Math.random() < dt * 6) puff(232, 330, 1, "rgba(160,160,160,0.5)", 6, 28);
+      // BIG55: sporenregen + stormwind als events (puur visueel).
+      const evNow = (typeof activeEvents === "function") ? activeEvents() : [];
+      if (evNow.includes("spore_rain") && Math.random() < dt * 20) {
+        puff(cam.x + Math.random() * VW, 60, 1, "rgba(200,160,220,0.7)", 120, -40);
+      }
+      if (evNow.includes("stormvlaag") && Math.random() < dt * 30) {
+        puff(cam.x + VW + 20, 100 + Math.random() * 300, 1, "rgba(180,200,220,0.5)", 10, 10);
+      }
+      for (let i = parts.length - 1; i >= 0; i--) {
+        const p = parts[i];
+        p.age += dt;
+        if (p.age > p.life) { parts.splice(i, 1); continue; }
+        p.x += p.vx * dt; p.y += p.vy * dt; p.vy -= 6 * dt;
+      }
+    }
+    function sayBubble(text) {
+      bubble = {text: String(text || "").slice(0, 140), until: Date.now() + 6500};
+    }
+    const stage = document.getElementById("sidestage");
+    const ctx = stage.getContext("2d");
+    const promptEl = document.getElementById("side-prompt");
+    const dlgTitle = document.getElementById("sidedlg-title");
+    const dlgBody = document.getElementById("sidedlg-body");
+    const objEl = document.getElementById("side-objective");
+    const xpEl = document.getElementById("side-xp");
+    function escHtml(s) {
+      return String(s === undefined || s === null ? "" : s)
+        .replace(/&/g, "&amp;").replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+    }
+    function getXp() { return parseInt(window.localStorage ? (window.localStorage.getItem("mycelium_side_xp") || "0") : "0", 10) || 0; }
+    function addXp(n) {
+      const v = getXp() + n;
+      if (window.localStorage) window.localStorage.setItem("mycelium_side_xp", String(v));
+      xpEl.textContent = v + " XP";
+    }
+    xpEl.textContent = getXp() + " XP";
+    function hasFlag(k) { return window.localStorage && window.localStorage.getItem("mycelium_side_" + k) === "1"; }
+    function setFlag(k) { if (window.localStorage) window.localStorage.setItem("mycelium_side_" + k, "1"); }
+    function updateObjective() {
+      let t;
+      if (!hasFlag("quest")) t = "Ontdek de waterbron (oosten) en registreer je vondst met E.";
+      else if (!oracleUsed && !researchUsed) t = "Kies: vraag Oracle om advies of zet een Research-vraag uit.";
+      else t = "Start een quest + missie vanuit je vondst — daarna wacht de echte approval-gate.";
+      if (hasFlag("quest")) t += " ✓ quest gestart";
+      // BIG52: sporen tellen onthouden dossiers; TEST-herkomst
+      // staat erbij zodat goud nooit verificatie suggereert.
+      if (typeof worldMemory === "number" && worldMemory > 0) {
+        t += " · 📚 " + worldMemory + " onthouden";
+        const wt = (typeof worldMemoryTest === "number") ? worldMemoryTest : 0;
+        if (wt >= worldMemory) t += " (TEST-proef — geen feit)";
+        else if (wt > 0) t += " (waarvan " + wt + " proef)";
+      }
+      objEl.textContent = "Doel: " + t;
+    }
+    // BIG51: wereldgeheugen — telling echte mem_-records uit het
+    // Journal (geen XP, geen decoratie zonder backend-state).
+    // Zaailingen groeien en geheugensporen gloeien alleen bij
+    // echte onthouden dossiers.
+    let worldMemory = 0, worldMemoryTest = 0;
+    async function refreshWorldMemory() {
+      try {
+        const j = await postJSON("/api/v1/play/journal", null, "GET");
+        worldMemory = Math.max(0, Math.min(9, (j.counts && j.counts.memories_remembered) || 0));
+        worldMemoryTest = Math.max(0, Math.min(9, (j.counts && j.counts.memories_test) || 0));
+        updateObjective();
+      } catch (e) {}
+    }
+    refreshWorldMemory();
+    // -- BIG53: sessie-inventory (game-state, nooit backend-record).
+    // Ophalen/verzamelen/craften/plaatsen via bestaande play_*-
+    // routes; de server valideert sessie, nodes, recepten en
+    // cooldown. XP blijft beloning (geen poort).
+    const invEl = document.getElementById("side-inv");
+    const goalsEl = document.getElementById("side-goals");
+    const areaEl = document.getElementById("side-area");
+    let invItems = {}, invBuilds = [], ghostKind = "";
+    const INV_LABEL = {wood: "Hout", fiber: "Vezel", stone: "Steen", stick: "Stok", torch: "Fakkel", plank: "Plank", fence: "Hekje", crystal: "Kristal", reed: "Riet", scrap: "Schroot", lamp: "Lamp", chest: "Kist", room: "Kamer", compass: "Kompas", mast: "Zendmast"};
+    async function refreshInv() {
+      if (!sideSession) return;
+      try {
+        const inv = await postJSON("/api/v1/play/inventory?session_id=" + encodeURIComponent(sideSession), null, "GET");
+        invItems = (inv && inv.items) || {};
+        invBuilds = (inv && inv.builds) || [];
+        renderInv();
+        // BIG55: diepteklok — 3 lampen in de groeve ontsteken de diepte.
+        try {
+          const lamps = invBuilds.filter((b) => b.kind === "lamp" && Number(b.x) >= 1920 && Number(b.x) < 2560).length;
+          if (lamps >= 3 && !hasFlag("diepteklok") && !srvFlags.has("diepteklok")) flagBoth("diepteklok");
+        } catch (e) {}
+      } catch (e) {}
+    }
+    function renderInv() {
+      const parts = Object.keys(INV_LABEL).filter((k) => (invItems[k] || 0) > 0)
+        .map((k) => escHtml(INV_LABEL[k]) + " × " + invItems[k]);
+      invEl.textContent = parts.length ? parts.join(" · ") : "leeg";
+      renderHotbar();
+      renderGoals();
+    }
+    function renderGoals() {
+      // In-world doelenlijst: echte flags en voorraad, geen dashboard.
+      const goals = [
+        ["Bewegen met A/D", hasFlag("moved")],
+        ["Verzamel hout/vezel/steen (E bij node)", hasFlag("gathered")],
+        ["Craft aan de werkbank", hasFlag("crafted")],
+        ["Plaats plankbrug/fakkel/hekje", hasFlag("placed")],
+        ["Ontmoet een sporepuffer (oost)", hasFlag("puffer")],
+        ["Rond codex-werk af (quest/herinnerd)", hasFlag("quest") || hasFlag("remembered")],
+        ["Huisvest een NPC (kamer + licht)", hasFlag("housed")],
+        ["Ontdek een node (Seinwachter-zone)", hasFlag("node_found")],
+        ["Versla het Modderhart (moeras)", hasFlag("modderhart")]
+      ];
+      goalsEl.innerHTML = goals.map((g) => (g[1] ? "[✓] " : "[ ] ") + escHtml(g[0])).join("<br>");
+    }
+    function buildPlats() {
+      // Geplaatste plankbruggen als echte platforms (fakkels en
+      // hekjes zijn licht/decor, geen colliders).
+      return invBuilds.filter((b) => b.kind === "plank").map((b) => ({
+        x: Math.max(0, Number(b.x) - 80), y: 464, w: 160, h: 16
+      }));
+    }
+    async function doGather(node) {
+      if (!sideSession) { dlgResult("Nog geen sessie — loop even rond."); return; }
+      // BIG55: slapende nodes eisten eerst hun gate (eerlijk, zichtbaar).
+      if (node.needs && !hasFlag(node.needs) && !srvFlags.has(node.needs)) {
+        dlgResult("🔒 " + (node.needText || "Deze node slaapt nog."));
+        return;
+      }
+      dlgResult("Plukken via bestaande sessie-voorraad…");
+      try {
+        const r = await postJSON("/api/v1/play/gather", {session_id: sideSession, node_id: node.id});
+        flagBoth("gathered");
+        addXp(1);
+        puff(node.x, 450, 10, "rgba(150,220,150,0.8)", 30, 50);
+        dlgResult("＋1 " + (INV_LABEL[r.item] || r.item) + " (" + r.qty + " in voorraad).");
+        await refreshInv();
+      } catch (err) {
+        dlgResult("Geweigerd: " + ((err && err.message) ? err.message : String(err)));
+      }
+      updateObjective();
+    }
+    async function doCraft(recipe) {
+      if (!sideSession) { dlgResult("Nog geen sessie."); return; }
+      dlgResult("Craften (server valideert kosten)…");
+      try {
+        const r = await postJSON("/api/v1/play/craft", {session_id: sideSession, recipe: recipe});
+        flagBoth("crafted");
+        addXp(5);
+        dlgResult("✅ " + recipe + " gemaakt (" + r.qty + " in voorraad).");
+        await renderBench();
+        await refreshInv();
+      } catch (err) {
+        dlgResult("Geweigerd: " + ((err && err.message) ? err.message : String(err)));
+      }
+      updateObjective();
+    }
+    async function doPlace(kind, wx, wy) {
+      if (!sideSession) { dlgResult("Nog geen sessie."); return; }
+      // Client-voorkeur: plank bij de kloof, fakkel/hekje op grond.
+      // De server valideert bezit en grenzen opnieuw.
+      let x = Math.round(wx), y = Math.round(wy);
+      if (kind === "plank") {
+        if (Math.abs(x - GAP.cx) > 220 || y < 380) {
+          dlgResult("Plankbrug past alleen bij de kloof (x≈1160, op grondniveau).");
+          return;
+        }
+        x = GAP.cx; y = 472;
+      } else if (kind === "room") {
+        y = 420;
+      } else {
+        y = 452;
+      }
+      dlgResult("Plaatsen (1 " + kind + " uit voorraad)…");
+      try {
+        const placed = await postJSON("/api/v1/play/place", {session_id: sideSession, kind: kind, x: x, y: y});
+        flagBoth("placed");
+        addXp(3);
+        ghostKind = "";
+        try { stage.onclick = null; } catch (e) {}
+        // BIG55: zendmast bij de ruïnezender repareert het mysterie.
+        if (kind === "mast" && Math.abs(x - RUIN_MACHINE.x) < 250) {
+          flagBoth("mystery");
+          dlgResult("📡 Zendmast geplaatst — de ruïnezender zendt weer! De Seinwachter kan komen.");
+        } else {
+          puff(x, y, 12, "rgba(220,200,140,0.8)", 40, 50);
+          dlgResult("✅ " + kind + " geplaatst.");
+        }
+        await renderBench();
+        await refreshInv();
+        await refreshNpc();
+      } catch (err) {
+        dlgResult("Geweigerd: " + ((err && err.message) ? err.message : String(err)));
+      }
+      updateObjective();
+    }
+    // BIG55: server-vlaggen (quest/encounter-voortgang overleeft
+    // refresh; lokale flags blijven voor trivia als bewegen).
+    let srvFlags = new Set();
+    async function refreshFlags() {
+      if (!sideSession) return;
+      try {
+        const f = await postJSON("/api/v1/play/flags?session_id=" + encodeURIComponent(sideSession), null, "GET");
+        srvFlags = new Set((f && f.flags) || []);
+        for (const fl of srvFlags) setFlag(fl);
+        renderGoals();
+      } catch (e) {}
+    }
+    function flagBoth(k) {
+      setFlag(k);
+      if (sideSession) postJSON("/api/v1/play/flags", {session_id: sideSession, flag: k}).then(() => { srvFlags.add(k); renderGoals(); }).catch(() => {});
+      else renderGoals();
+    }
+    // BIG55: inventory-overlay + hotbar + kisten. Server-voorraad
+    // is leidend; overlays zijn transparant, wereld blijft zichtbaar.
+    const invOverlay = document.getElementById("invOverlay");
+    const invGrid = document.getElementById("invGrid");
+    const chestOverlay = document.getElementById("chestOverlay");
+    const chestBody = document.getElementById("chestBody");
+    const hotbarEl = document.getElementById("hotbar");
+    let hotSel = 0, openChestId = "";
+    const INV_GLYPH = {wood: "🪵", fiber: "🌾", stone: "🪨", stick: "🥢", torch: "🔥", plank: "🪜", fence: "⛩️", crystal: "💎", reed: "🎋", scrap: "⚙️", lamp: "💡", chest: "📦", room: "🏠", compass: "🧭", mast: "📡"};
+    function hotItems() {
+      return Object.keys(INV_LABEL).filter((k) => (invItems[k] || 0) > 0).slice(0, 4);
+    }
+    function renderHotbar() {
+      const items = hotItems();
+      hotbarEl.innerHTML = items.map((k, i) =>
+        "<span style='padding:2px 10px;border:1px solid " + (i === hotSel ? "#c9d66b" : "#2e3a2c") + ";border-radius:8px'>"
+        + (i + 1) + " " + (INV_GLYPH[k] || "•") + " " + escHtml(INV_LABEL[k]) + " ×" + invItems[k] + "</span>").join("")
+        || '<span class="muted">hotbar leeg — verzamel eerst (I = voorraad)</span>';
+    }
+    function renderInvGrid() {
+      invGrid.innerHTML = "<div style='display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:8px'>"
+        + Object.keys(INV_LABEL).map((k) => {
+          const q = invItems[k] || 0;
+          return "<div class='panel' style='margin:0;padding:8px;text-align:center;opacity:" + (q ? "1" : "0.45") + "'>"
+            + "<div style='font-size:26px'>" + (INV_GLYPH[k] || "•") + "</div>"
+            + "<div><b>" + escHtml(INV_LABEL[k]) + "</b> ×" + q + "</div>"
+            + (q && PLACEABLE_INFO[k] ? '<button data-act="invplace" data-id="' + k + '">Plaats…</button>' : "")
+            + "</div>";
+        }).join("") + "</div>";
+    }
+    function toggleInv(force) {
+      const show = (typeof force === "boolean") ? force : invOverlay.style.display === "none";
+      invOverlay.style.display = show ? "block" : "none";
+      if (show) { renderInvGrid(); }
+    }
+    async function openChest(chestId) {
+      if (!sideSession) { dlgResult("Nog geen sessie."); return; }
+      openChestId = chestId;
+      dlgResult("Kist openen (server-voorraad)…");
+      try {
+        const c = await postJSON("/api/v1/play/chest?session_id=" + encodeURIComponent(sideSession) + "&chest_id=" + encodeURIComponent(chestId), null, "GET");
+        const items = (c && c.items) || {};
+        const row = (k, q, dir) => "<li>" + (INV_GLYPH[k] || "•") + " <b>" + escHtml(INV_LABEL[k] || k) + "</b> ×" + q + " "
+          + '<button data-act="' + dir + '" data-id="' + escHtml(chestId) + '" data-item="' + k + '">'
+          + (dir === "chestdep" ? "→ kist" : "→ zak") + "</button></li>";
+        chestBody.innerHTML = "<h3>📦 Kist <code>" + escHtml(chestId.slice(0, 12)) + "…</code></h3>"
+          + "<h4>Zak</h4><ul>" + (Object.keys(INV_LABEL).filter((k) => (invItems[k] || 0) > 0).map((k) => row(k, invItems[k], "chestdep")).join("") || "<li class='muted'>leeg</li>") + "</ul>"
+          + "<h4>Kist</h4><ul>" + (Object.keys(items).map((k) => row(k, items[k], "chestwd")).join("") || "<li class='muted'>leeg</li>") + "</ul>"
+          + '<div id="side-result" class="muted" role="status"></div>';
+        chestOverlay.style.display = "block";
+        flagBoth("chest_used");
+      } catch (err) {
+        dlgResult("Geweigerd: " + ((err && err.message) ? err.message : String(err)));
+      }
+    }
+    function closeOverlays() {
+      invOverlay.style.display = "none";
+      chestOverlay.style.display = "none";
+      ghostKind = "";
+      try { stage.onclick = null; } catch (e) {}
+    }
+    // BIG55: NPC-systeem — spawn-eisen zichtbaar, huizen van
+    // spelerskamers, computers als capability-vensters (alleen
+    // bestaande routes, nooit permissies via persoonlijkheid).
+    let settledNpc = {};
+    async function refreshNpc() {
+      if (!sideSession) return;
+      try {
+        const n = await postJSON("/api/v1/play/npc?session_id=" + encodeURIComponent(sideSession), null, "GET");
+        settledNpc = {};
+        for (const e of ((n && n.npc) || [])) settledNpc[e.npc_id] = e.house_build_id;
+      } catch (e) {}
+    }
+    function npcMet(npc) {
+      if (!npc.needs) return true;
+      return hasFlag(npc.needs.flag) || srvFlags.has(npc.needs.flag);
+    }
+    function roomValid(b) {
+      // Kamer op grond + licht (fakkel/lamp) binnen 200px.
+      if (!b || b.kind !== "room" || Number(b.y) < 380) return false;
+      for (const l of invBuilds) {
+        if ((l.kind === "torch" || l.kind === "lamp") && Math.abs(Number(l.x) - Number(b.x)) < 200) return true;
+      }
+      return false;
+    }
+    function freeRooms() {
+      const taken = new Set(Object.values(settledNpc));
+      return invBuilds.filter((b) => b.kind === "room" && !taken.has(b.build_id));
+    }
+    async function npcDialog(npc) {
+      dlgTitle.textContent = npc.name + " · " + npc.role;
+      await refreshInv();
+      await refreshNpc();
+      const settled = settledNpc[npc.id];
+      let h = "<p>" + escHtml(npc.text) + "</p>";
+      if (!npcMet(npc)) {
+        h += "<p>🔒 <b>Nog niet beschikbaar</b> — " + escHtml(npc.needs.text) + "</p>";
+      } else if (!settled) {
+        const rooms = freeRooms().filter(roomValid);
+        h += "<p>🏠 <b>Zoekt woning.</b> Geldige kamer nodig (op grond + licht erbij).</p>";
+        if (rooms.length) {
+          h += "<ul>" + rooms.map((r) => "<li>kamer bij x" + Math.round(Number(r.x))
+            + ' <button data-act="npchouse" data-id="' + npc.id + "|" + escHtml(r.build_id) + '">Wijs toe</button></li>').join("") + "</ul>";
+        } else {
+          h += '<p class="muted">Geen geldige vrije kamer — craft een kamer, plaats hem op grond en zet er licht bij.</p>';
+        }
+      } else {
+        h += "<p>✓ <b>Woont hier</b> (kamer <code>" + escHtml(String(settled).slice(0, 12)) + "…</code>).</p>";
+        h += '<p><button data-act="npcomp" data-id="' + npc.id + '">💻 Computer</button></p>';
+      }
+      h += '<p><button data-act="npctalk" data-id="' + npc.id + '">💬 Praat (echte agent)</button></p>';
+      h += '<div id="side-result" class="muted" role="status"></div>';
+      dlgBody.innerHTML = h;
+    }
+    async function npcComputer(npcId) {
+      const npc = NPCS.find((n) => n.id === npcId);
+      if (!npc) return;
+      dlgTitle.textContent = "💻 " + npc.name + " — computer";
+      dlgResult("Live status lezen (bestaande routes)…");
+      try {
+        let h = "";
+        if (npc.computer === "fabrication") {
+          const st = await postJSON("/api/v1/play/status", null, "GET");
+          const chain = (st && st.fabrication) || [];
+          const states = {};
+          for (const c of chain) states[c.state] = (states[c.state] || 0) + 1;
+          h = "<p>Echte keten: " + Object.keys(states).map((s) => escHtml(s) + " " + states[s]).join(" · ") + ".</p>"
+            + '<p><a href="/fabrication">Fabrication →</a> · <a href="/workshop/3d">3D-workbench →</a></p>'
+            + '<p class="muted">Voorstellen lopen via bestaande flows; niets start vanzelf.</p>';
+        } else if (npc.computer === "knowledge") {
+          const j = await postJSON("/api/v1/play/journal", null, "GET");
+          h = "<p>" + ((j.counts && j.counts.dossiers_completed) || 0) + " dossiers onthouden, "
+            + ((j.counts && j.counts.memories_remembered) || 0) + " herinneringen.</p>"
+            + '<p><a href="/knowledge">Kennis →</a> · <a href="/memory">Geheugen →</a> · <a href="/research">Research →</a></p>';
+        } else if (npc.computer === "missions") {
+          const j = await postJSON("/api/v1/play/journal", null, "GET");
+          h = "<p>" + ((j.counts && j.counts.missions_active) || 0) + " actief, "
+            + ((j.counts && j.counts.missions_waiting) || 0) + " wachtend op YES.</p>"
+            + '<p><a href="/missions">Missies →</a> · <a href="/quests">Quests →</a> · <a href="/approvals">Approvals →</a></p>'
+            + '<p class="muted">Exacte YES blijft vereist — ik keur niets goed.</p>';
+        } else if (npc.computer === "nodes") {
+          let nodes = [];
+          try {
+            const nl = await postJSON("/api/v1/nodes?limit=5", null, "GET");
+            nodes = (nl && (nl.nodes || nl)) || [];
+            if (!Array.isArray(nodes)) nodes = [];
+          } catch (e) { nodes = []; }
+          h = nodes.length
+            ? "<ul>" + nodes.slice(0, 5).map((n) => "<li><code>" + escHtml(String(n.node_id || n.id || "?")) + "</code> "
+              + escHtml(String(n.status || n.state || "?")) + " · " + escHtml(String((n.capabilities || []).slice(0, 3).join(", ") || "—")) + "</li>").join("") + "</ul>"
+            : '<p class="muted">Geen nodes bereikbaar — start eerst een node (pull-only).</p>';
+          h += '<p><a href="/nodes">Nodes →</a></p>';
+          flagBoth("node_found");
+        } else if (npc.computer === "advise") {
+          h = '<p><button data-act="oracle">🌱 Vraag Oracle om advies</button> <button data-act="research">🔬 Onderzoek-station</button></p>'
+            + '<p class="muted">Zelfde flows als de codex — advies is richting, nooit feit.</p>';
+        } else {
+          h = "<p>" + escHtml(npc.text) + "</p>";
+        }
+        dlgBody.innerHTML = "<p>" + escHtml(npc.text) + "</p>" + h
+          + '<div id="side-result" class="muted" role="status"></div>';
+      } catch (err) {
+        dlgResult("Geweigerd: " + ((err && err.message) ? err.message : String(err)));
+      }
+    }
+    // BIG55: ruïnezender-mysterie — signaal → research → reparatie
+    // (zendmast plaatsen) → vlag + Seinwachter. Niets verzonnen:
+    // elke stap leest of schrijft echte stores.
+    async function machineDialog() {
+      dlgTitle.textContent = "📡 Ruïnezender";
+      const fixed = hasFlag("mystery") || srvFlags.has("mystery");
+      let h = "<p>Dode zender uit de oude tijd. " + (fixed ? "Hij zendt weer — de Seinwachter luistert." : "Signaal onvolledig.") + "</p>";
+      if (!fixed) {
+        const hasCompass = (invItems.compass || 0) > 0;
+        h += hasCompass
+          ? "<p>🧭 <b>Kompas trilt:</b> het signaal komt van <b>hier, x≈2500</b> — onderzoek het.</p>"
+          : "<p class='muted'>Zonder kompas is de bron onvindbaar. Craft er een (kristal + steen) — kristal slaapt tot het Modderhart verslagen is.</p>";
+        h += '<p><button data-act="research">🔬 Start signaal-onderzoek</button></p>'
+          + "<p>Reparatie: <b>zendmast</b> plaatsen binnen 250px (2 schroot + 1 kristal).</p>";
+      }
+      h += '<div id="side-result" class="muted" role="status"></div>';
+      dlgBody.innerHTML = h;
+    }
+    // BIG55: Modderhart — ontdekken → voorbereiden → 20s trotseren
+    // in de cirkel → beloning (candidate + kristal-vrij + wortels).
+    let modderUntil = 0;
+    async function nestDialog() {
+      dlgTitle.textContent = "🪹 Modderhart-nest";
+      await refreshInv();
+      if (hasFlag("modderhart") || srvFlags.has("modderhart")) {
+        dlgBody.innerHTML = "<p>Het nest is stil. Wortels dragen je nu over het moeras — kristal is wakker.</p>"
+          + '<div id="side-result" class="muted" role="status"></div>';
+        return;
+      }
+      const ready = (invItems.torch || 0) + (invItems.lamp || 0) > 0
+        && (invItems.plank || 0) > 0 && (invItems.fence || 0) > 0;
+      dlgBody.innerHTML = "<p>Het nest klopt. <b>Voorbereiding:</b> fakkel/lamp + plank + hekje in je zak.</p>"
+        + (ready
+          ? '<p><button data-act="moddergo">🪹 Trotseer het Modderhart (20s in de cirkel)</button></p>'
+          : '<p class="muted">Nog niet klaar — craft eerst fakkel, plank en hekje.</p>')
+        + '<div id="side-result" class="muted" role="status"></div>';
+    }
+    async function modderReward() {
+      flagBoth("modderhart");
+      try {
+        const list = await postJSON("/api/v1/candidates?limit=50", null, "GET");
+        const found = ((list && list.candidates) || []).find((c) => String(c.title || "") === "Modderhart verslagen");
+        if (!found) {
+          await postJSON("/api/v1/candidates", {title: "Modderhart verslagen", candidate_type: "observation", state: "observation",
+            summary: "Nest getrotseerd in het moeras; kristalvelden zijn wakker, wortels dragen over het water.",
+            evidence: [{text: "boss-encounter bij x=2850: 20s volgehouden"}]});
+        }
+      } catch (e) {}
+      addXp(20);
+      await refreshFlags();
+      dlgBody.innerHTML = "<h3>🪹 Modderhart verslagen</h3>"
+        + "<p><b>Beloning:</b> kristal is wakker (plukbaar), wortels dragen je, vondst geregistreerd in Kennis.</p>"
+        + '<p><a href="/knowledge">Kennis →</a></p>'
+        + '<div id="side-result" class="muted" role="status"></div>';
+      updateObjective();
+    }
+    // BIG55: questbord — hydroponics-questline met live vereisten
+    // (echte records/routes, geen tweede engine) + notities.
+    async function questBoard() {
+      dlgTitle.textContent = "📌 Projectbord — Hydroponics";
+      dlgResult("Vereisten controleren (bestaande stores)…");
+      try {
+        const [cands, runs, inv] = await Promise.all([
+          postJSON("/api/v1/candidates?limit=50", null, "GET").catch(() => null),
+          postJSON("/api/v1/research/runs?limit=20", null, "GET").catch(() => null),
+          (sideSession ? postJSON("/api/v1/play/inventory?session_id=" + encodeURIComponent(sideSession), null, "GET").catch(() => null) : null)
+        ]);
+        const hasWater = !!((cands && cands.candidates) || []).find((c) => /waterbron|vochtige grond/i.test(String(c.title || "")));
+        const hasDossier = Array.isArray(runs) ? runs.some((r) => r.dossier_id) : !!((runs && runs.runs) || []).some((r) => r.dossier_id);
+        const builds = ((inv && inv.builds) || []).map((b) => b.kind);
+        const items = (inv && inv.items) || {};
+        const reqs = [
+          ["Waterbron ontdekt", hasWater, "Registreer bij de waterbron (E)."],
+          ["Research afgerond", hasDossier, "Rond een onderzoek af (codex/station)."],
+          ["Container (kist geplaatst)", builds.includes("chest"), "Craft + plaats een kist."],
+          ["Lichtbron (fakkel/lamp)", (items.torch || 0) + (items.lamp || 0) > 0 || builds.includes("torch"), "Craft fakkel of lamp."],
+          ["Plant gepland (kamer + support)", builds.includes("room"), "Plaats een kamer; support een vondst."]
+        ];
+        let fabState = "onbekend";
+        try {
+          const fj = await postJSON("/api/v1/workshop/fabjobs?limit=5", null, "GET");
+          const jobs = (fj && (fj.fabjobs || fj.jobs || fj)) || [];
+          fabState = (Array.isArray(jobs) && jobs.length) ? jobs.length + " voorstel(len) open (inert)" : "nog geen voorstel";
+        } catch (e) { fabState = "onbekend (route onbereikbaar)"; }
+        let h = "<p>Hydroponics als echte questline — elke eis verwijst naar bestaand werk.</p><ul>";
+        for (const [label, ok, hint] of reqs) {
+          h += "<li>" + (ok ? "✓" : "○") + " <b>" + escHtml(label) + "</b><br><span class='muted'>" + escHtml(hint) + "</span></li>";
+        }
+        h += "<li>🔒 <b>Pomp (fab-voorstel)</b><br><span class='muted'>" + escHtml(fabState) + " — voorstellen zijn inert tot exacte YES.</span></li></ul>";
+        let notes = [];
+        try {
+          const nl = await postJSON("/api/v1/play/notes?session_id=" + encodeURIComponent(sideSession || ""), null, "GET");
+          notes = (nl && nl.notes) || [];
+        } catch (e) {}
+        h += "<h3>Notities</h3>" + (notes.length ? "<ul>" + notes.map((n) =>
+          "<li>" + (n.priority ? "❗ " : "") + "<b>" + escHtml(n.key) + "</b>: " + escHtml(n.text) + "</li>").join("") + "</ul>"
+          : '<p class="muted">Nog geen notities.</p>')
+          + "<p>Prioriteit: <code>!</code> vooraan + <button data-act='notesave' data-id='hydro_q'>Bewaar als prioriteit</button></p>"
+          + '<p><a href="/quests">Quests →</a> · <a href="/projects">Projecten →</a></p>'
+          + '<div id="side-result" class="muted" role="status"></div>';
+        dlgBody.innerHTML = h;
+      } catch (err) {
+        dlgResult("Geweigerd: " + ((err && err.message) ? err.message : String(err)));
+      }
+    }
+    async function postJSON(url, body, method) {
+      const m = method || "POST";
+      const opts = {method: m, headers: {"Content-Type": "application/json"}};
+      if (m !== "GET") opts.body = body ? JSON.stringify(body) : "{}";
+      const r = await fetch(url, opts);
+      const t = await r.text();
+      let j = null;
+      try { j = JSON.parse(t); } catch (e) {}
+      if (!r.ok) {
+        const detail = (j && (j.detail || j.error)) || t;
+        throw new Error("HTTP " + r.status + " " + String(detail).slice(0, 200));
+      }
+      return j;
+    }
+    function dlgResult(msg) {
+      const el = document.getElementById("side-result");
+      if (el) el.textContent = msg;
+    }
+    function nearestSpot() {
+      let best = null, bestD = 1e9;
+      for (const s of SPOTS) {
+        const d = Math.abs((player.x + player.w / 2) - s.x);
+        if (d < 80 && d < bestD) { best = s; bestD = d; }
+      }
+      return best;
+    }
+    function nearestNode() {
+      let best = null, bestD = 1e9;
+      for (const n of NODES) {
+        const d = Math.abs((player.x + player.w / 2) - n.x);
+        if (d < 70 && d < bestD) { best = n; bestD = d; }
+      }
+      return best ? {node: best, d: bestD} : null;
+    }
+    // BIG55: NPC's + kisten als wereldobjecten (E-prioriteit:
+    // node > NPC > kist > station).
+    function nearestNPC() {
+      let best = null, bestD = 1e9;
+      for (const n of NPCS) {
+        if (n.id === "mos") continue;
+        const d = Math.abs((player.x + player.w / 2) - n.x);
+        if (d < 90 && d < bestD) { best = n; bestD = d; }
+      }
+      return best;
+    }
+    function nearestChestBuild() {
+      let best = null, bestD = 1e9;
+      for (const b of invBuilds) {
+        if (b.kind !== "chest") continue;
+        const d = Math.abs((player.x + player.w / 2) - Number(b.x));
+        if (d < 80 && d < bestD) { best = b; bestD = d; }
+      }
+      return best;
+    }
+    // BIG55: kruiper (achtervolgt langzaam in de groeve) +
+    // modderhart-uitdaging (20s in de cirkel) + events.
+    let kruiperTouchAt = 0, coughAt = 0;
+    function activeEvents() {
+      // Afgeleid uit klok/dag/voorraad — geen daemon, geen threads.
+      const ev = [];
+      const day = worldClock.day || 1, phase = worldClock.phase || "day";
+      if (phase === "night") ev.push("spore_rain");
+      if (phase === "dawn" && worldMemory > 0) ev.push("bloom");
+      if (phase === "day" && day % 3 === 0) ev.push("trader");
+      if (phase === "night" && day % 5 === 4) ev.push("silence");
+      if (phase === "dusk" && day >= 2) ev.push("stormvlaag");
+      return ev;
+    }
+    function stepKruipers(dt) {
+      const now = Date.now();
+      const ev = activeEvents();
+      for (const k of KRUIPERS) {
+        const dx = (player.x + player.w / 2) - k.x;
+        if (Math.abs(dx) < 300) {
+          k.dir = dx >= 0 ? 1 : -1;
+          k.x += k.dir * k.speed * dt;
+        } else {
+          k.x += k.dir * k.speed * 0.4 * dt;
+        }
+        if (k.x < k.min) { k.x = k.min; k.dir = 1; }
+        if (k.x > k.max) { k.x = k.max; k.dir = -1; }
+        const dy = (player.y + player.h / 2) - 440;
+        if (Math.abs(dx) < 32 && Math.abs(dy) < 50 && now - kruiperTouchAt > 2000) {
+          kruiperTouchAt = now;
+          stunUntil = now + 1000;
+          player.vy = -300;
+          player.x = Math.max(0, Math.min(SW - player.w, player.x + (dx >= 0 ? 70 : -70)));
+          sayBubble("Kras! Een kruiper duwt je weg — geen schade, blijf bewegen.");
+          puff(k.x, 430, 14, "rgba(140,140,160,0.8)", 40, 60);
+        }
+      }
+      void ev;
+    }
+    function stepModderhart() {
+      // Uitdaging: 20s binnen de cirkel blijven.
+      if (!modderUntil) return;
+      const now = Date.now();
+      const dx = Math.abs((player.x + player.w / 2) - MODDERHART.x);
+      if (dx > MODDERHART.r) {
+        modderUntil = 0;
+        dlgResult("🪹 Mislukt — je verliet de cirkel. Probeer opnieuw bij het nest.");
+        return;
+      }
+      const left = Math.ceil((modderUntil - now) / 1000);
+      if (left <= 0) {
+        modderUntil = 0;
+        modderReward();
+        return;
+      }
+      promptEl.textContent = "🪹 Houd vol: " + left + "s in de cirkel!";
+    }
+    function stepPuffers(dt) {
+      const now = Date.now();
+      const ev = activeEvents();
+      const mult = (ev.includes("spore_rain") || ev.includes("stormvlaag")) ? 1.5 : 1;
+      for (const f of PUFFERS) {
+        f.x += f.dir * f.speed * mult * dt;
+        if (f.x < f.min) { f.x = f.min; f.dir = 1; }
+        if (f.x > f.max) { f.x = f.max; f.dir = -1; }
+        const dx = (player.x + player.w / 2) - f.x;
+        const dy = (player.y + player.h / 2) - 440;
+        if (Math.abs(dx) < 30 && Math.abs(dy) < 50 && now - puffTouchAt > 2000) {
+          puffTouchAt = now;
+          stunUntil = now + 1000;
+          player.vy = -300;
+          player.x = Math.max(0, Math.min(SW - player.w, player.x + (dx >= 0 ? 70 : -70)));
+          sayBubble("Plof! Een sporepuffer duwt je terug — geen schade, loop eromheen.");
+          if (!hasFlag("puffer")) { flagBoth("puffer"); addXp(5); }
+          puff(f.x, 430, 16, "rgba(200,160,220,0.8)", 40, 60);
+          renderGoals();
+        }
+      }
+    }
+    // BIG55: dichtstbijzijnde wint (node/NPC/kist/station) —
+    // geen vaste rangorde meer, altijd begrijpelijk via prompt.
+    async function spotInteract(s) {
+      if (s.npc) {
+        const hint = s.hints[mosHint % s.hints.length];
+        sayBubble(hint);
+        dlgTitle.textContent = s.glyph + " " + s.name;
+        dlgBody.innerHTML = "<p><b>" + escHtml(hint) + "</b></p>"
+          + '<p><button data-act="mostalk">💬 Praat met Mos (echte agent)</button></p>'
+          + '<p class="muted">Mos is geen script meer, maar een echte Hermes-agent met eigen sessie en wereldcontext. Advies via bestaande flows blijft hieronder bereikbaar.</p>'
+          + '<div id="moslive"><p class="muted">Mos leest de wereld…</p></div>'
+          + '<div id="mostalklog"></div>'
+          + '<div id="side-result" class="muted" role="status"></div>';
+        mosHint++;
+        renderMosLive();
+        return;
+      }
+      if (s.id === "bench") {
+        await renderBench();
+        return;
+      }
+      if (s.id === "plant") {
+        dlgTitle.textContent = s.glyph + " " + s.name;
+        dlgResult("Open vondsten lezen (bestaande Kennis)…");
+        let items = [];
+        try {
+          const list = await postJSON("/api/v1/candidates?limit=30", null, "GET");
+          items = ((list && list.candidates) || []).filter((c) =>
+            ["observation", "candidate", "supported"].includes(String(c.state || ""))).slice(0, 5);
+        } catch (e) { items = []; }
+        dlgBody.innerHTML = "<p>" + escHtml(s.text) + "</p>"
+          + "<h3>Open vondsten (" + items.length + ")</h3>"
+          + (items.length ? "<ul>" + items.map((c) =>
+            "<li><b>" + escHtml(String(c.title || "").slice(0, 110)) + "</b>"
+            + ' <span class="muted">[' + escHtml(String(c.state || "?")) + " · ♥ " + escHtml(String(c.supporters ?? "?")) + "]</span><br>"
+            + '<button data-act="ksup" data-id="' + escHtml(String(c.candidate_id || "")) + '">Support</button>'
+            + ' <a href="/knowledge">Kennis →</a></li>').join("") + "</ul>"
+            : '<p class="muted">Geen open vondsten — ontdekkingen verschijnen hier vanzelf.</p>')
+          + '<div id="side-result" class="muted" role="status"></div>'
+          + '<p class="muted">Support telt mee (2 nodig voor supported); fact-promotie eist verified_by op de Kennis-pagina.</p>';
+        return;
+      }
+      if (s.id === "water") {
+        dlgTitle.textContent = s.glyph + " " + s.name;
+        let h = "<p>" + escHtml(s.text) + "</p>";
+        h += '<p><button data-act="discover">🔎 Registreer ontdekking</button></p>';
+        h += '<div id="side-result" class="muted" role="status"></div>';
+        dlgBody.innerHTML = h;
+        return;
+      }
+      if (s.id === "codex") {
+        dlgTitle.textContent = s.glyph + " " + s.name;
+        dlgBody.innerHTML = "<p>" + escHtml(s.text) + "</p>"
+          + '<p><button data-act="oracle">🌱 Vraag Oracle om advies</button> <button data-act="research">🔬 Onderzoek-station</button> <button data-act="quest">🎮 Start quest + missie</button> <button data-act="wobs">👁 Waarnemingen</button></p>'
+          + '<div id="side-result" class="muted" role="status"></div>'
+          + '<div class="panel living"><b>♾ De Mycelium-lus — één systeem</b>'
+          + '<p class="muted">ECHTE WERELD → <button data-act="wobs">Waarnemen</button> → <a href="/world">INVENTory</a> → <button data-act="gomos">Hermes</button> → <a href="/research">Research</a> → <a href="/projects">Projecten</a> → <button data-act="quest">Missie</button> → <a href="/workshop/3d">Werkplaats</a> → ECHTE WERELD</p></div>'
+          + '<p class="muted">Zelfde bestaande flows als het station — nu vanuit de wereld, met exacte YES-gate.</p>';
+        return;
+      }
+      if (s.id === "board") {
+        await questBoard();
+        return;
+      }
+      if (s.id === "machine") {
+        await machineDialog();
+        return;
+      }
+      if (s.id === "nest") {
+        await nestDialog();
+        return;
+      }
+    }
+    async function interact() {
+      const px = player.x + player.w / 2;
+      const s = nearestSpot();
+      const nb = nearestNode();
+      const npc = nearestNPC();
+      const ch = nearestChestBuild();
+      const cands = [];
+      if (nb) cands.push({d: nb.d, fn: () => doGather(nb.node)});
+      if (npc) cands.push({d: Math.abs(px - npc.x), fn: () => npcDialog(npc)});
+      if (ch) cands.push({d: Math.abs(px - Number(ch.x)), fn: () => openChest(ch.build_id)});
+      if (s) cands.push({d: Math.abs(px - s.x), fn: () => spotInteract(s)});
+      if (!cands.length) return;
+      cands.sort((a, b) => a.d - b.d);
+      await cands[0].fn();
+    }
+    // -- Hermes NPC-chat (alle NPC's als echte agenten). Geschiedenis
+    // leeft duurzaam server-side (conversations/messages per
+    // npc-<id>-<sessie>); de Hermes-sessie is het live geheugen.
+    // Voorstellen lopen via de bestaande writes/approvals-flow;
+    // de agent voert niets uit. --
+    let mostalkLog = [];
+    let hermesDot = "…";
+    let mosPendingQ = "";
+    let currentNpc = "mos";
+    function npcDisplayName(npcId) {
+      try {
+        const list = (typeof NPCS !== "undefined" ? NPCS : []);
+        const found = list.find((entry) => entry && entry.id === npcId);
+        if (found && found.name) return String(found.name);
+      } catch (e) {}
+      const fallback = {mos: "Mos", oracle: "Orakel", smid: "Smid",
+        archivaris: "Archivaris", voorman: "Voorman",
+        seinwachter: "Seinwachter"};
+      return fallback[String(npcId)] || "Mos";
+    }
+    function renderMosLog() {
+      const el = document.getElementById("mostalklog");
+      if (!el) return;
+      const nm = escHtml(npcDisplayName(currentNpc));
+      el.innerHTML = mostalkLog.map((m) =>
+        "<p><b>" + (m.who === "speler" ? "🧑 Jij" : "🧙 " + nm + " (echte agent)") + ":</b> "
+        + escHtml(m.text).slice(0, 1200) + "</p>").join("")
+        + '<p><input id="mosmsg" type="text" maxlength="500" placeholder="Zeg iets tegen ' + nm + '…" style="width:70%"> '
+        + '<button data-act="mossend">Stuur</button></p>'
+        + '<p class="muted"><label><input id="npcscreen" type="checkbox"> Scherm betrekken (VLM-samenvatting, alleen tekst — kan ~1 min duren, nooit ruwe pixels)</label></p>'
+        + (currentNpc === "mos"
+          ? '<h3>Missie 0 — echt object toevoegen</h3>'
+          + '<p class="muted">Naam + beschrijving → voorstel → jij bevestigt met exacte YES op <a href="/approvals">Approvals</a>.</p>'
+          + '<p><input id="mosname" type="text" maxlength="120" placeholder="Objectnaam (bv. Soldeerbout)" style="width:40%"> '
+          + '<input id="mosdesc" type="text" maxlength="500" placeholder="Beschrijving" style="width:50%"></p>'
+          + '<p><button data-act="mospropose">📦 Stel voor aan INVENTory</button></p>'
+          : '<p class="muted">Voorstellen lopen via <a href="/approvals">Approvals</a> met exacte YES — de agent voert niets uit.</p>');
+    }
+    // -- Mos NPC live-card + Missie-0-tracker. Alles uit bestaande
+    // read-only routes; stappen vinken alleen wat backend-data
+    // bewijst. --
+    async function renderMosLive() {
+      const el = document.getElementById("moslive");
+      if (!el) return;
+      let hs = null, journal = null, latest = null, linked = 0;
+      try { hs = await postJSON("/api/v1/hermes/status", null, "GET"); } catch (e) { hs = null; }
+      try { journal = await postJSON("/api/v1/play/journal", null, "GET"); } catch (e) { journal = null; }
+      try {
+        const w = await postJSON("/api/v1/world/observations?limit=50", null, "GET");
+        const rows = ((w && w.observations) || []);
+        if (rows.length) latest = rows[0];
+        linked = rows.filter((o) => String(o.entity_ref || "")).length;
+      } catch (e) { latest = null; }
+      const c = ((journal && journal.counts) || {});
+      const invState = (((journal && journal.inventory) || {}).state) || "?";
+      const nmLive = npcDisplayName(currentNpc);
+      const hermesLine = (hs && hs.state === "REAL")
+        ? "🌿 " + nmLive + " · Hermes REAL" + (hs.version ? " " + escHtml(String(hs.version)) : "")
+        : "🌿 " + nmLive + " · Hermes UNAVAILABLE (" + escHtml(String((hs && hs.reason) || "onbereikbaar")).slice(0, 80) + ")";
+      const step = (done, label) => "<li>" + (done ? "[✓] " : "[ ] ") + escHtml(label) + "</li>";
+      const metMos = mostalkLog.length > 0;
+      const proposed = Number(c.missions_waiting || 0) > 0;
+      const invOk = invState === "ok";
+      const inWorld = linked > 0;
+      el.innerHTML = "<div class='panel living'><h3>" + hermesLine + "</h3>"
+        + "<p class='muted'>" + escHtml(nmLive) + " ziet: "
+        + escHtml(String(c.projects_open ?? "?")) + " projecten · "
+        + escHtml(String(c.candidates_open ?? "?")) + " vondsten · "
+        + escHtml(String(c.research_open ?? "?")) + " onderzoeken · INVENTory-backend " + escHtml(String(invState)) + ".</p>"
+        + (latest
+          ? "<p><b>Laatste wat de wereld zag:</b> " + escHtml(String(latest.entity_ref || "onbekend").slice(0, 60))
+            + " <span class='muted'>via " + escHtml(String(latest.node_id || "?")) + "/" + escHtml(String(latest.source || "?"))
+            + " · " + escHtml(String(latest.created_at || "?").slice(0, 19)) + "</span></p>"
+          : "<p class='muted'>Nog geen waarnemingen — de wereld is stil.</p>")
+        + "<h3>Missie 0 — Ontmoet Mos, breng één echt object</h3><ol>"
+        + step(metMos, "1 · Mos ontmoet (praat hieronder)")
+        + step(proposed, "2 · Voorstel ingediend (wachtend op YES: " + escHtml(String(c.missions_waiting ?? "?")) + ")")
+        + step(invOk, "3 · INVENTory-backend bereikbaar")
+        + step(inWorld, "4 · Object leeft in de wereld (" + linked + " gekoppelde waarnemingen)")
+        + "</ol><p class='muted'>Voorstel + exacte YES op <a href='/approvals'>Approvals</a> · wereld: <a href='/world'>/world</a></p></div>";
+    }
+    const WOBS_ENTITY_TYPES = {obj_: "object", proj_: "project", idea_: "idea", hw_: "hardware", sns_: "sensor", cam_: "camera", loc_: "location", mod_: "model", task_: "task", act_: "actuator", file_: "file"};
+    function wobsEntityType(ref) {
+      for (const prefix of Object.keys(WOBS_ENTITY_TYPES)) {
+        if (String(ref).startsWith(prefix)) return WOBS_ENTITY_TYPES[prefix];
+      }
+      return "";
+    }
+    async function renderObservations() {
+      dlgTitle.textContent = "👁 Waarnemingen — wat nodes zagen";
+      dlgResult("Waarnemingen lezen (read-only, geen eigendom)…");
+      let items = [];
+      try {
+        const res = await postJSON("/api/v1/world/observations?limit=10", null, "GET");
+        items = ((res && res.observations) || []).slice(0, 10);
+      } catch (e) { items = []; }
+      const sameEntity = {};
+      const entityNodes = {};
+      for (const o of items) {
+        const key = String(o.entity_ref || "onbekend");
+        sameEntity[key] = (sameEntity[key] || 0) + 1;
+        if (key !== "onbekend") {
+          (entityNodes[key] = entityNodes[key] || []).push(
+            String(o.node_id || "?") + " " + String(o.confidence ?? "?"));
+        }
+      }
+      const convergeOf = (entity) => {
+        const seen = entityNodes[entity] || [];
+        if (seen.length < 2) return "";
+        const uniq = [...new Set(seen)];
+        return " <span class='muted'>· 👁 " + seen.length + " waarnemingen (" + escHtml(uniq.join(" · ").slice(0, 160)) + ")</span>";
+      };
+      const spaceStrip = (() => {
+        const pts = items.filter((o) => typeof o.x === "number" && typeof o.y === "number");
+        if (!pts.length) return "<p class='muted'>Ruimtekaart: geen posities — observations met x/y (handmatig of test) verschijnen hier ruimtelijk.</p>";
+        const xs = pts.map((o) => o.x), ys = pts.map((o) => o.y);
+        const lo_x = Math.min(...xs), hi_x = Math.max(...xs), lo_y = Math.min(...ys), hi_y = Math.max(...ys);
+        const dots = pts.map((o) => {
+          const lx = (hi_x === lo_x) ? 50 : 4 + 92 * (o.x - lo_x) / (hi_x - lo_x);
+          const ly = (hi_y === lo_y) ? 50 : 4 + 92 * (o.y - lo_y) / (hi_y - lo_y);
+          const label = escHtml(String(o.entity_ref || "onbekend").slice(0, 24)) + " · " + escHtml(String(o.node_id || "?"));
+          return "<span title='" + label + "' style='position:absolute;left:" + lx.toFixed(1) + "%;top:" + ly.toFixed(1) + "%;color:#7fd67f'>●</span>";
+        }).join("");
+        return "<div class='panel living'><b>Ruimtekaart</b> <span class='muted'>(x/y uit observations — hover voor node)</span>"
+          + "<div style='position:relative;height:90px;border:1px solid #2d5a2d;border-radius:10px;background:#0e1a0e'>" + dots + "</div></div>";
+      })();
+      let capLine = "Camera/VLM-status wordt gelezen…";
+      try {
+        const caps = await postJSON("/api/v1/vision/capabilities", null, "GET");
+        const cap = (caps && caps.capture) || {}, vis = (caps && caps.vision) || {}, i360 = (caps && caps.insta360) || {};
+        capLine = "CAMERA " + escHtml(String(cap.state || "?")) + " (" + escHtml(String(cap.reason || "").slice(0, 90)) + ") · "
+          + "VLM " + escHtml(String(vis.state || "?")) + " (" + escHtml(String(vis.model || "?")) + ") · "
+          + "INSTA360 " + escHtml(String(i360.state || "?"));
+      } catch (e) { capLine = "Camera/VLM-status onleesbaar — niets verzonnen."; }
+      const screens = items.filter((o) => String(o.source || "") === "screen");
+      const screenLine = screens.length
+        ? "SCREEN OBSERVING — laatste schermwaarneming: " + escHtml(String(screens[0].created_at || "?").slice(0, 19)) + " via " + escHtml(String(screens[0].node_id || "?")) + "."
+        : "SCREEN UNAVAILABLE — geen scherm-waarnemingen vastgelegd (schermlezen ≠ handelen).";
+      const posOf = (o) => (o.x === null || o.x === undefined || o.y === null || o.y === undefined)
+        ? "geen positie"
+        : "x " + o.x + ", y " + o.y + (o.z === null || o.z === undefined ? "" : ", z " + o.z);
+      const provOf = (o) => {
+        const prov = (o.provenance && typeof o.provenance === "object") ? o.provenance : {};
+        const keys = Object.keys(prov).slice(0, 4);
+        return keys.length ? keys.map((k) => escHtml(k) + ": " + escHtml(String(prov[k]).slice(0, 60))).join(" · ") : "geen";
+      };
+      dlgBody.innerHTML = "<p>Elke rij is één waarneming door één node. Gedeelde entity_refs zijn convergerend bewijs — nooit eigendom.</p>"
+        + spaceStrip
+        + (items.length ? "<ul>" + items.map((o, idx) => {
+          const entity = String(o.entity_ref || "onbekend");
+          const shared = (sameEntity[entity] || 1) > 1 ? convergeOf(entity) : "";
+          const etype = wobsEntityType(entity);
+          return "<li><b>" + escHtml(entity.slice(0, 60)) + "</b>"
+            + ' <span class="muted">[' + escHtml(String(o.source || "?")) + " · "
+            + escHtml(String(o.node_id || "?")) + " · zekerheid "
+            + escHtml(String(o.confidence ?? "?")) + "]</span>" + shared + "<br>"
+            + '<span class="muted">Positie: ' + escHtml(posOf(o)) + " · Tijd: "
+            + escHtml(String(o.created_at || "?").slice(0, 19)) + "<br>Herkomst: " + provOf(o) + "</span><br>"
+            + (entity !== "onbekend"
+              ? '<a href="/world?entity_id=' + encodeURIComponent(entity) + '">Bekijk in wereld →</a> '
+                + (etype
+                  ? '<button data-act="entdetail" data-id="' + escHtml(entity) + '" data-slot="' + idx + '">INVENTory-record</button> '
+                  : '<span class="muted">geen single-record voor dit type</span> ')
+              : '<span class="muted">nog geen entity-koppeling</span>')
+            + ' <a href="/nodes">Nodes →</a> '
+            + (entity !== "onbekend"
+              ? '<button data-act="askhermes" data-id="' + escHtml(entity) + '">Vraag Hermes</button>'
+              : "")
+            + '<div id="entdetail-' + idx + '"></div></li>';
+        }).join("") + "</ul>"
+        : '<p class="muted">Nog geen waarnemingen — nodes, camera of scherm hebben nog niets vastgelegd.</p>')
+        + "<p><span class='muted'>" + screenLine + "</span></p>"
+        + "<p><span class='muted'>" + capLine + "</span></p>"
+        + "<p class='muted'>◯ observatie → ◯ wereld → ◯ INVENTory → ◯ Hermes → ◯ research → ◯ project → ◯ missie → ◯ werkplaats → ◯ echte wereld · "
+        + '<a href="/world">Wereld</a> · <a href="/projects">Projecten</a> · <a href="/research">Research</a> · <a href="/quests">Quests</a> · <a href="/workshop/3d">Werkplaats</a></p>'
+        + '<div id="side-result" class="muted" role="status"></div>';
+    }
+    async function renderEntityDetail(entity, slot) {
+      const el = document.getElementById("entdetail-" + slot);
+      if (!el) return;
+      const etype = wobsEntityType(entity);
+      if (!etype) {
+        el.innerHTML = '<p class="muted">Geen single-record voor dit type.</p>';
+        return;
+      }
+      el.innerHTML = '<p class="muted">Record lezen…</p>';
+      try {
+        const rec = await postJSON("/api/v1/world/entity/" + encodeURIComponent(etype) + "/" + encodeURIComponent(entity), null, "GET");
+        const rows = Object.entries(rec || {}).filter(([k]) => !["provenance"].includes(k)).slice(0, 8).map(([k, v]) =>
+          "<dt>" + escHtml(k) + "</dt><dd>" + escHtml(typeof v === "object" ? JSON.stringify(v).slice(0, 200) : String(v).slice(0, 200)) + "</dd>").join("");
+        el.innerHTML = "<dl>" + rows + "</dl>"
+          + '<p class="muted">Bron-record (alleen lezen — mutaties lopen via voorstel + YES).</p>';
+        try {
+          const w = await postJSON("/api/v1/world/observations?entity_ref=" + encodeURIComponent(entity) + "&limit=20", null, "GET");
+          const seen = ((w && w.observations) || []);
+          if (seen.length) {
+            const per = [...new Set(seen.map((o) => String(o.node_id || "?") + " (" + String(o.confidence ?? "?") + ")"))];
+            el.innerHTML += "<p><b>Waargenomen door:</b> " + escHtml(per.join(" · ").slice(0, 400)) + "</p>"
+              + '<p class="muted">Convergerend bewijs uit ' + seen.length + " waarneming(en) — geen eigendom.</p>";
+          } else {
+            el.innerHTML += '<p class="muted">Nog geen waarnemingen voor dit record — camera/node kan het observeren, VLM herkent zodra de lokale vision-stack beschikbaar is.</p>';
+          }
+        } catch (e2) {
+          el.innerHTML += '<p class="muted">Waarnemingen onleesbaar — niets verzonnen.</p>';
+        }
+      } catch (e) {
+        el.innerHTML = '<p class="muted">Record onleesbaar (verwijderd of backend offline) — niets verzonnen.</p>';
+      }
+    }
+    async function doMosTalk() {
+      renderMosLog();
+      renderMosLive();
+      try {
+        const h = await postJSON("/api/v1/hermes/history?npc_id=" + encodeURIComponent(currentNpc)
+          + "&session_id=" + encodeURIComponent(sideSession || "") + "&limit=20", null, "GET");
+        const turns = ((h && h.turns) || []).slice(-20);
+        if (turns.length && !mostalkLog.length) {
+          for (const t of turns) {
+            mostalkLog.push({who: String(t.role) === "user" ? "speler" : "mos",
+              text: String(t.content || "").slice(0, 1200)});
+          }
+          renderMosLog();
+        }
+      } catch (e) {}
+      if (!mostalkLog.length) {
+        mostalkLog.push({who: "mos", text: "Hoi! Ik ben " + npcDisplayName(currentNpc) + " — geen script meer, maar een echte agent. Waarmee kan ik je helpen?" + (currentNpc === "mos" ? " (Tip: zeg dat je een echt object wilt toevoegen.)" : "")});
+        renderMosLog();
+      }
+      dlgResult("Mos leest de wereld (sessie npc-mos-…)…");
+      try {
+        const hs = await postJSON("/api/v1/hermes/status", null, "GET");
+        hermesDot = (hs && hs.state === "REAL")
+          ? "REAL" + ((hs && hs.version) ? " " + hs.version : "")
+          : "UNAVAILABLE (" + String((hs && hs.reason) || "?").slice(0, 80) + ")";
+      } catch (e) {
+        hermesDot = "UNAVAILABLE (onbereikbaar)";
+      }
+      try {
+        const j = await postJSON("/api/v1/play/journal", null, "GET");
+        const c = (j && j.counts) || {};
+        dlgResult("Hermes: " + hermesDot + " · Mos ziet: " + (c.projects_open || 0) + " projecten, " + (c.candidates_open || 0) + " vondsten, " + (c.memories_remembered || 0) + " herinneringen.");
+      } catch (e) {
+        dlgResult("Hermes: " + hermesDot + " · Journal onleesbaar — gesprek kan toch doorgaan.");
+      }
+    }
+    async function doMosSend() {
+      const input = document.getElementById("mosmsg");
+      const text = input ? String(input.value || "").trim().slice(0, 500) : "";
+      if (!text) throw new Error("typ eerst een bericht");
+      const screenBox = document.getElementById("npcscreen");
+      const includeScreen = !!(screenBox && screenBox.checked);
+      const nm = npcDisplayName(currentNpc);
+      mostalkLog.push({who: "speler", text: text});
+      renderMosLog();
+      dlgResult(nm + " denkt na via Hermes (bestaande bridge, timeout 60s)…");
+      try {
+        const r = await postJSON("/api/v1/hermes/chat", {npc_id: currentNpc, message: text, session_id: sideSession || "", include_screen: includeScreen});
+        mostalkLog.push({who: "mos", text: String((r && r.text) || "…")});
+        renderMosLog();
+        sayBubble(String((r && r.text) || "").slice(0, 140));
+        let replyState = nm + " antwoordde (sessie " + String((r && r.session_key) || "?") + ").";
+        if (includeScreen) {
+          const v = (r && r.screen_vlm) || {};
+          replyState += v.state === "REAL"
+            ? " Schermcontext REAL (" + String(v.model || "VLM") + "): " + String(v.summary || "").slice(0, 160)
+            : " Schermcontext " + String(v.state || "UNAVAILABLE") + " — " + String(v.reason || "geen samenvatting beschikbaar").slice(0, 160);
+        }
+        dlgResult(replyState);
+      } catch (err) {
+        const msg = String((err && err.message) || "");
+        mostalkLog.push({who: "mos", text: "⚠️ Ik ben nu onbereikbaar (" + msg.slice(0, 120) + "). Mijn hints blijven werken; probeer later opnieuw."});
+        renderMosLog();
+        dlgResult("Hermes onbereikbaar — eerlijke fallback, niets verzonnen.");
+      }
+    }
+    async function openNpcChat(npcId) {
+      currentNpc = String(npcId || "mos");
+      mostalkLog = [];
+      const nm = npcDisplayName(currentNpc);
+      dlgTitle.textContent = "💬 " + nm + " — echte agent";
+      dlgBody.innerHTML = "<p class='muted'>" + escHtml(nm) + " is geen script, maar een echte Hermes-agent met eigen sessie en wereldcontext. Advies via bestaande flows blijft bereikbaar.</p>"
+        + '<div id="moslive"><p class="muted">' + escHtml(nm) + " leest de wereld…</p></div>"
+        + '<div id="mostalklog"></div>'
+        + '<div id="side-result" class="muted" role="status"></div>';
+      await doMosTalk();
+    }
+    async function doMosPropose() {
+      const nameEl = document.getElementById("mosname");
+      const descEl = document.getElementById("mosdesc");
+      const name = nameEl ? String(nameEl.value || "").trim().slice(0, 120) : "";
+      const desc = descEl ? String(descEl.value || "").trim().slice(0, 500) : "";
+      if (!name) throw new Error("geef het object een naam");
+      dlgResult("Voorstel aanmaken via bestaande writes-flow (inert)…");
+      const obj = await postJSON("/api/v1/writes/inventory", {mutation: "create", entity_type: "object", fields: {name: name, description: desc || ("Voorgesteld via Mos (Missie 0)"), quantity: 1}, actor: "game"});
+      const pid = obj && obj.proposal && obj.proposal.proposal_id;
+      if (!pid) throw new Error("voorstel niet opgeslagen");
+      mostalkLog.push({who: "mos", text: "Voorstel " + pid + " klaar (" + name + "). Bevestig het zelf met exacte YES op de Approvals-pagina — ik voer niets uit."});
+      renderMosLog();
+      dlgResult("Voorstel " + pid + " inert opgeslagen — bevestig op ");
+      const el = document.getElementById("side-result");
+      if (el) el.innerHTML = 'Voorstel <code>' + escHtml(pid) + '</code> inert opgeslagen — bevestig op <a href="/approvals">Approvals</a> met exacte YES.';
+    }
+    // bestaande GET-reads (play/status, workshop/models) plus
+    // links naar bestaande pagina's. Start niets: geen slicer,
+    // printer, fysieke actie of approval — nergens een POST. --
+    const FAB_NEXT = {
+      "idea": ["/knowledge", "Vondsten"],
+      "project": ["/projects", "Projecten"],
+      "materials": ["/workshop", "Workshop"],
+      "model/CAD": ["/workshop/3d", "3D-workbench"],
+      "mesh": ["/workshop/3d", "3D-workbench"],
+      "validation": ["/workshop/3d", "3D-workbench"],
+      "Forge": ["/forge", "Forge"],
+      "proposal": ["/fabrication", "Voorstellen"],
+      "observation": ["/cameras", "Camera-inbox"],
+      "verification": ["/writes", "Verificatie"],
+      "event": ["/activity", "Activiteit"]
+    };
+    const FAB_MEANING = {
+      "REAL": "bestaat en werkt",
+      "SIMULATED": "nagespeeld — niet echt uitgevoerd",
+      "BLOCKED": "geblokkeerd achter een gate",
+      "UNAVAILABLE": "niet beschikbaar",
+      "TEST": "proef — geen bewijs"
+    };
+    function fabChip(state) {
+      if (state === "REAL") return "✅";
+      if (state === "SIMULATED") return "🎭";
+      if (state === "BLOCKED") return "⛔";
+      if (state === "UNAVAILABLE") return "🔌";
+      return "❔";
+    }
+    async function renderBench() {
+      dlgTitle.textContent = "🛠️ Werkbank — fabricageketen";
+      dlgResult("Keten lezen (bestaande reads, start niets)…");
+      await refreshInv();
+      let chain = [];
+      try {
+        const st = await postJSON("/api/v1/play/status", null, "GET");
+        chain = (st && st.fabrication) || [];
+      } catch (e) {
+        chain = [];
+      }
+      let models = [];
+      try {
+        const m = await postJSON("/api/v1/workshop/models?limit=3", null, "GET");
+        models = ((m && m.models) || []).slice(0, 3);
+      } catch (e) {
+        models = [];
+      }
+      let h = "<h3>🛠️ Craften (sessie-voorraad, game-state)</h3>"
+        + "<ul>" + RECIPES.map((r) => {
+          const owned = (invItems[r.id] || 0);
+          return "<li><b>" + escHtml(r.label) + "</b> <span class='muted'>(" + escHtml(r.cost) + ") — "
+            + escHtml(r.desc) + (owned ? " · in voorraad: " + owned : "") + "</span><br>"
+            + '<button data-act="craft" data-id="' + r.id + '">Craft</button> '
+            + (PLACEABLE_INFO[r.id]
+              ? '<button data-act="place" data-id="' + r.id + '">Plaats…</button>' : "")
+            + "</li>";
+        }).join("") + "</ul>"
+        + "<p>Echte keten, alleen lezen — de werkbank bouwt niets. Niets is geprint tot een echte printer dat zegt.</p>";
+      if (models.length) {
+        h += "<h3>Modellen (" + models.length + ")</h3><ul>" + models.map((m) =>
+          "<li><code>" + escHtml(String(m.model_id || "?")) + "</code> <span class='muted'>"
+          + escHtml(String(m.filename || m.state || "")) + "</span> "
+          + '<a href="/workshop/3d">3D-workbench →</a></li>').join("") + "</ul>";
+      } else {
+        h += '<p class="muted">Geen modellen geregistreerd — eerlijk leeg. Registreren kan via <a href="/workshop/3d">3D-workbench</a>.</p>';
+      }
+      h += "<h3>Keten (" + chain.length + " stappen)</h3>";
+      if (!chain.length) {
+        h += '<p class="muted">Keten onleesbaar — probeer <a href="/fabrication">Fabrication →</a>.</p>';
+      } else {
+        h += "<ul>" + chain.map((c) => {
+          const step = String(c.step || "?"), state = String(c.state || "?");
+          const mean = FAB_MEANING[state] || state;
+          const nxt = FAB_NEXT[step];
+          let act;
+          if (nxt) act = '<a href="' + nxt[0] + '">' + nxt[1] + ' →</a>';
+          else if (step === "slicing") act = '<span class="muted">geen actie — test-slice refs only, geen echte G-code</span>';
+          else if (step === "approval") act = '<span class="muted">geen knop — exacte YES op <a href="/approvals">Approvals</a>, start niets vanzelf</span>';
+          else if (step === "execution") act = '<span class="muted">geen knop — printer + adapter + YES + hardware vereist</span>';
+          else act = '<span class="muted">geen actie</span>';
+          return "<li>" + fabChip(state) + " <b>" + escHtml(step) + "</b> [" + escHtml(state) + " — " + escHtml(mean) + "]<br><span class='muted'>"
+            + escHtml(String(c.via || "")) + (c.detail ? " · " + escHtml(String(c.detail)) : "") + "</span><br>" + act + "</li>";
+        }).join("") + "</ul>";
+      }
+      h += '<p class="muted">Legenda: ✅ REAL werkt echt · 🎭 SIMULATED nagespeeld · ⛔ BLOCKED achter gate · 🔌 UNAVAILABLE offline/ontbrekend. TEST geldt voor dossiers (zie Journal), niet voor deze keten.</p>'
+        + '<p><a href="/fabrication">Fabrication →</a> · <a href="/workshop/3d">3D-workbench →</a></p>'
+        + '<div id="side-result" class="muted" role="status"></div>';
+      dlgBody.innerHTML = h;
+    }
+    async function doDiscover() {
+      dlgResult("Bestaande candidates lezen (geen duplicaat)…");
+      const list = await postJSON("/api/v1/candidates?limit=50", null, "GET");
+      const found = ((list && list.candidates) || []).find((c) => String(c.title || "") === DISCOVERY_TITLE);
+      if (found) {
+        discoveryId = found.candidate_id;
+        dlgResult("Al geregistreerd: " + discoveryId + " — geen duplicaat gemaakt.");
+      } else {
+        const made = await postJSON("/api/v1/candidates", {title: DISCOVERY_TITLE, candidate_type: "observation", state: "observation",
+          summary: "Vochtige grond bij de waterbron in de side-wildernis; mogelijk geschikt voor een hydroponics-experiment.",
+          evidence: [{text: "side-view waarneming bij x=900: donkere vochtige grond rand waterbron"}]});
+        discoveryId = made.candidate_id;
+        addXp(10);
+        puff(910, 445, 22, "rgba(150,210,255,0.8)", 60, 60);
+        dlgResult("✅ Ontdekking geregistreerd: " + discoveryId + " (+10 XP, optioneel).");
+      }
+      dlgBody.innerHTML = "<h3>🔎 " + escHtml(DISCOVERY_TITLE) + "</h3>"
+        + '<p><a href="/knowledge">Open in Kennis →</a> <span class="muted">' + escHtml(discoveryId) + "</span></p>"
+        + '<p><button data-act="oracle">🌱 Vraag Oracle om advies</button> <button data-act="research">🔬 Onderzoek-station</button></p>'
+        + '<div id="side-result" class="muted" role="status"></div>'
+        + '<p class="muted">Echte flows: advies kan UNAVAILABLE zijn als het model offline is — nooit verzonnen.</p>';
+      updateObjective();
+    }
+    async function doOracle() {
+      dlgResult("Oracle leest je wereld (read-only)…");
+      try {
+        const ans = await postJSON("/api/v1/advise", {q: "hydroponics waterbron", question: "Wat kan ik met vochtige grond bij een waterbron voor hydroponics doen? Eén concreet advies."});
+        if (!oracleUsed) { addXp(5); oracleUsed = true; }
+        const srcs = (ans && ans.sources) || [];
+        dlgBody.innerHTML = "<h3>🌱 Oracle-advies [" + escHtml(String((ans && ans.model) || "?")) + "]</h3>"
+          + "<p>" + escHtml(String((ans && ans.advice) || "").slice(0, 1200)) + "</p>"
+          + '<p class="muted">' + escHtml(String((ans && ans.records_used) ?? "?")) + " records</p>"
+          + "<ul>" + srcs.slice(0, 5).map((s) => "<li><code>" + escHtml(String(s.entity_id || "").slice(0, 40)) + "</code></li>").join("") + "</ul>"
+          + '<p><button data-act="quest">🎮 Start quest + missie</button></p>'
+          + '<div id="side-result" class="muted" role="status"></div>';
+      } catch (e) {
+        const unavailable = String((e && e.message) || "").indexOf("502") !== -1;
+        dlgBody.innerHTML = "<h3>🌱 Oracle</h3><p>" + (unavailable ? "🔌 <b>UNAVAILABLE</b> — model offline. Niets verzonnen; probeer Research." : "⛔ <b>BLOCKED</b> — " + escHtml(String((e && e.message) || "").slice(0, 200))) + "</p>"
+          + '<p><button data-act="research">🔬 Zet Research-vraag uit</button></p>'
+          + '<div id="side-result" class="muted" role="status"></div>';
+      }
+      updateObjective();
+    }
+    let resRunId = "", resDossierId = "";
+    async function doResearch() {
+      dlgResult("Research-vraag in queue zetten…");
+      const made = await postJSON("/api/v1/research/queue", {question: "Welke hydroponics-aanpak past bij vochtige grond naast een waterbron?", route: "local"});
+      resRunId = String(made.run_id || "");
+      resDossierId = "";
+      if (!researchUsed) { addXp(5); researchUsed = true; }
+      dlgBody.innerHTML = "<h3>🔬 Onderzoek-station</h3>"
+        + "<p>Vraag in queue: run <b>" + escHtml(resRunId) + "</b> [" + escHtml(String(made.status || "?")) + "]</p>"
+        + '<p><button data-act="resrun">▶ Voer 1× uit (bestaande provider)</button></p>'
+        + '<p><a href="/research">Volledig Research →</a></p>'
+        + '<div id="side-result" class="muted" role="status"></div>'
+        + '<p class="muted">Uitvoeren draait de echte provider; offline of fout → eerlijke reden, niets verzonnen.</p>';
+      updateObjective();
+    }
+    async function doResRun() {
+      if (!resRunId) throw new Error("geen run — zet eerst een vraag in de queue");
+      dlgResult("Run 1× uitvoeren via bestaande engine…");
+      const done = await postJSON("/api/v1/research/queue/run-once", {});
+      if (done && done.ran) {
+        resDossierId = String(done.dossier_id || "");
+        const run = await postJSON("/api/v1/research/runs/" + encodeURIComponent(done.run_id || resRunId), null, "GET");
+        let dossier = null;
+        if (resDossierId) {
+          try { dossier = await postJSON("/api/v1/research/dossiers/" + encodeURIComponent(resDossierId), null, "GET"); }
+          catch (e) { dossier = null; }
+        }
+        if (!dossier || !dossier.dossier_id) {
+          // Eerlijk: run zonder bruikbaar dossier is geen dossier.
+          // Geen Plan-knop — alleen geldige vervolgstappen.
+          dlgBody.innerHTML = "<h3>🔬 Onderzoek-station</h3>"
+            + "<p>Run volbracht <b>zonder bruikbaar dossier</b> (0 bronnen/claims).</p>"
+            + '<p><button data-act="resrun">Opnieuw proberen</button> <button data-act="oracle">🌱 Vraag Oracle</button></p>'
+            + await dossierListHtml()
+            + '<div id="side-result" class="muted" role="status"></div>'
+            + '<p class="muted">Alleen voltooide dossiers met inhoud krijgen een Plan-knop.</p>';
+          updateObjective();
+          return;
+        }
+        const findings = ((dossier && dossier.key_findings) || []).slice(0, 4).map((f) =>
+          "<li>" + escHtml(String((f && f.text) || f || "").slice(0, 200)) + "</li>").join("");
+        // BIG51: dossier → geheugen is de bestaande auto-remember
+        // (external_source, nooit feit). Toon het echte mem_-record
+        // als bewijs; de wereld leest de telling via het Journal.
+        let memLine = "";
+        try {
+          const runFull = await postJSON("/api/v1/research/runs/" + encodeURIComponent(done.run_id || resRunId), null, "GET");
+          const mid = String((runFull && runFull.memory_id) || "");
+          const org = String((runFull && runFull.execution_state) || "");
+          if (mid) {
+            // BIG52: herkomst erbij — TEST is proef, nooit bewijs.
+            const note = org === "REAL"
+              ? "externe interpretatie — geen geverifieerd feit"
+              : "proefherkomst " + (org || "?") + " — geen bewijs, geen feit";
+            memLine = "<p>📚 <b>Onthouden als " + escHtml(mid) + "</b> <span class='muted'>(" + escHtml(note) + ")</span> "
+              + '<a href="/memory">Geheugen →</a> <span class="muted">· zie Journal</span></p>';
+            flagBoth("remembered");
+          }
+        } catch (e) {}
+        await refreshWorldMemory();
+        dlgBody.innerHTML = "<h3>📄 Dossier</h3>"
+          + "<p><b>" + escHtml(String((dossier && dossier.title) || (run && run.question) || resRunId).slice(0, 160)) + "</b></p>"
+          + (findings ? "<ul>" + findings + "</ul>" : '<p class="muted">Dossier zonder key findings — zie volledige Research-pagina.</p>')
+          + memLine
+          + '<p><button data-act="resplan">🧭 Plan → missie (inert, YES vereist)</button> <a href="/research">Dossier →</a></p>'
+          + await dossierListHtml()
+          + '<div id="side-result" class="muted" role="status"></div>';
+      } else {
+        dlgBody.innerHTML = "<h3>🔬 Onderzoek-station</h3>"
+          + "<p>⏸️ Niet uitgevoerd: <b>" + escHtml(String((done && done.reason) || "onbekend")) + "</b></p>"
+          + '<p><button data-act="resrun">Opnieuw proberen</button> <button data-act="oracle">🌱 Vraag Oracle</button></p>'
+          + await dossierListHtml()
+          + '<div id="side-result" class="muted" role="status"></div>'
+          + '<p class="muted">Eerlijke stop — geen dossier verzonnen. Spelen gaat gewoon door.</p>';
+      }
+      updateObjective();
+    }
+    async function dossierListHtml() {
+      // Echte voltooide dossiers (ook van eerdere runs): ieder dossier
+      // kan een inert missieplan krijgen via de bestaande gate.
+      let out = "";
+      try {
+        const all = await postJSON("/api/v1/research/dossiers?limit=5", null, "GET");
+        const list = Array.isArray(all) ? all : [];
+        if (list.length) {
+          out = "<h3>Voltooide dossiers</h3><ul>" + list.slice(0, 5).map((d) => {
+            const did = String(d.dossier_id || "");
+            // Planbaar = afgeronde inhoud (completed/REAL/TEST zijn
+            // inhoudslabels, geen toestemming). De backend blijft
+            // eindoordeel via de leesbare 422-view.
+            const st = String(d.execution_state || "");
+            const ok = (st === "completed" || st === "REAL" || st === "TEST");
+            return "<li><b>" + escHtml(String(d.title || did).slice(0, 110)) + "</b>"
+              + ' <span class="muted">[' + escHtml(st || "?") + "]</span> "
+              + (ok ? '<button data-act="resplan2" data-id="' + escHtml(did) + '">Plan → missie</button>'
+                 : '<span class="muted">niet planbaar</span>');
+          }).join("") + "</ul>";
+        }
+      } catch (e) {}
+      return out;
+    }
+    async function doResPlan(target) {
+      const rid = String(target || resDossierId || resRunId || "").trim();
+      if (!rid) throw new Error("geen onderzoek om te plannen");
+      dlgResult("Inert missieplan voorstellen (niets approved)…");
+      let plan = null;
+      try {
+        plan = await postJSON("/api/v1/research/" + encodeURIComponent(rid) + "/plan", {});
+      } catch (e) {
+        // 422 = backend weigert terecht (geen afgerond dossier):
+        // leg uit in klare taal en keer terug naar het station.
+        dlgBody.innerHTML = "<h3>🧭 Geen missieplan mogelijk</h3>"
+          + "<p>" + escHtml(String((e && e.message) || "").replace(/^HTTP 422 /, "").slice(0, 220)) + "</p>"
+          + '<p><button data-act="resrun">Terug naar station</button> <button data-act="oracle">🌱 Vraag Oracle</button></p>'
+          + await dossierListHtml()
+          + '<div id="side-result" class="muted" role="status"></div>'
+          + '<p class="muted">Alleen een afgerond dossier met inhoud is planbaar — nooit verzonnen.</p>';
+        updateObjective();
+        return;
+      }
+      const mid = String((plan && plan.mission_id) || "");
+      dlgBody.innerHTML = "<h3>🧭 Missieplan</h3>"
+        + "<p><b>" + escHtml(String((plan && plan.goal) || "").slice(0, 160)) + "</b> [" + escHtml(String((plan && plan.status) || "pending_approval")) + "]</p>"
+        + (mid ? '<p><a href="/missions/' + escHtml(mid) + '">Open missie →</a> <span class="muted">exacte YES blijft vereist — niets start vanzelf</span></p>' : "")
+        + '<p><button data-act="quest">🎮 Of start quest + missie</button></p>'
+        + '<div id="side-result" class="muted" role="status"></div>';
+      updateObjective();
+    }
+    async function doQuest() {
+      dlgResult("Quest + missie aanmaken (niets approved)…");
+      const made = await postJSON("/api/v1/play/mission", {goal: "Hydroponics-proef bij de waterbron", context: DISCOVERY_TITLE});
+      flagBoth("quest");
+      addXp(5);
+      dlgBody.innerHTML = "<h3>🎮 Quest gestart</h3>"
+        + "<p>Quest <b>" + escHtml(String(made.quest_id || "")) + "</b> · missie <b>" + escHtml(String(made.status || "?")) + "</b></p>"
+        + '<p><a href="/missions/' + escHtml(String(made.mission_id || "")) + '">Open missie →</a> <span class="muted">exacte YES blijft vereist</span> · <a href="/quests">Quests →</a></p>'
+        + '<div id="side-result" class="muted" role="status"></div>';
+      updateObjective();
+    }
+    dlgBody.addEventListener("click", async (e) => {
+      const btn = (e.target && e.target.closest) ? e.target.closest("button[data-act]") : null;
+      if (!btn) return;
+      const act = btn.getAttribute("data-act");
+      try {
+        if (act === "discover") await doDiscover();
+        else if (act === "oracle") await doOracle();
+        else if (act === "wobs") await renderObservations();
+        else if (act === "research") await doResearch();
+        else if (act === "resrun") await doResRun();
+        else if (act === "resplan") await doResPlan();
+        else if (act === "resplan2") await doResPlan(btn.getAttribute("data-id") || "");
+        else if (act === "quest") await doQuest();
+        else if (act === "ksup") {
+          const cid = btn.getAttribute("data-id") || "";
+          if (!cid) throw new Error("kandidaat onbekend");
+          dlgResult("Support vastleggen via bestaande gate…");
+          const upd = await postJSON("/api/v1/candidates/" + encodeURIComponent(cid) + "/support", {supporter: "speler", rationale: ""});
+          dlgResult("♥ " + String(upd.supporters ?? "?") + " support — staat: " + String(upd.state || "?") + ". Ververs de plantplek voor de lijst.");
+        } else if (act === "jyes") {
+          const mid = btn.getAttribute("data-id") || "";
+          if (!mid) throw new Error("missie onbekend");
+          dlgResult("Exacte YES vastleggen via bestaande gate…");
+          const res = await postJSON("/api/v1/missions/" + encodeURIComponent(mid) + "/approve", {response: "YES", decided_by: "speler"});
+          if (String(res.status || "") !== "approved") throw new Error("YES geweigerd door bestaande gate");
+          await renderJournal();
+          dlgResult("Missie approved — tik nu om te drijven.");
+        } else if (act === "jtick") {
+          const mid = btn.getAttribute("data-id") || "";
+          if (!mid) throw new Error("missie onbekend");
+          dlgResult("Tik loopt — drijft tot de eerstvolgende gate…");
+          const t = await postJSON("/api/v1/missions/" + encodeURIComponent(mid) + "/tick", {});
+          await renderJournal();
+          dlgResult("Tik klaar: " + String(t.status || "?") + " (" + String(t.outcome || "") + ").");
+        } else if (act === "jdrive") {
+          const path = btn.getAttribute("data-path") || "";
+          const label = btn.getAttribute("data-label") || "Drive";
+          if (!path || path.charAt(0) !== "/") throw new Error("drive-doel onbekend");
+          let body = {};
+          try {
+            const raw = btn.getAttribute("data-body") || "";
+            if (raw) body = JSON.parse(decodeURIComponent(raw));
+          } catch (e) { body = {}; }
+          dlgResult(label + " loopt via bestaande gate…");
+          const r = await postJSON(path, body);
+          await renderJournal();
+          dlgResult(label + " klaar: " + String(JSON.stringify(r)).slice(0, 220) + ".");
+        } else if (act === "craft") {
+          await doCraft(btn.getAttribute("data-id") || "");
+        } else if (act === "place") {
+          const kind = btn.getAttribute("data-id") || "";
+          ghostKind = (ghostKind === kind) ? "" : kind;
+          // Runtime-draad (zie ghostClick): moduswissel bezit de klik.
+          try { stage.onclick = ghostKind ? ghostClick : null; } catch (e) {}
+          dlgResult(ghostKind
+            ? "Plaatsmodus: klik in het veld waar de " + ghostKind + " komt (plank alleen bij de kloof x≈1160). Opnieuw klikken = annuleren."
+            : "Plaatsmodus uit.");
+        } else if (act === "invplace") {
+          const kind = btn.getAttribute("data-id") || "";
+          toggleInv(false);
+          ghostKind = kind;
+          try { stage.onclick = ghostClick; } catch (e) {}
+          dlgResult("Plaatsmodus: klik in het veld waar de " + kind + " komt.");
+        } else if (act === "npchouse") {
+          const parts = String(btn.getAttribute("data-id") || "").split("|");
+          if (parts.length !== 2) throw new Error("woning onbekend");
+          dlgResult("NPC huisvesten (kamer moet geldig zijn)…");
+          const done = await postJSON("/api/v1/play/npc/assign", {session_id: sideSession, npc_id: parts[0], house_build_id: parts[1]});
+          if (done && done.settled) {
+            flagBoth("housed");
+            await refreshNpc();
+            dlgResult("🏠 " + parts[0] + " woont nu hier.");
+            const npc = NPCS.find((n) => n.id === parts[0]);
+            if (npc) await npcDialog(npc);
+          }
+        } else if (act === "npcomp") {
+          await npcComputer(btn.getAttribute("data-id") || "");
+        } else if (act === "chestdep" || act === "chestwd") {
+          const cid = btn.getAttribute("data-id") || "";
+          const item = btn.getAttribute("data-item") || "";
+          dlgResult("Kisttransfer (server valideert)…");
+          const r = await postJSON("/api/v1/play/chest/" + (act === "chestdep" ? "deposit" : "withdraw"),
+            {session_id: sideSession, chest_id: cid, item: item, qty: 1});
+          if (r) {
+            await refreshInv();
+            await openChest(cid);
+          }
+        } else if (act === "notesave") {
+          const key = btn.getAttribute("data-id") || "hydro_q";
+          dlgResult("Notitie bewaren met prioriteit…");
+          const r = await postJSON("/api/v1/play/notes", {session_id: sideSession, key: key, text: "Hydroponics eerst: water + licht, pomp later via voorstel.", priority: true});
+          if (r) { dlgResult("📌 Notitie bewaard."); await questBoard(); }
+        } else if (act === "moddergo") {
+          modderUntil = Date.now() + 20000;
+          dlgResult("🪹 Trotseer! Blijf 20s in de cirkel (x≈2850). Weglopen = mislukt.");
+        } else if (act === "mostalk") {
+          currentNpc = "mos";
+          await doMosTalk();
+        } else if (act === "npctalk") {
+          await openNpcChat(btn.getAttribute("data-id") || "mos");
+        } else if (act === "gomos") {
+          const mos = (typeof SPOTS !== "undefined" ? SPOTS : []).find((s) => s.npc);
+          if (mos) await spotInteract(mos);
+          else dlgResult("Mos is nu niet in deze wereld — loop naar de hut.");
+        } else if (act === "entdetail") {
+          await renderEntityDetail(btn.getAttribute("data-id") || "",
+                                   btn.getAttribute("data-slot") || "0");
+        } else if (act === "askhermes") {
+          const entity = btn.getAttribute("data-id") || "";
+          mosPendingQ = "Wat weet je over " + entity + "? Is het interessant voor mijn wereld?";
+          const mos = (typeof SPOTS !== "undefined" ? SPOTS : []).find((s) => s.npc);
+          if (mos) {
+            await spotInteract(mos);
+            await doMosTalk();
+            const input = document.getElementById("mosmsg");
+            if (input && mosPendingQ) {
+              input.value = mosPendingQ;
+              mosPendingQ = "";
+              dlgResult("Vraag klaargezet voor Mos — druk op Stuur.");
+            }
+          } else {
+            dlgResult("Mos is nu niet in deze wereld — loop naar de hut.");
+          }
+        } else if (act === "mossend") {
+          await doMosSend();
+        } else if (act === "mospropose") {
+          await doMosPropose();
+        }
+      } catch (err) {
+        dlgResult("Geweigerd: " + ((err && err.message) ? err.message : String(err)));
+      }
+    });
+    // -- Journal / Command Center (bestaande modellen, alleen lezen
+    // + bestaande YES/tick/dispatch/drive-gates; geen nieuwe backlog,
+    // geen dubbele missies, geen auto-uitvoering) --
+    // M1 (BIG56): readiness-chips zijn echte, actuele controles uit
+    // GET /api/v1/play/status (Ollama-proces vs -model, INVENTory,
+    // Hermes, nodes); drive-knoppen POSTen alleen bestaande paden
+    // met bestaande gates en verversen daarna het Journal.
+    function renderReadiness(live) {
+      if (!live) return '<p class="muted">Gereedheid onleesbaar — geen status verzonnen.</p>';
+      const chip = (name, entry) => {
+        const state = String((entry && entry.state) || "onbekend");
+        const ok = /^(REAL|OK)/.test(state);
+        const warn = /^(PROCES-ONLY|KEY-MISSING)/.test(state);
+        const mark = ok ? "🟢" : (warn ? "🟡" : "🔴");
+        const detail = (entry && entry.detail) ? ' <span class="muted">' + escHtml(String(entry.detail).slice(0, 140)) + "</span>" : "";
+        return "<li>" + mark + " <b>" + escHtml(name) + "</b> " + escHtml(state) + detail + "</li>";
+      };
+      return "<ul>"
+        + chip("Ollama", live.ollama)
+        + chip("INVENTory", live.inventory)
+        + chip("Hermes", live.hermes)
+        + chip("Nodes", live.nodes)
+        + "</ul>";
+    }
+    function renderDriveButtons(actions) {
+      return (actions || []).slice(1).map((x) =>
+        ' <button data-act="jdrive" data-label="' + escHtml(x.label || "Drive")
+        + '" data-path="' + escHtml(x.path || "")
+        + '" data-body="' + escHtml(encodeURIComponent(JSON.stringify(x.body || {}))) + '">'
+        + escHtml(x.label || "Drive") + "</button>").join("");
+    }
+    async function renderJournal() {
+      dlgTitle.textContent = "📓 Journal — prioriteiten & lopende missies";
+      dlgResult("Prioriteiten lezen uit bestaande stores…");
+      const j = await postJSON("/api/v1/play/journal", null, "GET");
+      let h = "";
+      h += "<h3>Gereedheid (live controles)</h3>";
+      try {
+        const st = await postJSON("/api/v1/play/status", null, "GET");
+        h += renderReadiness((st && st.liveness) || null);
+      } catch (e) {
+        h += '<p class="muted">Gereedheid nu niet leesbaar — geen status verzonnen.</p>';
+      }
+      const a = j.active;
+      h += "<h3>Actieve missie</h3>";
+      if (a) {
+        h += "<p><b>" + escHtml(a.title) + "</b> [" + escHtml(a.status) + " " + escHtml(a.progress || "") + "]</p>"
+          + (a.step ? "<p><span class='muted'>stap:</span> " + escHtml(a.step.description || "") + " [" + escHtml(a.step.status || "") + "]</p>" : "")
+          + '<p class="muted">' + escHtml(a.why || "") + "</p>"
+          + '<p><button data-act="jtick" data-id="' + escHtml(a.id || "") + '">Tik om te drijven</button> '
+          + renderDriveButtons(a.actions)
+          + '<a href="' + escHtml(a.href || "/missions") + '">Open missie →</a></p>';
+      } else {
+        h += '<p class="muted">Geen actieve missie — start er een via het Onderzoek-station of een quest.</p>';
+      }
+      const w = j.waiting || [];
+      h += "<h3>Wachtend (" + w.length + ")</h3>" + (w.length ? "<ul>" + w.map((m) =>
+        "<li><b>" + escHtml(m.title) + "</b> [" + escHtml(m.status) + "]<br><span class='muted'>" + escHtml(m.why || "") + "</span><br>"
+        + (m.status === "pending_approval"
+          ? '<button data-act="jyes" data-id="' + escHtml(m.id || "") + '">YES — starten</button> '
+          : "")
+        + '<a href="' + escHtml(m.href || "/missions") + '">Openen →</a></li>').join("") + "</ul>"
+        : '<p class="muted">Niets wacht op YES.</p>');
+      const sec = (name, items) => "<h3>" + name + " (" + items.length + ")</h3>" + (items.length ? "<ul>" + items.map((x) =>
+        "<li><b>" + escHtml(x.title) + "</b> [" + escHtml(x.status || "?") + (x.progress ? " " + escHtml(x.progress) : "") + "]<br><span class='muted'>" + escHtml(x.why || "") + "</span> "
+        + '<a href="' + escHtml(x.href || "/") + '">Openen →</a></li>').join("") + "</ul>"
+        : '<p class="muted">Leeg.</p>');
+      h += sec("Open quests", j.quests || []);
+      h += sec("Open onderzoek", j.research || []);
+      h += sec("Open vondsten", j.candidates || []);
+      // -- BIG51: echte INVENTory-projecten (F1). Alleen lezen;
+      // offline toont UNAVAILABLE, leeg toont eerlijk leeg —
+      // projecten worden nooit verzonnen. --
+      const inv = j.inventory || {state: "unavailable", reason: ""};
+      const projs = j.projects || [];
+      h += "<h3>Projecten uit INVENTory (" + projs.length + ")</h3>";
+      if (inv.state === "unavailable") {
+        h += '<p>🔌 <b>UNAVAILABLE</b> — ' + escHtml(inv.reason || "INVENTory offline")
+          + ' <span class="muted">Niets verzonnen.</span> <a href="/world">World →</a></p>';
+      } else if (!projs.length) {
+        h += '<p class="muted">Lege wereld — geen projecten in INVENTory (eerlijk leeg).</p>';
+      } else {
+        h += "<ul>" + projs.map((p) =>
+          "<li><b>" + escHtml(p.title) + "</b> [" + escHtml(p.status || "?") + "]<br><span class='muted'>"
+          + escHtml(p.why || "") + "</span><br><span class='muted'>bronrecord <code>"
+          + escHtml(p.source || p.id || "") + "</code></span> "
+          + '<a href="' + escHtml(p.href || "/world") + '">Inspecteren →</a></li>').join("") + "</ul>";
+      }
+      // -- BIG51: onthouden kennis (F2). Voltooide dossiers met
+      // echte mem_-records (external_source, nooit feit). --
+      const know = j.knowledge || [];
+      h += "<h3>Onthouden kennis (" + know.length + ")</h3>" + (know.length ? "<ul>" + know.map((k) =>
+        "<li><b>" + escHtml(k.title) + "</b> [" + escHtml(k.status || "?") + "]"
+        + " <span class='muted'>herkomst: " + escHtml(k.origin || k.status || "?") + "</span><br><span class='muted'>"
+        + escHtml(k.why || "") + "</span><br>"
+        + (k.memory_id ? "<span class='muted'>geheugen <code>" + escHtml(k.memory_id) + "</code></span> "
+          + '<a href="/memory">Geheugen →</a> ' : "")
+        + '<a href="/research">Dossier →</a></li>').join("") + "</ul>"
+        : '<p class="muted">Nog niets onthouden — rond een onderzoek af in het station.</p>');
+      // -- BIG52: resterende weg (F3–F5) als questlijn. VIEW over
+      // de GAPMATRIX, geen backlogdatabase: ontwikkelwerk heeft
+      // geen record (voortgang in code), operationele missies
+      // staan hierboven, brainstorm wordt geen quest. --
+      const road = j.roadmap || [];
+      h += "<h3>Resterende weg (" + road.length + ")</h3>" + (road.length ? "<ul>" + road.map((r) =>
+        "<li><b>" + escHtml(r.title) + "</b> [" + escHtml(r.status || "open") + "]<br><span class='muted'>"
+        + escHtml(r.why || "") + "</span><br><span class='muted'>bron: " + escHtml(r.source || "") + "</span> "
+        + '<a href="' + escHtml(r.href || "/") + '">Openen →</a></li>').join("") + "</ul>"
+        : '<p class="muted">Weg onleesbaar.</p>');
+      if (j.counts) {
+        worldMemory = Math.max(0, Math.min(9, j.counts.memories_remembered || 0));
+        worldMemoryTest = Math.max(0, Math.min(9, j.counts.memories_test || 0));
+      }
+      h += '<div id="side-result" class="muted" role="status"></div>';
+      dlgBody.innerHTML = h;
+    }
+    document.getElementById("journal-open").addEventListener("click", async () => {
+      try { await renderJournal(); }
+      catch (err) { dlgResult("Geweigerd: " + ((err && err.message) ? err.message : String(err))); }
+    });
+    // -- session (hergebruik play-session, zone "side") --
+    let sideSession = "";
+    async function sideSessionOpen() {
+      try {
+        const stored = window.localStorage ? window.localStorage.getItem("mycelium_side_session") : "";
+        const opened = await postJSON("/api/v1/play/session", stored ? {session_id: stored} : {});
+        sideSession = opened.session_id || "";
+        if (typeof opened.x === "number") player.x = Math.max(0, Math.min(SW - player.w, opened.x));
+        if (window.localStorage && sideSession) window.localStorage.setItem("mycelium_side_session", sideSession);
+        renderGoals();
+        await refreshInv();
+        await refreshFlags();
+        await refreshNpc();
+        tickClock();
+        setInterval(tickClock, 60000);
+        refreshNodes();
+        setInterval(refreshNodes, 120000);
+      } catch (e) {}
+    }
+    async function sideSessionSave() {
+      if (!sideSession) return;
+      try { await postJSON("/api/v1/play/position", {session_id: sideSession, x: Math.round(player.x), y: Math.round(player.y), zone: "side"}); } catch (e) {}
+    }
+    sideSessionOpen();
+    setInterval(sideSessionSave, 2500);
+    // -- BIG53: ghost-plaatsing — klik in het veld tijdens
+    // plaatsmodus (server valideert alles opnieuw). Runtime
+    // aangehangen (onclick) zodat de moduswissel de draad bezit;
+    // de load-time listener hieronder blijft als reserve.
+    function ghostClick(e) {
+      if (!ghostKind) return;
+      const rect = stage.getBoundingClientRect();
+      if (!rect.width || !rect.height) return;
+      const wx = cam.x + (e.clientX - rect.left) / rect.width * VW;
+      const wy = (e.clientY - rect.top) / rect.height * VH;
+      doPlace(ghostKind, wx, wy);
+    }
+    stage.addEventListener("click", ghostClick);
+    // -- input (toetsen + touch; BIG55: I/Esc/1-4 voor overlays) --
+    window.addEventListener("keydown", (e) => {
+      const k = e.key.toLowerCase();
+      if (k === "escape") { closeOverlays(); return; }
+      if (k === "i") { toggleInv(); return; }
+      if (["1", "2", "3", "4"].includes(k)) {
+        const items = hotItems();
+        hotSel = Math.min(parseInt(k, 10) - 1, Math.max(0, items.length - 1));
+        renderHotbar();
+        return;
+      }
+      if (["arrowleft", "arrowright", "arrowup", " "].includes(k === " " ? " " : k)) e.preventDefault();
+      keys[k] = true;
+      if (k === "e") interact();
+    });
+    window.addEventListener("keyup", (e) => { keys[e.key.toLowerCase()] = false; });
+    document.getElementById("touch").addEventListener("pointerdown", (e) => {
+      const b = e.target.closest ? e.target.closest("button[data-k]") : null;
+      if (!b) return;
+      e.preventDefault();
+      const k = b.getAttribute("data-k");
+      if (k === "act") { interact(); return; }
+      if (k === "jump") { keys["w"] = true; setTimeout(() => { keys["w"] = false; }, 180); return; }
+      keys[k === "left" ? "a" : "d"] = true;
+    });
+    document.getElementById("touch").addEventListener("pointerup", (e) => {
+      keys["a"] = false; keys["d"] = false;
+    });
+    // -- physics + render --
+    function solidsAt(px, py, pw, ph) {
+      const out = [];
+      const solids = (typeof buildPlats === "function") ? PLATS.concat(buildPlats()) : PLATS;
+      for (const p of solids) {
+        if (px < p.x + p.w && px + pw > p.x && py < p.y + p.h && py + ph > p.y) out.push(p);
+      }
+      return out;
+    }
+    function step(dt) {
+      let vx = 0;
+      const stunned = Date.now() < stunUntil;
+      if (!stunned) {
+        if (keys["a"] || keys["arrowleft"]) vx -= 260;
+        if (keys["d"] || keys["arrowright"]) vx += 260;
+      }
+      if (vx !== 0) player.face = vx > 0 ? 1 : -1;
+      player.moving = vx !== 0;
+      if (player.moving && !hasFlag("moved")) { setFlag("moved"); renderGoals(); }
+      if (player.moving) player.bobT = (player.bobT || 0) + dt * 10;
+      stepParts(dt);
+      stepPuffers(dt);
+      stepKruipers(dt);
+      stepModderhart();
+      // BIG55: sporenzones halveren je tempo + laten hoesten.
+      let slowMul = 1;
+      for (const z of SPOREZONES) {
+        if (player.x + player.w / 2 > z.x0 && player.x + player.w / 2 < z.x1) {
+          slowMul = 0.5;
+          if (Date.now() - coughAt > 10000) {
+            coughAt = Date.now();
+            sayBubble("Huch… sporenlucht. Snel erdoorheen — licht helpt niet tegen sporen.");
+          }
+          break;
+        }
+      }
+      vx *= slowMul;
+      player.x = Math.max(0, Math.min(SW - player.w, player.x + vx * dt));
+      for (const p of solidsAt(player.x, player.y + 2, player.w, player.h - 2)) {
+        if (vx > 0) player.x = p.x - player.w;
+        else if (vx < 0) player.x = p.x + p.w;
+      }
+      if ((keys["w"] || keys["arrowup"] || keys[" "]) && player.ground) {
+        player.vy = -680; player.ground = false;
+      }
+      const prevBottom = player.y + player.h;
+      player.vy = Math.min(900, player.vy + 1800 * dt);
+      player.y += player.vy * dt;
+      const wasGround = player.ground;
+      player.ground = false;
+      for (const p of solidsAt(player.x, player.y, player.w, player.h)) {
+        if (player.vy >= 0 && prevBottom <= p.y + 8) {
+          player.y = p.y - player.h; player.vy = 0; player.ground = true;
+        } else if (player.vy < 0) {
+          player.y = p.y + p.h; player.vy = 0;
+        }
+      }
+      if (player.ground && !wasGround) landMsg = 0.8;
+      else if (landMsg > 0) landMsg -= dt;
+      if (player.y > 700) { player.y = 400; player.x = 120; player.vy = 0; }
+      cam.x = Math.max(0, Math.min(SW - VW, player.x + player.w / 2 - VW / 2));
+      if (areaEl) areaEl.textContent = "📍 " + regionAt(player.x).name + " · x" + Math.round(player.x)
+        + " · Dag " + (worldClock.day || 1) + " " + (worldClock.phase || "dag");
+      draw();
+      const s = nearestSpot();
+      const nb = nearestNode();
+      // BIG54: werkwoorden — de speler ziet altijd wat E doet.
+      // BIG55: zelfde dichtstbijzijnde-keuze als interact().
+      const spotVerb = (sp) => sp.npc ? "[E] Praat met " + sp.name
+        : sp.id === "bench" ? "[E] Gebruik werkbank"
+        : sp.id === "codex" ? "[E] Open codex"
+        : sp.id === "water" ? "[E] Onderzoek waterbron"
+        : sp.id === "plant" ? "[E] Bekijk plantplek"
+        : sp.id === "board" ? "[E] Lees projectbord"
+        : sp.id === "machine" ? "[E] Onderzoek zender"
+        : sp.id === "nest" ? "[E] Nader het nest"
+        : "[E] " + sp.name;
+      const px2 = player.x + player.w / 2;
+      const npc2 = nearestNPC();
+      const ch2 = nearestChestBuild();
+      const opts = [];
+      if (nb) opts.push({d: nb.d, t: "[E] Verzamel — " + nb.node.label});
+      if (npc2) opts.push({d: Math.abs(px2 - npc2.x), t: "[E] Praat met " + npc2.name});
+      if (ch2) opts.push({d: Math.abs(px2 - Number(ch2.x)), t: "[E] Open kist"});
+      if (s) opts.push({d: Math.abs(px2 - s.x), t: spotVerb(s)});
+      opts.sort((a, b) => a.d - b.d);
+      if (opts.length) {
+        promptEl.textContent = opts[0].t;
+      } else if (landMsg > 0) {
+        promptEl.textContent = "✓ geland";
+      } else {
+        let near = null, nearD = 1e9;
+        for (const q of SPOTS) {
+          const d = Math.abs((player.x + player.w / 2) - q.x);
+          if (d < 170 && d < nearD) { near = q; nearD = d; }
+        }
+        promptEl.textContent = near ? ("→ " + near.name + " (dichterbij komen)") : "";
+      }
+    }
+    // BIG54: dag-sfeer — subtiele warme tint per dagdeel (puur
+    // presentatie; verandert geen enkele mechaniek).
+    // BIG55: gestuurd door de WERELDKLOK (game-tijd), niet de wandklok.
+    function dayTint() {
+      const phase = worldClock.phase || "day";
+      if (phase === "dawn") return "rgba(255,180,90,0.10)";
+      if (phase === "day") return "rgba(255,240,200,0.04)";
+      if (phase === "dusk") return "rgba(255,140,60,0.14)";
+      return "rgba(8,12,36,0.22)";
+    }
+    function draw() {
+      const t = Date.now() / 1000;
+      // BIG54: diepere maar warmere lucht + gouden horizon.
+      const g = ctx.createLinearGradient(0, 0, 0, VH);
+      g.addColorStop(0, "#131a38"); g.addColorStop(0.5, "#18251f"); g.addColorStop(0.78, "#2a2b1c"); g.addColorStop(1, "#0d0f0a");
+      ctx.fillStyle = g; ctx.fillRect(0, 0, VW, VH);
+      ctx.fillStyle = "rgba(217,164,65,0.07)";
+      ctx.fillRect(0, 250, VW, 90);
+      ctx.fillStyle = "rgba(220,230,255,0.7)";
+      for (let i = 0; i < 46; i++) {
+        const sx = ((i * 211 + 77) % (SW + 400) - 200 - cam.x * 0.08 + SW + 400) % (SW + 400) - 200;
+        if (sx < 0 || sx > VW) continue;
+        const sy = (i * 137) % 200;
+        const tw = 0.35 + 0.4 * Math.abs(Math.sin(t * 1.3 + i * 2.1));
+        ctx.globalAlpha = tw;
+        ctx.fillRect(sx, sy, 2, 2);
+      }
+      ctx.globalAlpha = 1;
+      const mg = ctx.createRadialGradient(830 - cam.x * 0.1, 90, 6, 830 - cam.x * 0.1, 90, 90);
+      mg.addColorStop(0, "rgba(232,217,138,0.9)"); mg.addColorStop(0.35, "rgba(232,217,138,0.35)"); mg.addColorStop(1, "rgba(232,217,138,0)");
+      ctx.fillStyle = mg; ctx.fillRect(830 - cam.x * 0.1 - 90, 0, 180, 180);
+      ctx.fillStyle = "#e8d98a";
+      ctx.beginPath(); ctx.arc(830 - cam.x * 0.1, 90, 24, 0, 7); ctx.fill();
+      ctx.fillStyle = "#101c2a";
+      for (let i = 0; i < 9; i++) {
+        const hx = ((i * 389 + 60) % (SW + 500) - 250 - cam.x * 0.22 + SW + 500) % (SW + 500) - 250;
+        if (hx < -160 || hx > VW + 160) continue;
+        ctx.beginPath(); ctx.arc(hx, 520, 120 + (i * 53) % 60, 0, 7); ctx.fill();
+      }
+      ctx.fillStyle = "#15241e";
+      for (let i = 0; i < 9; i++) {
+        const hx = ((i * 271 + 300) % (SW + 400) - 200 - cam.x * 0.42 + SW + 400) % (SW + 400) - 200;
+        if (hx < -140 || hx > VW + 140) continue;
+        ctx.beginPath(); ctx.arc(hx, 510, 100 + (i * 37) % 60, 0, 7); ctx.fill();
+      }
+      ctx.strokeStyle = "rgba(150,190,140,0.16)"; ctx.lineWidth = 1.5;
+      for (let i = 0; i < 5; i++) {
+        const bx = ((i * 457 + 200) % (SW + 300) - 150 - cam.x * 0.42 + SW + 300) % (SW + 300) - 150;
+        if (bx < -60 || bx > VW + 60) continue;
+        ctx.beginPath(); ctx.moveTo(bx, 500);
+        ctx.quadraticCurveTo(bx + 40, 440 + (i * 29) % 30, bx + 90, 470);
+        ctx.stroke();
+      }
+      const ox = -cam.x;
+      // BIG54: zone/x leven in de DOM-HUD (geen dubbele weergave).
+      // -- platforms: mossy tops, vines (BIG54: warmere lagen) --
+      for (const p of PLATS) {
+        if (p.x + p.w < cam.x || p.x > cam.x + VW) continue;
+        ctx.fillStyle = p.h > 30 ? "#4a3b2a" : "#5a4630";
+        ctx.fillRect(p.x + ox, p.y, p.w, p.h);
+        if (p.h > 30) {
+          ctx.fillStyle = "#5a7a45";
+          for (let gx = 0; gx < p.w; gx += 44) ctx.fillRect(p.x + ox + gx, p.y, 22, 6);
+          ctx.fillStyle = "rgba(90,122,69,0.5)";
+          ctx.fillRect(p.x + ox, p.y + 6, p.w, 4);
+          // solarpunk-tegels: deterministische voegen + kiezels per tegel
+          ctx.fillStyle = "rgba(30,26,18,0.55)";
+          for (let gx = 0; gx <= p.w; gx += 64) ctx.fillRect(p.x + ox + gx, p.y + 10, 2, p.h - 10);
+          for (let gx = 8; gx < p.w; gx += 64) {
+            const h1 = ((p.x + gx) * 7919) % 17, h2 = ((p.x + gx) * 104729) % 23;
+            ctx.fillStyle = "rgba(214,196,164,0.5)";
+            ctx.fillRect(p.x + ox + gx + h1, p.y + 22 + h2, 4, 3);
+            if (h2 % 3 === 0) {
+              ctx.strokeStyle = "rgba(107,154,90,0.8)"; ctx.lineWidth = 1.5;
+              ctx.beginPath(); ctx.moveTo(p.x + ox + gx + 30, p.y + 8);
+              ctx.lineTo(p.x + ox + gx + 33, p.y - 2 - (h1 % 5)); ctx.stroke();
+            }
+          }
+        } else {
+          ctx.fillStyle = "#6b8a5a";
+          ctx.fillRect(p.x + ox, p.y, p.w, 5);
+          ctx.strokeStyle = "rgba(110,150,95,0.7)"; ctx.lineWidth = 2;
+          for (let vx = 12; vx < p.w; vx += 34) {
+            const vl = 10 + ((vx * 7) % 14);
+            ctx.beginPath(); ctx.moveTo(p.x + ox + vx, p.y + p.h);
+            ctx.quadraticCurveTo(p.x + ox + vx + 4, p.y + p.h + vl, p.x + ox + vx - 2, p.y + p.h + vl + 6);
+            ctx.stroke();
+          }
+        }
+      }
+      // -- BIG55: regio-tinten + duisternis (grove) + mist (moeras).
+      // Duisternis wijkt alleen voor geplaatst licht (fakkel/lamp).
+      for (const r of REGIONS) {
+        if (r.x1 + ox < 0 || r.x0 + ox > VW) continue;
+        ctx.fillStyle = r.tint;
+        ctx.fillRect(Math.max(0, r.x0 + ox), 0, Math.min(VW, r.x1 + ox) - Math.max(0, r.x0 + ox), VH);
+      }
+      if (player.x >= 1920 && player.x < 2560) {
+        let lit = false;
+        for (const b of invBuilds) {
+          if ((b.kind === "torch" || b.kind === "lamp") && Math.abs(Number(b.x) - player.x) < 260) { lit = true; break; }
+        }
+        if (!lit) {
+          ctx.fillStyle = "rgba(5,5,15,0.55)";
+          ctx.fillRect(0, 0, VW, VH);
+          ctx.fillStyle = "rgba(200,180,255,0.8)"; ctx.font = "12px sans-serif";
+          ctx.fillText("Donker — plaats licht (fakkel/lamp) om te zien", 10, 40);
+        }
+      }
+      if (player.x >= 2560 && player.x < 3200) {
+        ctx.fillStyle = "rgba(140,190,170,0.10)";
+        for (let m = 0; m < 4; m++) {
+          const mx = ((m * 300 + t * 12) % (VW + 200)) - 100;
+          ctx.fillRect(mx, 300 + (m * 40) % 150, 180, 60);
+        }
+      }
+      // -- BIG53: kloof-markering (waarschuwingspalen bij de rand) --
+      ctx.fillStyle = "#8a6a2c";
+      for (const gx of [GAP.x0 - 8, GAP.x1]) {
+        if (gx + ox < -20 || gx + ox > VW + 20) continue;
+        ctx.fillRect(gx + ox, 428, 8, 52);
+        ctx.fillStyle = "#d9a441";
+        ctx.fillRect(gx + ox, 428, 8, 10);
+        ctx.fillStyle = "#8a6a2c";
+      }
+      // -- BIG53: verzamel-nodes (houtstronk/vezel/kei, BIG54:
+      // groter + naamlabel zodat ze herkenbaar zijn) --
+      ctx.textAlign = "center";
+      for (const n of NODES) {
+        if (n.x + ox < -30 || n.x + ox > VW + 30) continue;
+        ctx.font = "24px sans-serif";
+        ctx.fillText(n.glyph, n.x + ox, 468);
+        ctx.font = "10px sans-serif";
+        ctx.fillStyle = "rgba(185,191,174,0.85)";
+        ctx.fillText(n.label, n.x + ox, 492);
+        ctx.fillStyle = "#ece7d8";
+        const near = Math.abs((player.x + player.w / 2) - n.x) < 70;
+        if (near) {
+          ctx.strokeStyle = "rgba(165,196,138,0.9)"; ctx.lineWidth = 2;
+          ctx.beginPath(); ctx.arc(n.x + ox, 456, 24, 0, 7); ctx.stroke();
+          ctx.font = "12px sans-serif";
+          ctx.fillText("E · Verzamel", n.x + ox, 420);
+        }
+      }
+      ctx.textAlign = "left";
+      // -- BIG53: geplaatste bouwsels (plank = platform, fakkel =
+      // licht, hekje = decor) + ghost-preview bij plaatsmodus --
+      for (const b of invBuilds) {
+        const bx = Number(b.x) + ox;
+        if (bx < -120 || bx > VW + 120) continue;
+        if (b.kind === "plank") {
+          ctx.fillStyle = "#6b4f30";
+          ctx.fillRect(bx - 80, 464, 160, 16);
+          ctx.fillStyle = "#8a6a44";
+          for (let sx = -80; sx < 80; sx += 20) ctx.fillRect(bx + sx, 464, 3, 16);
+        } else if (b.kind === "torch") {
+          ctx.fillStyle = "#4a3826";
+          ctx.fillRect(bx - 2, 428, 5, 26);
+          const tg = ctx.createRadialGradient(bx, 420, 2, bx, 420, 60);
+          tg.addColorStop(0, "rgba(255,200,110,0.8)"); tg.addColorStop(1, "rgba(255,200,110,0)");
+          ctx.fillStyle = tg; ctx.fillRect(bx - 60, 360, 120, 120);
+          ctx.fillStyle = "#ffd98a";
+          ctx.beginPath(); ctx.arc(bx, 424, 5, 0, 7); ctx.fill();
+        } else if (b.kind === "fence") {
+          ctx.fillStyle = "#5a4632";
+          ctx.fillRect(bx - 14, 428, 8, 26);
+          ctx.fillRect(bx + 6, 428, 8, 26);
+          ctx.fillRect(bx - 18, 434, 44, 6);
+        } else if (b.kind === "lamp") {
+          ctx.fillStyle = "#4a3826";
+          ctx.fillRect(bx - 3, 420, 6, 34);
+          const lg2 = ctx.createRadialGradient(bx, 410, 4, bx, 410, 110);
+          lg2.addColorStop(0, "rgba(255,215,130,0.9)"); lg2.addColorStop(1, "rgba(255,215,130,0)");
+          ctx.fillStyle = lg2; ctx.fillRect(bx - 110, 300, 220, 220);
+          ctx.fillStyle = "#ffe9b0";
+          ctx.beginPath(); ctx.arc(bx, 414, 8, 0, 7); ctx.fill();
+        } else if (b.kind === "chest") {
+          ctx.fillStyle = "#6b4f30";
+          ctx.fillRect(bx - 16, 432, 32, 22);
+          ctx.fillStyle = "#8a6a44";
+          ctx.fillRect(bx - 16, 432, 32, 7);
+          ctx.fillStyle = "#d9a441";
+          ctx.fillRect(bx - 3, 439, 6, 6);
+          ctx.fillStyle = "rgba(236,231,216,0.9)"; ctx.font = "10px sans-serif";
+          ctx.fillText("E · Kist", bx - 20, 420);
+        } else if (b.kind === "room") {
+          const by = Number(b.y);
+          ctx.fillStyle = "#5a4632";
+          ctx.fillRect(bx - 80, by - 110, 160, 110);
+          ctx.fillStyle = "#3e2f22";
+          ctx.fillRect(bx - 70, by - 100, 140, 100);
+          ctx.fillStyle = "#241a12";
+          ctx.fillRect(bx - 12, by - 50, 24, 50);
+          ctx.fillStyle = "#ffd98a";
+          ctx.fillRect(bx + 30, by - 80, 24, 20);
+          const occ = Object.entries(settledNpc).find((e) => e[1] === b.build_id);
+          ctx.fillStyle = "rgba(236,231,216,0.9)"; ctx.font = "10px sans-serif";
+          ctx.fillText(occ ? "🏠 " + occ[0] : "leegstaande kamer", bx - 46, by - 116);
+        } else if (b.kind === "mast") {
+          ctx.fillStyle = "#3a3f4a";
+          ctx.fillRect(bx - 3, 380, 6, 74);
+          ctx.strokeStyle = "#8a94a8"; ctx.lineWidth = 2;
+          ctx.beginPath(); ctx.moveTo(bx, 380); ctx.lineTo(bx - 14, 366); ctx.moveTo(bx, 380); ctx.lineTo(bx + 14, 366); ctx.stroke();
+          const live = hasFlag("mystery") || srvFlags.has("mystery");
+          if (live) {
+            const mg2 = ctx.createRadialGradient(bx, 372, 2, bx, 372, 50);
+            mg2.addColorStop(0, "rgba(150,220,255,0.9)"); mg2.addColorStop(1, "rgba(150,220,255,0)");
+            ctx.fillStyle = mg2; ctx.fillRect(bx - 50, 322, 100, 100);
+          }
+          ctx.fillStyle = live ? "#9fd4ff" : "#5a626e";
+          ctx.beginPath(); ctx.arc(bx, 372, 5, 0, 7); ctx.fill();
+        }
+      }
+      if (ghostKind) {
+        const gx = player.x + player.w / 2 + ox;
+        ctx.strokeStyle = "rgba(217,164,65,0.9)"; ctx.lineWidth = 2;
+        ctx.setLineDash([6, 4]);
+        if (ghostKind === "plank") ctx.strokeRect(GAP.cx - 80 + ox, 464, 160, 16);
+        else if (ghostKind === "room") ctx.strokeRect(gx - 80, 360, 160, 110);
+        else if (ghostKind === "chest") ctx.strokeRect(gx - 16, 428, 32, 26);
+        else if (ghostKind === "mast") ctx.strokeRect(gx - 8, 366, 16, 108);
+        else ctx.strokeRect(gx - 12, 428, 24, 26);
+        ctx.setLineDash([]);
+        ctx.fillStyle = "#d9a441"; ctx.font = "12px sans-serif";
+        ctx.fillText("klik in het veld om te plaatsen (" + ghostKind + ")", Math.max(8, Math.min(VW - 260, gx - 120)), 40);
+      }
+      // -- BIG55: NPC's (alleen als eis voldaan; 🔒 anders),
+      // node-masten, ruïnezender, nest, wortels, kruipers, handelaar.
+      ctx.font = "11px sans-serif";
+      for (const n of NPCS) {
+        if (n.id === "mos") continue;
+        const nx = n.x + ox;
+        if (nx < -40 || nx > VW + 40) continue;
+        const met = npcMet(n);
+        const settled = settledNpc[n.id];
+        ctx.fillStyle = met ? "#4a6b8a" : "#3a3f4a";
+        ctx.beginPath(); ctx.moveTo(nx - 12, 480); ctx.lineTo(nx, 432); ctx.lineTo(nx + 12, 480); ctx.closePath(); ctx.fill();
+        ctx.fillStyle = met ? "#e6d9bd" : "#8a8a8a";
+        ctx.beginPath(); ctx.arc(nx, 426, 8, 0, 7); ctx.fill();
+        ctx.fillStyle = "rgba(236,231,216,0.9)";
+        ctx.fillText((met ? "" : "🔒 ") + n.name + (settled ? " 🏠" : ""), nx - 26, 412);
+        const d = Math.abs((player.x + player.w / 2) - n.x);
+        if (d < 90) {
+          ctx.strokeStyle = "rgba(165,196,138,0.9)"; ctx.lineWidth = 2;
+          ctx.beginPath(); ctx.ellipse(nx, 478, 30, 8, 0, 0, 7); ctx.stroke();
+          ctx.fillStyle = "#ece7d8";
+          ctx.fillText("E · Praat", nx - 26, 398);
+        }
+      }
+      // Node-masten van echte nodes (max 4, outpost).
+      nodeList.slice(0, 4).forEach((nd, i) => {
+        const mx = 3260 + i * 70 + ox;
+        if (mx < -30 || mx > VW + 30) return;
+        ctx.fillStyle = "#3a3f4a";
+        ctx.fillRect(mx - 3, 400, 6, 54);
+        ctx.fillStyle = "#7dd87d";
+        ctx.beginPath(); ctx.arc(mx, 394, 5, 0, 7); ctx.fill();
+        ctx.fillStyle = "rgba(236,231,216,0.85)"; ctx.font = "9px sans-serif";
+        ctx.fillText(String(nd.node_id || nd.id || "?").slice(0, 12), mx - 24, 466);
+        ctx.font = "11px sans-serif";
+      });
+      // Ruïnezender + nest + wortels na Modderhart.
+      const machX = RUIN_MACHINE.x + ox;
+      if (machX > -60 && machX < VW + 60) {
+        const live = hasFlag("mystery") || srvFlags.has("mystery");
+        ctx.fillStyle = "#4a4a52";
+        ctx.fillRect(machX - 16, 420, 32, 34);
+        ctx.fillStyle = live ? "#9fd4ff" : "#5a5a62";
+        for (let w = 0; w < 3; w++) ctx.fillRect(machX - 10 + w * 9, 428, 5, 5);
+        ctx.fillStyle = "rgba(236,231,216,0.9)"; ctx.font = "10px sans-serif";
+        ctx.fillText(live ? "📡 zendt" : "📡 stil", machX - 22, 410);
+        ctx.font = "11px sans-serif";
+      }
+      const nestX = MODDERHART.x + ox;
+      if (nestX > -120 && nestX < VW + 120) {
+        const done = hasFlag("modderhart") || srvFlags.has("modderhart");
+        ctx.strokeStyle = done ? "rgba(125,155,106,0.9)" : "rgba(150,90,90,0.9)";
+        ctx.lineWidth = 3;
+        ctx.beginPath(); ctx.ellipse(nestX, 472, MODDERHART.r, 14, 0, 0, 7); ctx.stroke();
+        ctx.fillStyle = done ? "#5a7a45" : "#7a4a4a";
+        ctx.beginPath(); ctx.ellipse(nestX, 474, 26, 10, 0, 0, 7); ctx.fill();
+        if (done) {
+          ctx.strokeStyle = "#4c6b3f"; ctx.lineWidth = 5;
+          ctx.beginPath(); ctx.moveTo(nestX - 120, 470);
+          ctx.quadraticCurveTo(nestX - 40, 440, nestX + 40, 466);
+          ctx.stroke();
+        }
+        if (modderUntil) {
+          ctx.fillStyle = "#ece7d8"; ctx.font = "13px sans-serif";
+          ctx.fillText("🪹 " + Math.ceil((modderUntil - Date.now()) / 1000) + "s", nestX - 20, 420);
+          ctx.font = "11px sans-serif";
+        }
+      }
+      // Kompas wijst naar het signaal (als in bezit, mysterie open).
+      if ((invItems.compass || 0) > 0 && !hasFlag("mystery") && !srvFlags.has("mystery")
+        && player.x > 1900 && player.x < 2600) {
+        const dir = RUIN_MACHINE.x > player.x ? 1 : -1;
+        ctx.fillStyle = "#d9a441"; ctx.font = "bold 14px sans-serif";
+        ctx.fillText(dir > 0 ? "→ signaal" : "← signaal", player.x + ox - 30, player.y - 60);
+        ctx.font = "11px sans-serif";
+      }
+      // Kruipers (groeve).
+      for (const k of KRUIPERS) {
+        const kx = k.x + ox;
+        if (kx < -40 || kx > VW + 40) continue;
+        ctx.fillStyle = "#3f3f4d";
+        ctx.beginPath(); ctx.ellipse(kx, 462, 20, 12, 0, 0, 7); ctx.fill();
+        ctx.fillStyle = "#c96a5a";
+        ctx.beginPath(); ctx.arc(kx + k.dir * 10, 458, 4, 0, 7); ctx.fill();
+        ctx.beginPath(); ctx.arc(kx + k.dir * 10, 466, 4, 0, 7); ctx.fill();
+      }
+      // Handelaar bij trader-event (outpost).
+      if (activeEvents().includes("trader")) {
+        const tx = 3450 + ox;
+        if (tx > -40 && tx < VW + 40) {
+          ctx.fillStyle = "#7a5a8a";
+          ctx.beginPath(); ctx.moveTo(tx - 12, 480); ctx.lineTo(tx, 434); ctx.lineTo(tx + 12, 480); ctx.closePath(); ctx.fill();
+          ctx.fillStyle = "#e6d9bd";
+          ctx.beginPath(); ctx.arc(tx, 428, 8, 0, 7); ctx.fill();
+          ctx.fillStyle = "rgba(236,231,216,0.9)"; ctx.font = "10px sans-serif";
+          ctx.fillText("Handelaar (praat met Voorman)", tx - 70, 416);
+          ctx.font = "11px sans-serif";
+        }
+      }
+      // -- sporepuffers (vriendelijk: patrol + terugduw) --
+      for (const f of PUFFERS) {
+        const fx = f.x + ox;
+        if (fx < -40 || fx > VW + 40) continue;
+        const bob = Math.sin(t * 3 + f.x * 0.05) * 4;
+        ctx.fillStyle = "#6a5a7a";
+        ctx.beginPath(); ctx.arc(fx, 452 + bob, 16, 0, 7); ctx.fill();
+        ctx.fillStyle = "#8a76a0";
+        ctx.beginPath(); ctx.arc(fx - 5, 446 + bob, 5, 0, 7); ctx.fill();
+        ctx.beginPath(); ctx.arc(fx + 6, 442 + bob, 4, 0, 7); ctx.fill();
+        ctx.fillStyle = "#ece7d8";
+        ctx.beginPath(); ctx.arc(fx - 5 + f.dir * 3, 452 + bob, 4, 0, 7); ctx.fill();
+        ctx.beginPath(); ctx.arc(fx + 5 + f.dir * 3, 452 + bob, 4, 0, 7); ctx.fill();
+        ctx.fillStyle = "#241a2e";
+        ctx.beginPath(); ctx.arc(fx - 5 + f.dir * 4, 452 + bob, 2, 0, 7); ctx.fill();
+        ctx.beginPath(); ctx.arc(fx + 5 + f.dir * 4, 452 + bob, 2, 0, 7); ctx.fill();
+      }
+      // -- water pool: basin + shimmer + reeds --
+      ctx.fillStyle = "#1d3a4d";
+      ctx.fillRect(836 + ox, 448, 148, 32);
+      ctx.fillStyle = "#2e5a7a";
+      ctx.fillRect(840 + ox, 452, 140, 22);
+      ctx.fillStyle = "rgba(150,210,255,0.5)";
+      for (let i = 0; i < 6; i++) {
+        ctx.fillRect(850 + ox + ((i * 23 + t * 30) % 120), 458 + Math.sin(t * 2 + i) * 4, 8, 3);
+      }
+      // -- fence (homebase) + zone arch at x=640 --
+      ctx.fillStyle = "#4a3a28";
+      for (let fx = 40; fx < 620; fx += 80) {
+        if (fx + ox < -20 || fx + ox > VW + 20) continue;
+        ctx.fillRect(fx + ox, 428, 8, 52);
+      }
+      if (640 + ox > -60 && 640 + ox < VW + 60) {
+        ctx.fillStyle = "#4a3a28";
+        ctx.fillRect(628 + ox, 360, 12, 120);
+        ctx.fillRect(760 + ox, 360, 12, 120);
+        ctx.fillRect(620 + ox, 344, 160, 16);
+        ctx.fillStyle = "#c9a86b"; ctx.font = "11px sans-serif";
+        ctx.fillText("· WILDERNIS →", 648 + ox, 357);
+      }
+      // -- hut with lit window + chimney --
+      ctx.fillStyle = "#5a4632";
+      ctx.fillRect(120 + ox, 380, 130, 100);
+      ctx.fillStyle = "#3e2f22";
+      ctx.beginPath(); ctx.moveTo(105 + ox, 380); ctx.lineTo(185 + ox, 330); ctx.lineTo(265 + ox, 380); ctx.closePath(); ctx.fill();
+      ctx.fillStyle = "#241a12";
+      ctx.fillRect(168 + ox, 420, 34, 60);
+      const wg = ctx.createRadialGradient(228 + ox, 410, 2, 228 + ox, 410, 42);
+      wg.addColorStop(0, "rgba(255,190,90,0.95)"); wg.addColorStop(1, "rgba(255,190,90,0)");
+      ctx.fillStyle = wg; ctx.fillRect(186 + ox, 368, 84, 84);
+      ctx.fillStyle = "#ffd98a";
+      ctx.fillRect(218 + ox, 398, 22, 24);
+      // solarpunk: raam gloeit mee met de dagfase, zonnepaneel op het dak
+      const glowPulse = 0.75 + 0.25 * Math.sin(t * 1.4);
+      ctx.fillStyle = "rgba(255,217,138," + (0.35 * glowPulse).toFixed(2) + ")";
+      ctx.fillRect(212 + ox, 392, 34, 36);
+      ctx.fillStyle = "#1d2f4a";
+      ctx.beginPath(); ctx.moveTo(150 + ox, 356); ctx.lineTo(185 + ox, 332); ctx.lineTo(220 + ox, 356); ctx.lineTo(185 + ox, 380); ctx.closePath(); ctx.fill();
+      ctx.strokeStyle = "rgba(159,196,255,0.8)"; ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.moveTo(150 + ox, 356); ctx.lineTo(220 + ox, 356); ctx.moveTo(185 + ox, 332); ctx.lineTo(185 + ox, 380); ctx.stroke();
+      ctx.fillStyle = "#3e2f22";
+      ctx.fillRect(218 + ox, 398, 22, 4); ctx.fillRect(227 + ox, 398, 4, 24);
+      ctx.fillStyle = "#4a3a28";
+      ctx.fillRect(226 + ox, 306, 14, 30);
+      // -- lantern post + glow --
+      ctx.fillStyle = "#3a2d1f";
+      ctx.fillRect(318 + ox, 400, 7, 80);
+      ctx.fillRect(306 + ox, 394, 30, 6);
+      const lg = ctx.createRadialGradient(321 + ox, 414, 3, 321 + ox, 414, 70);
+      lg.addColorStop(0, "rgba(255,200,110,0.85)"); lg.addColorStop(1, "rgba(255,200,110,0)");
+      ctx.fillStyle = lg; ctx.fillRect(251 + ox, 344, 140, 140);
+      ctx.fillStyle = "#ffe2a0";
+      ctx.fillRect(315 + ox, 406, 12, 16);
+      ctx.strokeStyle = "#3f6b3f"; ctx.lineWidth = 3;
+      for (const rx of [828, 992]) {
+        for (let k = 0; k < 3; k++) {
+          const hgt = 26 + ((rx + k * 13) % 14);
+          ctx.beginPath(); ctx.moveTo(rx + ox + k * 7, 452);
+          ctx.quadraticCurveTo(rx + ox + k * 7 + 3, 452 - hgt, rx + ox + k * 7 + 6, 452 - hgt - 4);
+          ctx.stroke();
+        }
+      }
+      // -- mushroom cluster (mycelium identity) --
+      const mush = [[1062, 462, 14], [1086, 466, 10], [1044, 467, 8]];
+      for (const m of mush) {
+        const mx = m[0], my = m[1], mr = m[2];
+        ctx.fillStyle = "#d8cfc0";
+        ctx.fillRect(mx + ox - 3, my - mr, 6, mr);
+        ctx.fillStyle = "#b8574d";
+        ctx.beginPath(); ctx.arc(mx + ox, my - mr, mr, Math.PI, 0); ctx.fill();
+        ctx.fillStyle = "#f2e8dc";
+        ctx.fillRect(mx + ox - mr / 2, my - mr - mr / 2, 3, 3);
+      }
+      // -- ruin stones --
+      ctx.fillStyle = "#4d4a44";
+      ctx.fillRect(1252 + ox, 436, 44, 44);
+      ctx.fillRect(1300 + ox, 448, 34, 32);
+      ctx.fillStyle = "#5d6b4a";
+      ctx.fillRect(1252 + ox, 436, 44, 7);
+      // -- workbench with tools --
+      ctx.fillStyle = "#6b4f30";
+      ctx.fillRect(160 + ox, 418, 70, 10);
+      ctx.fillStyle = "#4a3826";
+      ctx.fillRect(166 + ox, 428, 8, 52);
+      ctx.fillRect(216 + ox, 428, 8, 52);
+      ctx.fillStyle = "#9aa3a8";
+      ctx.fillRect(176 + ox, 408, 22, 4);
+      ctx.fillStyle = "#7a5c38";
+      ctx.fillRect(204 + ox, 404, 5, 14);
+      ctx.fillStyle = "#8a9184"; ctx.font = "11px sans-serif";
+      ctx.fillText("werkbank", 168 + ox, 414);
+      // -- plant bed rows + swaying seedlings (BIG51: groeistand
+      // afgeleid van echte onthouden dossiers via worldMemory) --
+      ctx.fillStyle = "#2e3a26";
+      ctx.fillRect(1360 + ox, 452, 120, 28);
+      ctx.fillStyle = "#3d4a30";
+      for (let r = 0; r < 3; r++) ctx.fillRect(1364 + ox, 456 + r * 8, 112, 3);
+      ctx.fillStyle = "#7d9b6a";
+      const memGrow = (typeof worldMemory === "number") ? Math.min(2, worldMemory) : 0;
+      for (let i = 0; i < 6; i++) {
+        const px2 = 1374 + ox + i * 19;
+        const sway = Math.sin(t * 1.6 + i * 1.1) * 3;
+        const stemH = 26 + memGrow * 9;
+        ctx.fillRect(px2 + sway, 454 - stemH, 5, stemH);
+        ctx.beginPath(); ctx.arc(px2 + sway + 2, 452 - stemH, 5 + memGrow * 2, 0, 7); ctx.fill();
+      }
+      // -- fireflies (BIG55: stil bij silence-event, extra bij bloei) --
+      const evFly = (typeof activeEvents === "function") ? activeEvents() : [];
+      const flyN = evFly.includes("silence") ? 3 : evFly.includes("bloom") ? 14 : 10;
+      for (let i = 0; i < flyN; i++) {
+        const fx2 = ((i * 233 + 500) % (SW + 200) - 100 - cam.x + SW + 200) % (SW + 200) - 100;
+        if (fx2 < 0 || fx2 > VW) continue;
+        const fy2 = 300 + ((i * 97) % 140) + Math.sin(t * 0.9 + i * 2.4) * 22;
+        const fa = 0.25 + 0.55 * Math.abs(Math.sin(t * 1.7 + i));
+        ctx.fillStyle = "rgba(220,235,150," + fa.toFixed(2) + ")";
+        ctx.beginPath(); ctx.arc(fx2, fy2, 2.2, 0, 7); ctx.fill();
+      }
+      // -- BIG51: geheugensporen — gouden sporen bij de hut, één
+      // per echt onthouden dossier (worldMemory uit het Journal,
+      // max 9). Geen sporen zonder backend-state. --
+      const memSpores = (typeof worldMemory === "number") ? Math.max(0, Math.min(9, worldMemory)) : 0;
+      for (let i = 0; i < memSpores; i++) {
+        const sx = 130 + ox + ((i * 53) % 110);
+        const sy = 340 + ((i * 37) % 50) + Math.sin(t * 1.2 + i * 1.9) * 6;
+        const sa = 0.45 + 0.45 * Math.abs(Math.sin(t * 1.4 + i * 2.1));
+        const sg = ctx.createRadialGradient(sx, sy, 0.5, sx, sy, 12);
+        sg.addColorStop(0, "rgba(255,215,130," + sa.toFixed(2) + ")");
+        sg.addColorStop(1, "rgba(255,215,130,0)");
+        ctx.fillStyle = sg; ctx.fillRect(sx - 12, sy - 12, 24, 24);
+      }
+      // -- BIG54: dag-tint over de wereld (geen HUD, geen prompts) --
+      ctx.fillStyle = dayTint(); ctx.fillRect(0, 0, VW, VH);
+      // -- particles (smoke/splash) --
+      for (const q of parts) {
+        const pa = Math.max(0, 1 - q.age / q.life);
+        ctx.fillStyle = String(q.col).slice(0, String(q.col).lastIndexOf(",")) + "," + pa.toFixed(2) + ")";
+        ctx.fillRect(q.x + ox, q.y, 4, 4);
+      }
+      // -- NPC Mos: robe + staff + name --
+      const mosX = 560 + ox;
+      ctx.fillStyle = "#3d4a63";
+      ctx.beginPath(); ctx.moveTo(mosX - 13, 480); ctx.lineTo(mosX, 428); ctx.lineTo(mosX + 13, 480); ctx.closePath(); ctx.fill();
+      ctx.fillStyle = "#e6d9bd";
+      ctx.beginPath(); ctx.arc(mosX, 422, 9, 0, 7); ctx.fill();
+      ctx.fillStyle = "#3d4a63";
+      ctx.beginPath(); ctx.arc(mosX, 418, 10, Math.PI, 0); ctx.fill();
+      ctx.fillStyle = "#5a4632";
+      ctx.fillRect(mosX + 14, 428, 4, 52);
+      const cg = ctx.createRadialGradient(mosX + 16, 424, 1, mosX + 16, 424, 22);
+      cg.addColorStop(0, "rgba(150,200,255,0.9)"); cg.addColorStop(1, "rgba(150,200,255,0)");
+      ctx.fillStyle = cg; ctx.fillRect(mosX - 6, 402, 44, 44);
+      ctx.fillStyle = "#9fc4ff";
+      ctx.beginPath(); ctx.arc(mosX + 16, 424, 4, 0, 7); ctx.fill();
+      ctx.fillStyle = "rgba(236,231,216,0.9)"; ctx.font = "11px sans-serif";
+      ctx.fillText("Mos", mosX - 9, 408);
+      // Hermes-aanwezigheid: stip + onderschrift uit laatste status
+      const dotOn = String(hermesDot).indexOf("REAL") === 0;
+      ctx.fillStyle = dotOn ? "#7dd87d" : "#8a9184";
+      ctx.beginPath(); ctx.arc(mosX + 22, 404, 3.5, 0, 7); ctx.fill();
+      ctx.fillStyle = "rgba(185,191,174,0.85)"; ctx.font = "9px sans-serif";
+      ctx.fillText("Hermes-agent", mosX - 26, 396);
+      ctx.font = "11px sans-serif";
+      // -- speech bubble --
+      if (bubble && Date.now() < bubble.until) {
+        const words = String(bubble.text).split(" ");
+        const lines = [];
+        let cur = "";
+        for (const w of words) {
+          if ((cur + " " + w).trim().length > 34) { lines.push(cur.trim()); cur = w; }
+          else cur += " " + w;
+          if (lines.length >= 3) break;
+        }
+        if (cur.trim()) lines.push(cur.trim());
+        const bw = 250, bh = 20 + lines.length * 16;
+        let bxx = mosX - bw / 2;
+        bxx = Math.max(6, Math.min(VW - bw - 6, bxx));
+        const byy = 336;
+        ctx.fillStyle = "rgba(16,22,16,0.94)";
+        ctx.strokeStyle = "#6b8a5a"; ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        if (ctx.roundRect) ctx.roundRect(bxx, byy, bw, bh, 8);
+        else ctx.rect(bxx, byy, bw, bh);
+        ctx.fill(); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(mosX - 6, byy + bh); ctx.lineTo(mosX + 6, byy + bh); ctx.lineTo(mosX, byy + bh + 12); ctx.closePath();
+        ctx.fillStyle = "rgba(16,22,16,0.94)"; ctx.fill();
+        ctx.fillStyle = "#ece7d8"; ctx.font = "12px sans-serif";
+        const shown = lines.slice(0, 3);
+        for (let li = 0; li < shown.length; li++) ctx.fillText(shown[li], bxx + 12, byy + 22 + li * 16);
+      }
+      // -- interaction prompts + range rings (BIG54: werkwoorden) --
+      ctx.font = "12px sans-serif";
+      for (const s of SPOTS) {
+        const d = Math.abs((player.x + player.w / 2) - s.x);
+        if (d < 80) {
+          const pulse = 0.6 + 0.3 * Math.sin(t * 3 + s.x * 0.05);
+          ctx.strokeStyle = "rgba(201,214,107," + pulse.toFixed(2) + ")"; ctx.lineWidth = 2;
+          ctx.beginPath(); ctx.ellipse(s.x + ox, 478, 34 + 3 * Math.sin(t * 3), 8, 0, 0, 7); ctx.stroke();
+          ctx.fillStyle = "#ece7d8";
+          const label = s.npc ? "E · TALK"
+            : s.id === "bench" ? "E · Werkbank"
+            : s.id === "codex" ? "E · Codex"
+            : "[E] " + s.name;
+          ctx.fillText(label, s.x + ox - 30, 404);
+        }
+      }
+      // -- player: hooded figure with lantern (BIG54: contour
+      // voor contrast tegen de wereld) --
+      const bobY = (player.moving ? Math.abs(Math.sin(player.bobT)) * -3 : Math.sin(t * 2) * 1.2);
+      const px = player.x + ox, py = player.y + bobY;
+      const pdir = player.face > 0 ? 18 : -18;
+      ctx.strokeStyle = "rgba(232,217,138,0.55)"; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.moveTo(px - 2, py + player.h); ctx.lineTo(px + 4, py + 8); ctx.lineTo(px + 22, py + 8); ctx.lineTo(px + 28, py + player.h); ctx.closePath(); ctx.stroke();
+      const pl = ctx.createRadialGradient(px + pdir, py + 16, 2, px + pdir, py + 16, 46);
+      pl.addColorStop(0, "rgba(255,200,110,0.5)"); pl.addColorStop(1, "rgba(255,200,110,0)");
+      ctx.fillStyle = pl;
+      ctx.fillRect(px + pdir - 46, py + 16 - 46, 92, 92);
+      ctx.fillStyle = "#4f6b4a";
+      ctx.beginPath(); ctx.moveTo(px - 2, py + player.h); ctx.lineTo(px + 4, py + 8); ctx.lineTo(px + 22, py + 8); ctx.lineTo(px + 28, py + player.h); ctx.closePath(); ctx.fill();
+      ctx.fillStyle = "#3c5238";
+      ctx.beginPath(); ctx.arc(px + 13, py + 10, 9, 0, 7); ctx.fill();
+      ctx.fillStyle = "#e6d9bd";
+      ctx.beginPath(); ctx.arc(px + 13 + player.face * 2, py + 12, 5.5, 0, 7); ctx.fill();
+      ctx.fillStyle = "#101410";
+      ctx.beginPath(); ctx.arc(px + 13 + player.face * 4, py + 12, 1.8, 0, 7); ctx.fill();
+      ctx.fillStyle = "#5a4632";
+      ctx.fillRect(px + (player.face > 0 ? 20 : -1), py + 20, 7, 12);
+      ctx.fillStyle = "#ffe2a0";
+      ctx.fillRect(px + (player.face > 0 ? 21 : 0), py + 32, 5, 6);
+      // BIG54: zone/x leven in de DOM-HUD (geen canvas-balk meer).
+    }
+    let last = 0;
+    function frame(t) {
+      window.requestAnimationFrame(frame);
+      const dt = Math.min(0.05, (t - last) / 1000 || 0.016);
+      last = t;
+      step(dt);
+    }
+    updateObjective();
+    stage.tabIndex = 0;
+    window.requestAnimationFrame(frame);
+    </script>"""
+    return _ui.shell("Side", "/side", main, "", _ui.living_bg())
 
 
 # =============================================================================

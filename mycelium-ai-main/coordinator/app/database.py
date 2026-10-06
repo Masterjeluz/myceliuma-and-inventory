@@ -86,9 +86,90 @@ def init_database() -> None:
             ON tasks(status, priority DESC, id ASC);
         CREATE INDEX IF NOT EXISTS idx_nodes_last_seen
             ON nodes(last_seen);
+        CREATE TABLE IF NOT EXISTS play_sessions (
+            session_id TEXT PRIMARY KEY,
+            x REAL NOT NULL DEFAULT 800,
+            y REAL NOT NULL DEFAULT 500,
+            zone TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            moved_at TEXT NOT NULL DEFAULT ''
+        );
+        CREATE INDEX IF NOT EXISTS idx_play_sessions_updated
+            ON play_sessions(updated_at);
+        CREATE TABLE IF NOT EXISTS play_inventory (
+            session_id TEXT NOT NULL,
+            item TEXT NOT NULL,
+            qty INTEGER NOT NULL DEFAULT 0,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (session_id, item)
+        );
+        CREATE INDEX IF NOT EXISTS idx_play_inventory_session
+            ON play_inventory(session_id);
+        CREATE TABLE IF NOT EXISTS play_gather (
+            session_id TEXT NOT NULL,
+            node_id TEXT NOT NULL,
+            gathered_at TEXT NOT NULL,
+            PRIMARY KEY (session_id, node_id)
+        );
+        CREATE TABLE IF NOT EXISTS play_builds (
+            build_id TEXT PRIMARY KEY,
+            session_id TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            x REAL NOT NULL DEFAULT 0,
+            y REAL NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_play_builds_session
+            ON play_builds(session_id);
+        CREATE TABLE IF NOT EXISTS play_chests (
+            chest_id TEXT PRIMARY KEY,
+            session_id TEXT NOT NULL,
+            x REAL NOT NULL DEFAULT 0,
+            y REAL NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_play_chests_session
+            ON play_chests(session_id);
+        CREATE TABLE IF NOT EXISTS play_chest_items (
+            chest_id TEXT NOT NULL,
+            item TEXT NOT NULL,
+            qty INTEGER NOT NULL DEFAULT 0,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (chest_id, item)
+        );
+        CREATE TABLE IF NOT EXISTS play_npc (
+            npc_id TEXT NOT NULL,
+            session_id TEXT NOT NULL,
+            house_build_id TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL DEFAULT 'settled',
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (npc_id, session_id)
+        );
+        CREATE TABLE IF NOT EXISTS play_flags (
+            session_id TEXT NOT NULL,
+            flag TEXT NOT NULL,
+            set_at TEXT NOT NULL,
+            PRIMARY KEY (session_id, flag)
+        );
+        CREATE TABLE IF NOT EXISTS world_clock (
+            session_id TEXT PRIMARY KEY,
+            day INTEGER NOT NULL DEFAULT 1,
+            minute INTEGER NOT NULL DEFAULT 480,
+            updated_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS play_notes (
+            session_id TEXT NOT NULL,
+            note_key TEXT NOT NULL,
+            text TEXT NOT NULL DEFAULT '',
+            priority INTEGER NOT NULL DEFAULT 0,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (session_id, note_key)
+        );
         """)
             _ensure_task_columns(db)
             _ensure_node_columns(db)
+            _ensure_play_columns(db)
 
 
 def _ensure_node_columns(db) -> None:
@@ -146,6 +227,19 @@ def _ensure_task_columns(db) -> None:
         db.execute("ALTER TABLE tasks ADD COLUMN routing_decision TEXT DEFAULT '{}'")
     if "mission_id" not in existing:
         db.execute("ALTER TABLE tasks ADD COLUMN mission_id TEXT DEFAULT NULL")
+
+
+def _ensure_play_columns(db) -> None:
+    """Additive, idempotent migration for player sessions.
+
+    Facing direction (radians, 0=east) so a reload restores
+    the view as well as the feet. Default 0 keeps existing
+    positional INSERTs working."""
+    existing = {row["name"] for row in db.execute(
+        "PRAGMA table_info(play_sessions)").fetchall()}
+    if "angle" not in existing:
+        db.execute("ALTER TABLE play_sessions ADD COLUMN "
+                   "angle REAL NOT NULL DEFAULT 0")
 
 
 CHAT_DATABASE_ENV_VAR = "MYCELIUM_CHAT_DATABASE_PATH"
@@ -526,6 +620,13 @@ def init_chat_database() -> None:
             location TEXT NOT NULL DEFAULT '',
             provenance TEXT NOT NULL DEFAULT '{}',
             updated_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS filament_usage (
+            usage_key TEXT PRIMARY KEY,
+            spool_id TEXT NOT NULL,
+            grams REAL NOT NULL,
+            reason TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL
         );
         CREATE TABLE IF NOT EXISTS robots (
             robot_id TEXT PRIMARY KEY,

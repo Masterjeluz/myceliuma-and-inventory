@@ -61,6 +61,30 @@ Andere platformen melden eerlijk `supported: false`.
   de Insta360 en vertel wat je ziet" → observatie → VLM →
   context → advies → missie) — DONE als `camera_observe`-stap;
   echte Insta360-capture wacht op fasen 2–3.
+- **Phase 8** (DONE): out-of-process frame grab
+  (`coordinator/app/capture_probe.py::run_grab` +
+  `POST /api/v1/cameras/{device_id}/probe-grab`). Het child-proces
+  opent de grabber (gesloten set: `test`/`file`/`windows-webcam`/
+  `insta360`), haalt exact één frame op, hasht het (SHA256) en
+  print één JSON-verdict; de parent herverifieert bestandsnaam,
+  directory, grootte en hash zelf. Alleen een geverifieerd frame
+  legt een `CameraObservation` + `WorldObservation` vast (zonder
+  entity, zonder confidence, zonder positie — een frame bewijst
+  pixels, nooit herkenning). Timeouts/crashes/malformed output/
+  hash-mismatch raken de hoofdserver nooit. Hardware-grabbers
+  weigeren met `unavailable` tot een reviewed runtime landt.
+
+## Project-state (perceptie)
+
+- Capture probe (USB-enumeratie geïsoleerd): DONE
+- Out-of-process frame grab: DONE
+- `CameraObservation`: DONE
+- `WorldObservation`: DONE
+- Vision/object recognition: NOT IMPLEMENTED (generieke
+  VLM-keten bestaat, geen automatische herkenning zonder model)
+- Insta360 live: UNAVAILABLE (webcam-modus wacht op vendor-driver
+  + reviewed Windows-runtime; file-modus via file-ingest is REAL)
+- Live 3D: NOT IMPLEMENTED
 
 ## Security
 

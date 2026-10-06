@@ -178,6 +178,208 @@ def printer_summary() -> list[dict]:
     return out
 
 
+# M0 (BIG57) — print-workshop readiness probes.
+#
+# Real, current, read-only environment checks for the local print
+# chain. No cache, no guessing, never raises. Every probe reports
+# one of ABSENT / PRESENT_CLI_UNPROVEN / CLI_OK / CLI_FAILED /
+# AVAILABLE / MISSING / OK / NOT_WRITABLE with a plain reason and
+# a next step. Nothing here slices, moves hardware, or writes.
+#
+# NOTE on test_fab_security.py: the no-shell tripwire scans
+# mesh3d/slicer3d/printer3d/fab_flow only. Subprocess use lives
+# solely in this module's smoke helper (pinned binary, fixed
+# ["--help"] argv, no shell, timeout, output caps) so the fab
+# core stays shell-free by construction. Console handling lives
+# in local_slicer.run_help_smoke (one reviewed place); the fab
+# core modules never gain process execution.
+LIBRARY_DIR_ENV_VAR = "MYCELIUM_LIBRARY_DIR"
+DEFAULT_LIBRARY_ROOT = "E:/Mycelium"
+BAMBU_STUDIO_ENV_VAR = "BAMBU_STUDIO_BIN"
+DEFAULT_BAMBU_STUDIO_BIN = (
+    "C:/Program Files/Bambu Studio/bambu-studio.exe")
+PRUSASLICER_CONSOLE_ENV_VAR = "PRUSASLICER_CONSOLE_BIN"
+DEFAULT_PRUSA_CONSOLE_BIN = (
+    "E:/Mycelium/tools/prusa/PrusaSlicer-2.9.6/"
+    "prusa-slicer-console.exe")
+PROBE_TIMEOUT_SECONDS = 15.0
+_SMOKE_OK_MARKERS = ("export-gcode", "--slice", "export-3mf")
+
+
+def _classify_smoke(code: int | None, output: str) -> tuple[str, str]:
+    lowered = str(output or "").lower()
+    if code is None:
+        return ("CLI_FAILED",
+                "startte niet of time-out; controleer binary")
+    if any(mark in lowered for mark in _SMOKE_OK_MARKERS):
+        return ("CLI_OK",
+                "CLI toont slice/export-mogelijkheden")
+    if code == 0:
+        return ("PRESENT_CLI_UNPROVEN",
+                "binary draait, maar --help toont geen bruikbare "
+                "slice-flags; headless slicen onbewezen")
+    return ("CLI_FAILED",
+            f"--help weigerde (exit {code}); controleer binary")
+
+
+def probe_local_slicers(
+        candidates: list[dict] | None = None) -> list[dict]:
+    """Detect slicer binaries + CLI proof. Read-only, never raises."""
+    import os as _os
+    import shutil as _shutil
+    from .local_slicer import SMOKE_TIMEOUT_SECONDS as _smoke_budget
+    from .local_slicer import run_help_smoke
+    if candidates is None:
+        candidates = [
+            {"id": "bambu-studio", "label": "Bambu Studio",
+             "env_var": BAMBU_STUDIO_ENV_VAR,
+             "default": DEFAULT_BAMBU_STUDIO_BIN},
+            {"id": "prusa-console", "label": "PrusaSlicer-console",
+             "env_var": PRUSASLICER_CONSOLE_ENV_VAR,
+             "default": DEFAULT_PRUSA_CONSOLE_BIN},
+        ]
+    out = []
+    for cand in candidates:
+        try:
+            raw = str(_os.environ.get(
+                str(cand.get("env_var", "")), "") or "").strip()
+            binary = raw or str(cand.get("default", ""))
+            if not binary:
+                extra = _shutil.which(str(cand.get("id", "")) or "")
+                binary = extra or ""
+            if not binary or not _os.path.isfile(binary):
+                out.append({
+                    "id": str(cand.get("id", "")),
+                    "label": str(cand.get("label", "")),
+                    "state": "ABSENT", "binary": binary[:160],
+                    "reason": "binary niet gevonden",
+                    "next": "installeer of zet "
+                            + str(cand.get("env_var", "")),
+                })
+                continue
+            code, text = run_help_smoke(
+                binary, timeout=_smoke_budget)
+            state, reason = _classify_smoke(code, text)
+            out.append({
+                "id": str(cand.get("id", "")),
+                "label": str(cand.get("label", "")),
+                "state": state, "binary": binary[:160],
+                "reason": reason,
+                "next": ("gereed voor rookproef met echt slicen"
+                         if state == "CLI_OK" else
+                         "eerst headless slice rookproef vereist"),
+            })
+        except Exception as error:
+            out.append({
+                "id": str(cand.get("id", "")),
+                "label": str(cand.get("label", "")),
+                "state": "CLI_FAILED", "binary": "",
+                "reason": f"probe faalde ({type(error).__name__})",
+                "next": "controleer omgeving",
+            })
+    return out
+
+
+def probe_mqtt() -> dict:
+    """paho-mqtt presence without importing it (no side effects)."""
+    try:
+        import importlib.util as _ilu
+        found = _ilu.find_spec("paho.mqtt.client") is not None
+    except Exception:
+        found = False
+    if found:
+        return {"state": "AVAILABLE",
+                "reason": "paho-mqtt aanwezig in deze omgeving",
+                "next": "broker + creds nodig voor hardware"}
+    return {"state": "MISSING",
+            "reason": "paho-mqtt ontbreekt (niet in pyproject)",
+            "next": "alleen SIMULATED/UNAVAILABLE tot dep + "
+                    "hardware er zijn"}
+
+
+def library_root() -> str:
+    """Configured library root. No creation here (probe only)."""
+    import os as _os
+    override = str(_os.environ.get(LIBRARY_DIR_ENV_VAR, "")
+                   or "").strip()
+    return override or DEFAULT_LIBRARY_ROOT
+
+
+def probe_library() -> dict:
+    """Library root reachability. Read-only, never creates."""
+    import os as _os
+    root = library_root()
+    try:
+        if not _os.path.exists(root):
+            return {"state": "MISSING", "root": root,
+                    "reason": "bibliotheekmap ontbreekt",
+                    "next": "richt in via M1-setup (expliciete actie)"}
+        if not _os.path.isdir(root):
+            return {"state": "NOT_A_DIR", "root": root,
+                    "reason": "pad is geen map",
+                    "next": f"zet {LIBRARY_DIR_ENV_VAR} op een map"}
+        if not _os.access(root, _os.W_OK):
+            return {"state": "NOT_WRITABLE", "root": root,
+                    "reason": "map niet schrijfbaar",
+                    "next": "controleer rechten"}
+    except Exception as error:
+        return {"state": "UNAVAILABLE", "root": root,
+                "reason": f"onleesbaar ({type(error).__name__})",
+                "next": "controleer schijf"}
+    return {"state": "OK", "root": root,
+            "reason": "map bereikbaar en schrijfbaar",
+            "next": "gereed voor bibliotheekscan"}
+
+
+def probe_spools() -> dict:
+    """Filament spool registry state. Read-only."""
+    try:
+        from .fabrication import list_spools
+        spools = list(list_spools() or [])
+    except Exception:
+        return {"state": "UNAVAILABLE", "total": 0,
+                "reason": "spoolregister onleesbaar",
+                "next": "controleer database"}
+    if not spools:
+        return {"state": "EMPTY", "total": 0,
+                "reason": "geen spoelen geregistreerd",
+                "next": "voeg spoel toe vóór slicen met materiaal"}
+    names = [str(getattr(spool, "spool_id", "") or "")[:40]
+             for spool in spools[:8]]
+    return {"state": "OK", "total": len(spools), "spools": names,
+            "reason": f"{len(spools)} spoel(en) geregistreerd",
+            "next": "koppel spoel aan AMS-slot in M1"}
+
+
+def print_workshop_readiness() -> dict:
+    """One honest environment snapshot for the /3d workbench."""
+    try:
+        slicers = probe_local_slicers()
+    except Exception:
+        slicers = []
+    try:
+        mqtt = probe_mqtt()
+    except Exception:
+        mqtt = {"state": "UNAVAILABLE", "reason": "onbekend",
+                "next": "opnieuw proberen"}
+    try:
+        library = probe_library()
+    except Exception:
+        library = {"state": "UNAVAILABLE", "root": "",
+                   "reason": "onbekend", "next": "opnieuw proberen"}
+    try:
+        spools = probe_spools()
+    except Exception:
+        spools = {"state": "UNAVAILABLE", "total": 0,
+                  "reason": "onbekend", "next": "opnieuw proberen"}
+    try:
+        printers = printer_summary()
+    except Exception:
+        printers = []
+    return {"slicers": slicers, "mqtt": mqtt, "library": library,
+            "spools": spools, "printers": printers}
+
+
 def forge_identity() -> dict:
     """Forge familiar identity (existing capability record).
 
@@ -1714,6 +1916,85 @@ def studio_page() -> str:
     role="img" aria-label="Forge 3D viewport: drag to rotate, wheel to zoom, shift-drag to pan"></canvas>
     <p class="muted">Drag = rotate · wheel = zoom · shift-drag = pan ·
     click a part to select (amber = selected). Procedural preview only.</p>
+    <p><button id="forge-3d-toggle" type="button">3D-preview</button>
+    <button id="forge-3d-refresh" type="button" hidden>Ververs 3D</button>
+    <span id="forge-3d-note" class="muted">2D-editor is leidend; 3D is een snapshot-preview.</span></p>
+    <div id="forge-3d" hidden
+    style="width:100%;height:420px;background:var(--soil-2);border:1px solid var(--line);border-radius:var(--r)"></div>
+    <script type="importmap">{"imports":{"three":"https://unpkg.com/three@0.160.0/build/three.module.js","three/addons/":"https://unpkg.com/three@0.160.0/examples/jsm/"}}</script>
+    <script type="module">
+    (function(){
+      "use strict";
+      var box=document.getElementById("forge-3d");
+      var btn=document.getElementById("forge-3d-toggle");
+      var refresh=document.getElementById("forge-3d-refresh");
+      var note=document.getElementById("forge-3d-note");
+      if(!box||!btn)return;
+      var three=null,scene=null,camera=null,renderer=null,controls=null,group=null;
+      function say(t){if(note)note.textContent=t;}
+      function build(){
+        if(!three||!scene||!group)return;
+        while(group.children.length)group.remove(group.children[0]);
+        var parts=(window.ForgeSession&&window.ForgeSession.parts)||ForgeSession.parts||[];
+        var sel=(ForgeSession&&ForgeSession.selection)||[];
+        var count=0;
+        parts.forEach(function(p){
+          var tris=[];
+          try{tris=partTris(p)||[];}catch(e){tris=[];}
+          var pos=[];
+          tris.forEach(function(t){
+            t.forEach(function(q){
+              var v=null;
+              try{v=xform(p,q);}catch(e){v=null;}
+              if(v&&isFinite(v[0])&&isFinite(v[1])&&isFinite(v[2]))pos.push(v[0],v[1],v[2]);
+            });
+          });
+          if(!pos.length||pos.length%9!==0)return;
+          var geo=new three.BufferGeometry();
+          geo.setAttribute("position",new three.Float32BufferAttribute(pos,3));
+          geo.computeVertexNormals();
+          var mat=new three.MeshStandardMaterial({
+            color:sel.indexOf(p.id)>=0?0xd9a441:0xa5c48a,
+            roughness:0.8,metalness:0.05,side:three.DoubleSide});
+          group.add(new three.Mesh(geo,mat));
+          count++;
+        });
+        say(count?("3D-snapshot: "+count+" part(s). Ververs na een edit."):"3D: geen geometrie om te tonen.");
+      }
+      function frame(){
+        if(box.hidden)return;
+        try{controls.update();renderer.render(scene,camera);}catch(e){}
+        requestAnimationFrame(frame);
+      }
+      btn.onclick=function(){
+        if(!box.hidden){box.hidden=true;refresh.hidden=true;
+          say("2D-editor is leidend; 3D is een snapshot-preview.");return;}
+        say("3D laden…");
+        Promise.all([import("three"),import("three/addons/controls/OrbitControls.js")]).then(function(mods){
+          three=mods[0];
+          var OrbitControls=mods[1].OrbitControls;
+          scene=new three.Scene();
+          scene.background=new three.Color(0x161c16);
+          camera=new three.PerspectiveCamera(45,(box.clientWidth||640)/420,0.1,5000);
+          camera.position.set(90,70,120);
+          renderer=new three.WebGLRenderer({antialias:true});
+          renderer.setSize(box.clientWidth||640,420);
+          while(box.firstChild)box.removeChild(box.firstChild);
+          box.appendChild(renderer.domElement);
+          controls=new OrbitControls(camera,renderer.domElement);
+          scene.add(new three.HemisphereLight(0xcfe5ff,0x8a7a5f,0.9));
+          var sun=new three.DirectionalLight(0xffe7c0,1.1);
+          sun.position.set(80,120,60);scene.add(sun);
+          group=new three.Group();scene.add(group);
+          var grid=new three.GridHelper(240,24,0x2e3a2c,0x222b22);
+          scene.add(grid);
+          box.hidden=false;refresh.hidden=false;
+          build();frame();
+        },function(){say("3D niet beschikbaar (CDN/WebGL) — 2D-editor blijft werken.");});
+      };
+      if(refresh)refresh.onclick=function(){build();};
+    })();
+    </script>
     </section>
     <section aria-label="Properties"><h2>Properties</h2>
     <div id="forge-props"><p class="muted">Select a part.</p></div>
@@ -1897,9 +2178,33 @@ def studio_page() -> str:
       (sl.profiles||["draft-pla"]).forEach(p=>{ const o=document.createElement("option"); o.textContent=p; prof.appendChild(o); });
       ["sl-printer","sl-material","sl-profile","sl-layer","sl-infill","sl-supports"].forEach(id=>{ $(id).onchange=slicerEstimate; });
       slicerEstimate(); }
+    function forgeAct(jobId, action, fields, done){
+      var body=new URLSearchParams();
+      var f=fields||{};
+      for(var k in f){if(Object.prototype.hasOwnProperty.call(f,k))body.append(k,f[k]);}
+      fetch("/web/workshop/fabjobs/"+encodeURIComponent(jobId)+"/"+action,{method:"POST",body:body}).then(function(){loadSession();},function(){loadSession();});
+    }
     function renderFabjobs(){ const jobs=((FORGE_DATA.workshop||{}).fabjobs)||[];
-      $("forge-fabjobs").innerHTML=jobs.length?("<ul>"+jobs.slice(0,6).map(j=>"<li><code>"+j.job_id+"</code> ["+j.stage+"] model "+String(j.model_id||"").slice(0,16)
-        +" <form method='post' action='/web/workshop/fabjobs/"+j.job_id+"/sync' style='display:inline'><button type='submit'>Sync</button></form></li>").join("")+"</ul>"):"<p class='muted'>No fab jobs — start one in <a href='/3d'>/3d</a>.</p>"; }
+      if(!jobs.length){$("forge-fabjobs").innerHTML="<p class='muted'>No fab jobs — start one in <a href='/3d'>/3d</a>.</p>";return;}
+      $("forge-fabjobs").innerHTML="<ul>"+jobs.slice(0,6).map(function(j){
+        var h="<li><code>"+j.job_id+"</code> ["+j.stage+"] model "+String(j.model_id||"").slice(0,16)+" ";
+        var b=function(act,label){return " <button type='button' data-job='"+j.job_id+"' data-act='"+act+"'>"+label+"</button>";};
+        if(j.stage==="designed"){h+=b("prepare","Prepare");}
+        else if(j.stage==="prepared"){h+=" <select data-slicer='"+j.job_id+"' aria-label='Slicer'><option value='test-slicer'>Slice (TEST)</option><option value='prusa-console'>Slice (lokaal)</option></select>"+b("slice","Slicen");}
+        else if(j.stage==="gcode-ready"){h+=b("propose","Propose print (needs YES)")+b("preflight","Pre-flight");}
+        else if(j.stage==="proposed"){h+=b("preflight","Pre-flight")+b("enqueue","In wachtrij plaatsen")+" <span class='muted'>YES via <a href='/writes'>Writes</a></span>";}
+        else{h+=b("sync","Sync");}
+        return h+"</li>";
+      }).join("")+"</ul>";
+      $("forge-fabjobs").querySelectorAll("button[data-job]").forEach(function(btn){
+        btn.onclick=function(){
+          var job=btn.getAttribute("data-job"),act=btn.getAttribute("data-act"),fields={};
+          if(act==="slice"){var sel=$("forge-fabjobs").querySelector("select[data-slicer='"+job+"']");fields.slicer=sel?sel.value:"test-slicer";}
+          btn.disabled=true;
+          forgeAct(job,act,fields);
+        };
+      });
+    }
     function renderPipeline(){ const stages=[["DESIGN",ForgeSession.parts.length?"done":"now"],["VALIDATE",""],["SLICE",""],["APPROVAL",ForgeSession.dirty?"now":""],["PRINT","blocked"]];
       $("forge-pipeline").innerHTML=stages.map(s=>"<span class='step "+s[1]+"'>"+s[0]+"</span>").join("<span class='arrow'>→</span>")
         +"<p class='muted'>Alleen DESIGN is vrij editeerbaar. SLICE = TEST (SIMULATED). PRINT = HARDWARE_REQUIRED via /writes.</p>"; }
