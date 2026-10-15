@@ -37,7 +37,7 @@ def test_summarization_routes_local_default():
 
 def test_vision_routes_local_vlm_default():
     route = resolve_model("vision")
-    assert (route.provider, route.model) == ("ollama", "qwen3-vl:4b")
+    assert (route.provider, route.model) == ("ollama", "qwen3.5:4b")
     assert route.local is True
     assert route.operator_override is False
 
@@ -95,7 +95,7 @@ def test_router_owns_provider_module_defaults():
     from coordinator.app import vision_provider as vision_mod
     assert advisor_mod.DEFAULT_MODEL == "qwen3.5:4b"
     assert advisor_mod.DEFAULT_MODEL == router.DEFAULT_LOCAL_MODEL
-    assert vision_mod.DEFAULT_VISION_MODEL == "qwen3-vl:4b"
+    assert vision_mod.DEFAULT_VISION_MODEL == "qwen3.5:4b"
     assert vision_mod.DEFAULT_VISION_MODEL == (
         router.DEFAULT_VISION_MODEL)
     assert embed_mod.DEFAULT_MODEL == "nomic-embed-text"

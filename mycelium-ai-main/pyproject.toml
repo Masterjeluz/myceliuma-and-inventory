@@ -21,7 +21,7 @@ dependencies = [
 dev = ["pytest>=8,<9"]
 
 [tool.setuptools.packages.find]
-include = ["coordinator*", "node_client*", "desktop_agent*"]
+include = ["coordinator*", "node_client*", "desktop_agent*", "code_worker*"]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]

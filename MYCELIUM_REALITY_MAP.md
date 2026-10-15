@@ -1,6 +1,7 @@
 # MYCELIUM REALITY MAP — factual audit at HEAD
 
 Date (UTC): 2026-09-25
+> **Historical snapshot.** This audit describes repository state on 2026-09-25 and is not the current implementation status. The repository layout, coordinator scheduler, service state, and Obsidian setup have since changed. For current architecture and live checks, use `AGENTS.md`, `PROJECTATLAS.md`, `docs/CURRENT_STATE.md`, and `Mycelium-Knowledge-Vault/What works today.md`; executable code and tests remain authoritative. Detailed findings below are preserved as dated audit notes.
 Method: static inspection of code + test files + docs. No test execution for this audit (per instruction). No code modifications, no commits.
 Evidence tags used on every claim: **VERIFIED FROM CODE** / **VERIFIED FROM TESTS** (static test-file inspection only, not execution) / **DOCUMENTATION CLAIM** / **UNCERTAIN**.
 

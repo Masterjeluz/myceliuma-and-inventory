@@ -2,43 +2,62 @@
 
 Target: Windows 10, no administrator privileges required.
 
-## What starts
+## What the combined Windows launcher starts
 
-1. **Mycelium coordinator** — `uvicorn coordinator.app.main:app`
-   on `127.0.0.1:8000`.
-2. **Desktop agent** — safe/default mode: observes (screenshots on
-   explicit mission steps only), never clicks/types without an
-   exact human YES.
-3. **Local Ollama-dependent services** — only if Ollama answers;
-   otherwise everything degrades to honest WAITING states.
-4. **Safe research scheduler** — nothing runs by itself. Finished
-   and interrupted missions are *inspected*, never blindly
-   executed (see `recovery.md`).
+Run `tools/start-local.ps1` from the repository root to start the
+local stack. It checks each loopback service first and leaves services
+that already answer in place:
 
-## Install startup (Task Scheduler, user-level)
+1. **INVENTory API** on `127.0.0.1:8080`.
+2. **Mycelium coordinator** on `127.0.0.1:8000`.
+3. **Ollama** on `127.0.0.1:11434`, if installed.
+4. **Hermes gateway** on `127.0.0.1:8642`, if installed.
+5. **Obsidian LiveSync CouchDB** on `127.0.0.1:5984`, when Docker
+   Desktop's engine is available.
+6. **Bounded coordinator scheduler** — starts with the API and
+   periodically runs four read-only summaries: watcher scan,
+   device health, queue-state reconciliation, and research-source
+   counts. It never creates queue work, dispatches nodes, calls a
+   model, accesses hardware, resumes missions, or approves actions.
+   Set `MYCELIUM_BACKGROUND_SCHEDULER=0` before startup to disable
+   it. See `/system` and `GET /api/v1/jobs/scheduler` for status.
+   Finished and interrupted missions are still *inspected*, never
+   blindly executed (see `recovery.md`).
 
-Run once from the repo (no admin needed):
+The launcher uses a project's `.venv` only when FastAPI, Uvicorn, and
+the app module import successfully. It then tries the system Python.
+If neither interpreter works, it reports a startup warning. Rerun the
+launcher to bring back a service that was stopped; it is not a
+continuous watchdog. It does not start the desktop agent.
+
+## Install the complete stack at Windows sign-in
+
+Run once from the repository root (no administrator privileges needed):
 
 ```powershell
-cd mycelium-ai-main
+.\tools\install-autostart.ps1
+```
+
+This creates a shortcut in the current user's Startup folder. At sign-in,
+it opens Docker Desktop and runs `tools/start-local.ps1` hidden. To start
+the stack immediately, run that script directly. To disable sign-in startup,
+open `shell:startup` and remove `MyceliumLocal.lnk`.
+
+The coordinator-only Task Scheduler scripts remain available in
+`mycelium-ai-main/scripts/` for a coordinator-only setup. Do not register
+that task alongside the combined stack shortcut; both would try to start
+the coordinator at sign-in.
+
+## Coordinator-only startup controls
+
+```powershell
+# Install the coordinator-only scheduled task:
 .\scripts\register-startup.ps1
-```
-
-This creates a user-level scheduled task `MyceliumCoordinator`
-that runs at logon:
-
-- `python -m uvicorn coordinator.app.main:app --host 127.0.0.1 --port 8000`
-- working directory: the `mycelium-ai-main` folder
-- starts only on AC power, stops gracefully at logoff
-
-Disable:
-
-```powershell
+# Remove that task:
 .\scripts\unregister-startup.ps1
-# or: Task Scheduler → MyceliumCoordinator → Disable
 ```
 
-## Manual start / stop / status / restart (Windows)
+## Manual coordinator start / status / stop (Windows)
 
 ```powershell
 cd mycelium-ai-main
@@ -85,8 +104,9 @@ systemctl --user stop mycelium-coordinator          # stop
 Set `OVERNIGHT` from `/morning` (or `POST /api/v1/mode`) to let
 safe research, analysis and reports proceed; queue work via
 `POST /api/v1/research/queue`, run it via
-`POST /api/v1/research/queue/run-once` (manual, scheduler, or n8n
-cron — never a background thread). See `overnight-research.md`.
+`POST /api/v1/research/queue/run-once` manually or through n8n
+cron. The built-in scheduler does not execute queued research.
+See `overnight-research.md`.
 BOOT ≠ APPROVAL still holds: physical, desktop input, publishing
 and approvals never run overnight.
 
@@ -97,9 +117,10 @@ and approvals never run overnight.
 - send mail, purchases, outreach, bookings
 - approve anything (approvals are human-only, always)
 
-Startup MAY: start the coordinator, start a read-only desktop
-agent, scan unfinished missions (report-only), prepare plans,
-run *explicitly resumed* read-only research, report findings.
+Startup MAY: start the coordinator and its four read-only periodic
+summaries, start a read-only desktop agent, scan unfinished missions
+(report-only), prepare plans, run *explicitly resumed* read-only
+research, report findings.
 
 ## Recovery on boot
 

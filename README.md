@@ -35,7 +35,11 @@ actuele kaart: [docs/CURRENT_STATE.md](docs/CURRENT_STATE.md).
 
 Local-first · mens beslist (exact YES, geen bypass — behalve de
 expliciete TOWN_AUTONOMY-dial voor research.fetch_url/
-system_inventory/desktop_screenshot, default uit) ·
-fail-closed · provenance altijd · AI-advies is geen waarheid ·
-geen shell/RCE · geen permanente autonomie (alleen de dial hierboven) ·
-cloud is additief, nooit verplicht.
+system_inventory/desktop_screenshot, default uit) · fail-closed ·
+provenance altijd · AI-advies is geen waarheid · geen shell/RCE ·
+geen autonome consequential actions · de coordinator-scheduler doet
+alleen vaste read-only statuscontroles · cloud is additief, nooit verplicht.
+
+## Project knowledge vault
+
+Open [`Mycelium-Knowledge-Vault/`](Mycelium-Knowledge-Vault/Start%20Here.md) as an Obsidian vault for the human-readable architecture, current capabilities, node onboarding direction, and roadmap. The per-user startup shortcut runs [`tools/start-local.ps1`](tools/start-local.ps1), which opens Docker Desktop and attempts to start the loopback-only CouchDB service for Self-hosted LiveSync when Docker is ready. The port remains private to this PC; remote Android access still needs a private HTTPS endpoint. Setup details: [`ops/obsidian-livesync/`](ops/obsidian-livesync/README.md).

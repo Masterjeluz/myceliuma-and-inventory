@@ -136,6 +136,7 @@ class HermesBridge:
             base_url=self.base_url,
             timeout=self.timeout,
             follow_redirects=False,
+            trust_env=False,
             transport=self._transport,
             headers={"Authorization": f"Bearer {self._api_key}"},
         )

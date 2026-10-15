@@ -127,16 +127,24 @@ def test_solarpunk_town_panel_present(tmp_path, monkeypatch):
 
 def test_ollama_fallback_replies_as_npc(tmp_path, monkeypatch):
     """Hermes dood + Ollama gemockt -> echte npc-beurt, geen noot."""
-    import httpx as _httpx
+    from coordinator.app import ollama_chat
     from types import SimpleNamespace
 
-    def fake_post(url, json=None, timeout=None):
-        assert url == "http://127.0.0.1:9/api/chat"
-        assert json["model"]
-        return SimpleNamespace(
-            status_code=200,
-            json=lambda: {"message": {"content": "Hallo van Ollama"}})
-    monkeypatch.setattr(_httpx, "post", fake_post)
+    class FakeClient:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def post(self, url, json=None):
+            assert url == "http://127.0.0.1:9/api/chat"
+            assert json["model"]
+            return SimpleNamespace(
+                status_code=200,
+                json=lambda: {"message": {"content": "Hallo van Ollama"}})
+
+    monkeypatch.setattr(ollama_chat, "_ollama_client", FakeClient)
     with _client(tmp_path, monkeypatch) as client:
         convo = _open(client)
         cid = convo["conversation_id"]

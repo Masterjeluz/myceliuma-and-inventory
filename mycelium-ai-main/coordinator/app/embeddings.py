@@ -146,7 +146,7 @@ class OllamaEmbeddingProvider(EmbeddingProvider):
         try:
             async with httpx.AsyncClient(
                     base_url=self.base_url, timeout=self.timeout,
-                    follow_redirects=False,
+                    follow_redirects=False, trust_env=False,
                     transport=self._transport) as client:
                 response = await client.post(
                     EMBED_PATH,

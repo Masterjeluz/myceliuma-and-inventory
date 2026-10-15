@@ -9,9 +9,9 @@ cancellable (a running marker can be cancelled) and
 idempotent (a caller run_key returns the existing run
 instead of executing twice).
 
-There is deliberately no background thread in the web
-lifespan: runs trigger via API (or an operator poll loop),
-so tests and local runs stay deterministic.
+The in-process scheduler defaults on and only invokes the
+fixed, read-only allowlist in SCHEDULED_JOBS. User-triggered
+runs remain available through the same API.
 """
 
 import secrets
@@ -27,6 +27,16 @@ JOB_NAMES = (
     "inventory_reconcile",
     "device_health",
 )
+
+# Closed allowlist for background execution. These runners inspect existing
+# state and return bounded summaries; none creates queue work, calls a model,
+# accesses hardware, or crosses an approval gate.
+SCHEDULED_JOBS = {
+    "watcher_scan": 600,
+    "device_health": 300,
+    "inventory_reconcile": 1800,
+    "research_process": 3600,
+}
 
 RUN_STATUSES = (
     "running",
@@ -87,6 +97,27 @@ def list_runs(*, job_name: str = "",
                 "DESC LIMIT ?",
                 (max(1, min(int(limit or 20), 100)),)).fetchall()
     return [dict(row) for row in rows]
+
+
+def prune_scheduled_runs(keep_per_job: int = 20) -> int:
+    """Bound scheduler-owned history without pruning operator runs."""
+    from .database import chat_connection, init_chat_database
+    keep = max(1, min(int(keep_per_job), 100))
+    init_chat_database()
+    removed = 0
+    with chat_connection() as db:
+        for job_name in SCHEDULED_JOBS:
+            rows = db.execute(
+                "SELECT rowid FROM job_runs WHERE job_name=? "
+                "AND detail LIKE 'key=schedule:%' "
+                "ORDER BY started_at DESC, rowid DESC LIMIT -1 "
+                "OFFSET ?", (job_name, keep)).fetchall()
+            if rows:
+                db.executemany(
+                    "DELETE FROM job_runs WHERE rowid=?",
+                    [(row["rowid"],) for row in rows])
+                removed += len(rows)
+    return removed
 
 
 def cancel_run(run_id: str) -> bool:
@@ -242,9 +273,17 @@ def run_job(job_name: str, params: dict | None = None, *,
         summary = _RUNNERS[job_name](params)
     except (JobRefusedError, ValueError, KeyError,
             TypeError) as error:
-        _record_run(run_id, job_name, "failed", str(error),
+        detail = (f"key={run_key} {error}" if run_key else
+                  str(error))
+        _record_run(run_id, job_name, "failed", detail,
                     started, now())
         raise JobRefusedError(f"job failed: {error}")
+    except Exception as error:
+        detail = (f"key={run_key} {error}" if run_key else
+                  str(error))
+        _record_run(run_id, job_name, "failed", detail,
+                    started, now())
+        raise
     detail = f"key={run_key} {summary}" if run_key else str(
         summary)
     _record_run(run_id, job_name, "completed", detail[:2000],

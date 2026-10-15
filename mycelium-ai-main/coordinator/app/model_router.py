@@ -50,7 +50,7 @@ CODE_TASK_CLASSES = frozenset({
 # fall back to these exact values (env/explicit-arg precedence above
 # them is unchanged).
 DEFAULT_LOCAL_MODEL = "qwen3.5:4b"
-DEFAULT_VISION_MODEL = "qwen3-vl:4b"
+DEFAULT_VISION_MODEL = "qwen3.5:4b"
 DEFAULT_EMBED_MODEL = "nomic-embed-text"
 
 # Local models with PROVEN native tool-calling through the full

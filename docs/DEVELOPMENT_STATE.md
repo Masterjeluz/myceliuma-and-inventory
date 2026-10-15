@@ -2,6 +2,8 @@
 
 Laatste inhoudelijke update: 2026-10-05 (workflow-ronde: sync + docs-freshness, geen feature-wijziging).
 
+> **Historisch ontwikkellogboek.** Deze momentopname is voor het laatst inhoudelijk bijgewerkt op 2026-10-05. Gebruik `docs/CURRENT_STATE.md` en `Mycelium-Knowledge-Vault/What works today.md` voor actuele architectuur en servicestatus; onderstaande mijlpalen blijven chronologisch naslagmateriaal.
+
 ## Huidige milestone
 - **Solar Punk City fase 2 (afgerond 2026-10-05):** first-person lopen (Canvas2D-raycaster, geen Three.js) + bird's-eye minimap op `GET /solarpunk`. Hergebruikt bestaande backend: `POST /api/v1/play/session` + `/api/v1/play/position` (clamp 3840×1400, throttle 2s, zone `solarpunk`); nul nieuwe routes/tabellen. `/side` blijft frozen; `/solarpunk` is de nieuwe primaire richting.
 - **SP Home Base (afgerond 2026-10-05):** vaste landmark naast spawn (800,500) naar referentiefoto bakstenen pand: baksteen #8a4030, kozijnen #20261f, dak #9c3a2b, glas #e8d9a0. Zichtbaar in SVG-kaart, wereld-JSON, 3D-view (bakstenen muren) en minimap (huis-icoon) + infopaneel. Enige home-state: positie (bestaande play-sessie).

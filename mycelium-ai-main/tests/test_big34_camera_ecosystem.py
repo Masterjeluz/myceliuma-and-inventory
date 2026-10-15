@@ -136,6 +136,10 @@ def test_session_missing_file_refuses(tmp_path, monkeypatch):
 # -- VLM honesty -------------------------------------------------------------------
 
 def test_describe_fallback_unavailable(tmp_path, monkeypatch):
+    from coordinator.app.vision_provider import TestVisionProvider
+    monkeypatch.setattr(
+        main_mod, "get_vision_provider",
+        lambda _name: TestVisionProvider(fail=True))
     for client in make_client(tmp_path, monkeypatch):
         device_id = _register(client)
         name = _write_inbox("b34-vlm.png")
@@ -187,7 +191,7 @@ def test_describe_real_with_mock_transport(tmp_path, monkeypatch):
         provider.analyze,
         VisionRequest(observation_id="obs-test", device_id="cam-x",
                       media_ref=name, question="Wat zie je?"))
-    assert result.model == "qwen3-vl:4b"
+    assert result.model == "qwen3.5:4b"
     assert "zonnepaneel" in result.labels
     assert seen["url"].startswith("http://127.0.0.1:11434")
     assert camera_dir()

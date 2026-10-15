@@ -1,11 +1,10 @@
-"""Solar Punk City, fase 1: read-only top-down projectie van de wereld-store.
+"""Solar Punk City projection and browser client.
 
-Alleen lezen via de coordinator-bridge (`InventoryReader.browse`,
-type "locations"); nooit schrijven, geen posities bewaren, geen gates
-omzeilen. Districten renderen uit live location-records; de layout is
-een deterministische functie van de lijstvolgorde (geen sessie-state).
-
-Fase 2+ voegt beweging/inputs toe; dit bestand blijft render-only.
+Districts are read through the coordinator's loopback INVENTory bridge.
+Movement reuses the existing play-session position; town chat and actor
+status reuse existing coordinator stores and routes. Camera capture is
+user-triggered and fail-closed through the existing camera adapter.
+This module adds no database or world-model entities.
 """
 
 import json as _json
@@ -461,13 +460,20 @@ try{actors=JSON.parse(document.getElementById("spc-actors").textContent||"[]");}
 var COLORS=["#a5c48a","#d9a441","#7fb8d9","#c9a0dc","#e08e8e","#8fd9c9"];
 var feed=document.getElementById("spc-actors-feed");
 var bar=document.getElementById("spc-near");
+var live=document.getElementById("spc-actors-live");
+var actorLoading=false;
 function esc(t){return String(t).replace(/&/g,"&amp;").replace(/</g,"&lt;");}
 function colorOf(id){
   var order=["mos","oracle","smid","archivaris","voorman","seinwachter"];
   var i=order.indexOf(id);return COLORS[i<0?0:i];
 }
 function load(){
-  fetch("/api/v1/town/actors").then(function(r){return r.json();}).then(function(d){
+  if(document.hidden||actorLoading)return;
+  actorLoading=true;
+  fetch("/api/v1/town/actors").then(function(r){
+    if(!r.ok)throw new Error("status "+r.status);
+    return r.json();
+  }).then(function(d){
     actors=(d.actors||[]).map(function(a){
       var names={mos:"Mos",oracle:"Orakel",smid:"Smid",archivaris:"Archivaris",voorman:"Voorman",seinwachter:"Seinwachter"};
       a.name=names[a.npc_id]||a.npc_id;return a;});
@@ -479,7 +485,11 @@ function load(){
         return '<p><b>'+esc(it.npc_id)+'</b> <span class="muted">'+esc(it.kind)+'</span> '+esc(it.detail)+'</p>';
       }).join(""):'<p class="muted">No activity yet.</p>';
     }
-  },function(){});
+    if(live)live.textContent="Connected · updated "+new Date().toLocaleTimeString();
+  },function(){
+    if(live)live.textContent=actors.length?
+      "Connection lost · showing last update":"Offline";
+  }).then(function(){actorLoading=false;},function(){actorLoading=false;});
 }
 function drawActors(p,VW,VH){
   var FOV=66*Math.PI/180;
@@ -581,16 +591,10 @@ function drawActors(p,VW,VH){
     }
   }
 }
-var mlast=0;
-setInterval(function(){
-  load();
-  var now=Date.now();
-  if(now-mlast<4000)return;mlast=now;
-  try{
-    var VW=view.width,VH=view.height;
-    drawActors({x:window.spcPosX||800,y:window.spcPosY||500},VW,VH);
-  }catch(e){}
-},1000);
+setInterval(load,5000);
+document.addEventListener("visibilitychange",function(){
+  if(!document.hidden)load();
+});
 load();
 window.spcDrawActors=function(p){try{drawActors(p,view.width,view.height);}catch(e){}};
 })();"""
@@ -831,7 +835,7 @@ def render(districts: list, error: str = "") -> str:
     <div id="spc-town"><p class="muted">Quiet square.</p></div>
     <input id="spc-town-input" type="text" placeholder="Say something…" aria-label="Town message" autocomplete="off">
     <button id="spc-town-send" type="button">Say</button></div>
-    <div class="panel"><h2>What they do</h2>
+    <div class="panel"><h2>What they do <small id="spc-actors-live" class="muted" aria-live="polite">Connecting…</small></h2>
     <div id="spc-actors-feed"><p class="muted">No activity yet.</p></div>
     <p class="muted">Echte signalen alleen: een NPC is working als er een taak voor hem/haar in de queue staat, anders idle. Loop erheen (loop binnen 100 eenheden) en praat via de balk.</p></div>
     <div class="panel"><h2>Bureau</h2>

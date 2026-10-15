@@ -38,3 +38,7 @@ inventory/.git/
 inventory/INVENTory/.git/
 mycelium-ai-main/.git/
 .aider*
+
+# Local Obsidian LiveSync service data and credentials
+ops/obsidian-livesync/.env
+ops/obsidian-livesync/couchdb-data/

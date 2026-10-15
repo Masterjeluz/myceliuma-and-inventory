@@ -24,6 +24,12 @@ class OllamaUnavailable(RuntimeError):
     """Ollama onbereikbaar of zonder bruikbaar antwoord."""
 
 
+def _ollama_client():
+    import httpx
+    return httpx.Client(timeout=REQUEST_TIMEOUT_SECONDS,
+                        trust_env=False, follow_redirects=False)
+
+
 def base_url() -> str:
     """Loopback-only basis-URL. Al het andere wordt geweigerd."""
     raw = str(os.environ.get(BASE_URL_ENV_VAR,
@@ -59,7 +65,6 @@ def ollama_say(npc_id: str, message: str, system: str = "") -> str:
     antwoorden en fouten worden OllamaUnavailable — de caller
     beslist wat dan (town_chat: eerlijke noot).
     """
-    import httpx
     from .hermes_npc import HERMES_NPCS
     npc_key = str(npc_id or "").strip()
     if npc_key not in HERMES_NPCS:
@@ -73,14 +78,15 @@ def ollama_say(npc_id: str, message: str, system: str = "") -> str:
     url = base_url() + "/api/chat"
     prompt = str(system or npc.get("system", "") or "").strip()[:2000]
     try:
-        response = httpx.post(url, json={
-            "model": model_name(),
-            "stream": False,
-            "options": {"num_predict": 220},
-            "messages": [
-                {"role": "system", "content": prompt},
-                {"role": "user", "content": text[:2000]},
-            ]}, timeout=REQUEST_TIMEOUT_SECONDS)
+        with _ollama_client() as client:
+            response = client.post(url, json={
+                "model": model_name(),
+                "stream": False,
+                "options": {"num_predict": 220},
+                "messages": [
+                    {"role": "system", "content": prompt},
+                    {"role": "user", "content": text[:2000]},
+                ]})
     except Exception as error:
         raise OllamaUnavailable(
             f"Ollama unreachable: {type(error).__name__}")

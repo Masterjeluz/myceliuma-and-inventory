@@ -1,6 +1,7 @@
 # MYCELIUM UI GAP MAP — backend capability → user-facing UI
 
 Date (UTC): 2026-09-25
+> **Historical snapshot.** This map records UI gaps found on 2026-09-25 and is not the current implementation status. The product and repository have changed since then. For current architecture and live checks, use `AGENTS.md`, `PROJECTATLAS.md`, `docs/CURRENT_STATE.md`, and `Mycelium-Knowledge-Vault/What works today.md`; verify each capability against executable code and tests. Detailed rows below are preserved as dated audit notes.
 Companion to `MYCELIUM_REALITY_MAP.md` (primary factual audit). Same method: static inspection only, no test execution, no code changes, no commits.
 Language: English. Dutch UI labels/quotes preserved verbatim where they exist.
 Evidence tags: **VERIFIED FROM CODE** / **VERIFIED FROM TESTS** (static file inspection only) / **DOCUMENTATION CLAIM** / **UNCERTAIN**.

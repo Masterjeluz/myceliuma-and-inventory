@@ -13,7 +13,10 @@ hardened without new product features. Invariants:
   (`_INIT_LOCK`); data writes serialize in the engine.
 - No retry loops: contention waits in the engine, races
   resolve atomically (conditional writes) or refuse
-  loudly. No background threads in the web lifespan.
+  loudly. The lifespan has one bounded scheduler task; its
+  closed read-only job set uses short-lived worker threads,
+  each opening its own DB connections. No queue dispatch,
+  model, hardware, approval, or mission-resume work is scheduled.
 
 ## Fencing invariant
 
@@ -44,6 +47,9 @@ per scope — interface_events (500), job_runs (20/job),
 conversation_events (200/mission). dist_events,
 dist_conflicts and write_proposals are never pruned
 (sync cursors, live conflicts, approval lifecycle).
+The background scheduler separately caps only its own
+tagged `job_runs` entries at 20 per scheduled job; it does
+not run the broader retention pass.
 Indexes: tasks(status), nodes(last_seen),
 research_sources(content_hash), memories(updated_at,
 truth). Claim hot path bounded (500).

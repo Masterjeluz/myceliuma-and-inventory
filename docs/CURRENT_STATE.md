@@ -48,11 +48,18 @@ nooit gedeelde DB.
 |---|---|---|---|
 | INVENTory | `INVENTORY_DATABASE_PATH` | `inventory/data/inventory.db` (gitignored) | `busy_timeout=15000` load-bearing; `*_fts` = afgeleide index (`rebuild_fts()`), nooit direct schrijven |
 | Coordinator | `MYCELIUM_DATABASE_PATH` | `mycelium-ai-main/data/mycelium.db` | additieve idempotente migraties (`_ensure_*_columns`) |
-| Chat | `MYCELIUM_CHAT_DATABASE_PATH` | `mycelium-ai-main/data/chat.db` | apart van hoofd-DB |
+| Chat | `MYCELIUM_CHAT_DATABASE_PATH` | `mycelium-ai-main/data/mycelium-chat.db` | apart van hoofd-DB |
 | Agent | — (JSON) | `Mycelium/agent/{discovery.json,project_index.json}` | data, geen source; bridge dry-run only |
 
 Strays (nooit openen): root `data/mycelium*.db`,
 `data/inventory.db`, `mycelium-ai-main/data/inventory.db`.
+Runtime-caveat (2026-10-14): the live coordinator on `:8000` reports
+five task records, matching root `data/mycelium.db`; the project-local
+`mycelium-ai-main/data/mycelium.db` has zero. The checked-in startup
+script sets the project working directory, but the currently running
+process appears to have been launched with a different cwd or explicit
+database env var. Do not assume root DB copies are inactive until that
+process and its environment are reconciled; do not overwrite either DB.
 Let op: quests/campaigns/research-runs/dossiers/queue/workspaces/
 candidates/automation-runs hebben routes+logica+tests maar deels
 **geen `CREATE TABLE`** — geen restart-duurzaamheid aannemen.
@@ -178,9 +185,20 @@ Missies (uitvoerbaar) vs Plan (inert) vs AutomationRun vs
 research-run (`res_`) vs queue-`tasks` (int, queued/assigned) vs
 `ctask-` (goedgekeurd voorstel, nooit queued) vs inventory-`task_`
 (wereldrecord, executeert nooit) — bewust gescheiden tabellen,
-niet unificeren. Geen background threads/scheduler/auto-approval
-(`jobs.py:12`); watcher/overnight/sweep alleen via expliciete POST
-of externe cron. Ontbrekende providers degraderen eerlijk.
+niet unificeren. Een vaste coordinator-scheduler voert alleen
+begrensde, read-only `watcher_scan` (10 min), `device_health` (5
+min), `inventory_reconcile` (30 min) en `research_process` (60 min)
+uit. Deze maakt geen queue-taken, dispatcht geen nodes, roept geen
+modellen of hardware aan en keurt niets goed. Standaard actief;
+`MYCELIUM_BACKGROUND_SCHEDULER=0` schakelt hem uit. Status via
+`GET /api/v1/jobs/scheduler` en `/system`; eigen run-historie blijft
+begrensd in bestaande `job_runs`. Missies, automation, research-queue
+uitvoering en maintenance blijven expliciet. Ontbrekende providers
+degraderen eerlijk.
+`GET /api/v1/models/routes` currently shows the local Ollama routes;
+`code` and `code-review` remain unavailable when the active Python
+environment cannot import `code_worker`. Package discovery now includes
+that package; reinstall/restart is still needed to apply the packaging fix.
 Town (Solar Punk City): `town_chat.py` (gesprekken op bestaande
 chat-tabellen, town-rol in sources, round-robin of targeted
 `npc_id`, max 1 NPC-beurt) + `town_memory.py` (tabel
@@ -196,6 +214,8 @@ rechtvaardiging/blast-radius/confidence, exact-YES →
 queue-taak met provenance `town:{npc}`; dial via
 `TOWN_AUTONOMY`, default leeg, hardware/desktop nooit).
 Residents-, activiteiten- en Bureaupaneel op `/solarpunk`.
+NPC-status en activiteit worden daar vijfseconden ververst zolang de tab
+zichtbaar is; de statusregel toont de laatste succesvolle verbinding.
 Kijkrichting `a` persisteert mee (additieve `angle`-kolom op
 play_sessions; callers zonder `a` laten hem staan). Forge heeft
 een 3D-snapshot-preview-toggle (zelfde pinned three@0.160.0 +
@@ -226,3 +246,11 @@ file-transfer — dat is backend-werk, geen UI-werk.
   (`research.fetch_url`, conversation-bridge `conv_`), externe
   services (n8n-fixtures, web-push unavailable). Cloud additief,
   nooit verplicht.
+
+## 13. Obsidian LiveSync (live gecontroleerd 2026-10-15)
+
+- CouchDB status endpoint `127.0.0.1:5984/_up` antwoordde `ok`; een metadata-only check vond database `solarlab` met 7 documenten. Documentinhoud is niet gelezen.
+- Obsidian 1.14.4 staat open op vault **Solarlab**; Self-hosted LiveSync meldt E2EE aan en actieve verbinding met `solarlab`. Een gecontroleerde notitie-roundtrip is nog niet bewezen.
+- `Mycelium-Knowledge-Vault/` is een aparte voorbereide map, geen geopende/geconfigureerde vault. Geef deze een eigen database (bijvoorbeeld `mycelium`) en test een onschuldige notitie in beide richtingen. Meng Solarlab en projectnotities niet.
+- NetBird is verbonden op de pc; één remote peer meldt `Connected` via relay, vijf van zes peers zijn niet verbonden. De peer-hostname lijkt op een Android-toestel maar dat is niet met de telefoon zelf bevestigd. De NetBird-only HTTPS-proxy ontbreekt nog; CouchDB staat op `127.0.0.1`, dus Android LiveSync kan de service nog niet bereiken. Houd CouchDB op loopback en publiceer poort 5984 niet.
+- Docker CLI kon de Desktop named pipe vanuit deze controle niet openen. Alleen de CouchDB HTTP API is als bereikbaar geverifieerd, niet de containerstatus.

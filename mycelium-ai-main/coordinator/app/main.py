@@ -386,7 +386,21 @@ async def lifespan(_: FastAPI):
         _v1_startup_scan()
     except Exception as error:
         logger.warning("startup_scan_skipped cause=%s", error)
-    yield
+    from . import scheduler as _scheduler
+    import asyncio as _asyncio
+    scheduler_stop = None
+    scheduler_task = None
+    if _scheduler.enabled():
+        scheduler_stop = _asyncio.Event()
+        scheduler_task = _asyncio.create_task(
+            _scheduler.run_scheduler(scheduler_stop),
+            name="mycelium-background-scheduler")
+    try:
+        yield
+    finally:
+        if scheduler_stop is not None:
+            await _scheduler.stop_scheduler(
+                scheduler_stop, scheduler_task)
 
 
 def _v1_startup_scan() -> None:
@@ -2323,14 +2337,31 @@ def model_routes() -> dict:
             routes[task_class] = {"routed": False,
                                   "reason": str(error)[:300]}
             continue
+        except Exception as error:
+            # A missing optional worker pin should only make its code
+            # routes unavailable; it must not hide local chat/vision routes.
+            routes[task_class] = {
+                "routed": False,
+                "reason": (f"route unavailable: {type(error).__name__}: "
+                           f"{error}")[:300]}
+            continue
         routes[task_class] = {"routed": True,
                               "provider": resolved.provider,
                               "model": resolved.model,
                               "local": resolved.local,
                               "operator_override": resolved.operator_override,
                               "reason": resolved.reason}
+    try:
+        code_pin = code_model_pin()
+        code_pin_error = ""
+    except Exception as error:
+        # A missing optional code-worker module must not hide the
+        # otherwise usable local model routes from the system page.
+        code_pin = ""
+        code_pin_error = (f"{type(error).__name__}: {error}")[:200]
     return {"routes": routes,
-            "code_pin": code_model_pin(),
+            "code_pin": code_pin,
+            "code_pin_error": code_pin_error,
             "proven_local_tool_models": sorted(PROVEN_LOCAL_TOOL_MODELS)}
 
 
@@ -2671,14 +2702,16 @@ def approvals_page() -> str:
 
 @app.get("/system", response_class=HTMLResponse)
 def system_page() -> str:
-    """System truth: model routing, coordinator counts, jobs. All
-    read-only; the scheduler stays on-demand (jobs run via API/n8n
-    cron, never a background thread)."""
+    """System truth: model routing, coordinator counts, and jobs."""
     from . import ui as _ui
     try:
         routes = model_routes()
     except Exception:
         routes = {"routes": {}, "code_pin": "?", "proven_local_tool_models": []}
+    code_pin_display = str(routes.get("code_pin", "") or "unavailable")
+    code_pin_error = str(routes.get("code_pin_error", "") or "")
+    if code_pin_error:
+        code_pin_display += f" ({code_pin_error[:160]})"
     route_rows = "".join(
         f"<tr><td><code>{_ui.esc(task_class)}</code></td>"
         f"<td>{'refused' if not info.get('routed') else _ui.esc(str(info.get('provider', '')) + '/' + str(info.get('model', '')))}</td>"
@@ -2694,6 +2727,32 @@ def system_page() -> str:
         jobs = job_list()
     except Exception:
         jobs = []
+    try:
+        from .scheduler import status as _scheduler_status
+        scheduler = _scheduler_status()
+    except Exception:
+        scheduler = {"enabled": False, "running": False,
+                     "jobs": [], "last_runs": {}}
+    scheduled_jobs = scheduler.get("jobs", [])
+    interval_label = ", ".join(
+        f"{_ui.esc(str(item.get('job_name', '')))} every "
+        f"{int(item.get('interval_seconds', 0)) // 60} min"
+        for item in scheduled_jobs)
+    last_runs = scheduler.get("last_runs", {})
+    def _last_run_row(name: str, item: dict) -> str:
+        detail = str(item.get("summary", "") or
+                     item.get("error", ""))[:240]
+        return (f"<li><code>{_ui.esc(name)}</code>: "
+                f"{_ui.esc(str(item.get('status', 'unknown')))} "
+                f"<span class=\"muted\">"
+                f"{_ui.esc(str(item.get('started_at', '')))}</span> "
+                f"<small>{_ui.esc(detail)}</small></li>")
+    last_run_rows = "".join(
+        _last_run_row(name, item)
+        for name, item in sorted(last_runs.items()))
+    scheduler_state = ("running" if scheduler.get("running")
+                       else "enabled; waiting for first interval"
+                       if scheduler.get("enabled") else "disabled")
     jobs_html = "".join(
         f"<li><code>{_ui.esc(str(job.get('job_name', '')))}</code> "
         f"<span class=\"muted\">{_ui.esc(str(job.get('trigger', '')))}</span> "
@@ -2707,12 +2766,22 @@ def system_page() -> str:
     main = f"""<h1>System — routing, counts, jobs</h1>
     <div class="panel"><h2>Model routing (existing router, read-only)</h2>
     <table><tr><th>Task class</th><th>Provider/model</th><th>Local</th><th>Why</th></tr>{route_rows}</table>
-    <p class="muted">Code pin (worker safety override): <code>{_ui.esc(str(routes.get('code_pin', '')))}</code> · proven local tool models: {_ui.esc(', '.join(routes.get('proven_local_tool_models', [])) or 'none — tool execution needs an explicit operator model')}.</p>
+    <p class="muted">Code pin (worker safety override): <code>{_ui.esc(code_pin_display)}</code> · proven local tool models: {_ui.esc(', '.join(routes.get('proven_local_tool_models', [])) or 'none — tool execution needs an explicit operator model')}.</p>
     <p class="muted">Full JSON: <a href="/api/v1/models/routes">/api/v1/models/routes</a></p></div>
     <div class="panel"><h2>Coordinator</h2><p class="muted">{_ui.esc(str(status)[:600])}</p>
     <p class="muted">JSON: <a href="/api/v1/status">/api/v1/status</a> · live events: <a href="/api/v1/events/stream">SSE stream</a> (poll fallback: <a href="/api/v1/events">/api/v1/events</a>)</p></div>
-    <div class="panel"><h2>Jobs (on-demand scheduler)</h2><ul>{jobs_html}</ul>
-    <p class="muted">No background thread by design — jobs run via <code>POST /api/v1/jobs/run</code> or n8n cron. Runs: <a href="/automation">Automation</a>.</p></div>"""
+    <div class="panel"><h2>Jobs (background + on-demand)</h2>
+    <p>Background scheduler: <b>{_ui.esc(scheduler_state)}</b>.</p>
+    <p class="muted">Scheduled read-only jobs: {interval_label or 'none'}.
+    They inspect current state only; they never enqueue work, call models,
+    access hardware, or approve actions. To disable, set
+    <code>MYCELIUM_BACKGROUND_SCHEDULER=0</code> before restarting.
+    JSON:
+    <a href="/api/v1/jobs/scheduler">scheduler status</a>.</p>
+    <ul>{last_run_rows or '<li>No scheduled runs yet.</li>'}</ul>
+    <h3>Manual jobs</h3><ul>{jobs_html}</ul>
+    <p class="muted">Run manually through the buttons or
+    <code>POST /api/v1/jobs/run</code>. Runs: <a href="/automation">Automation</a>.</p></div>"""
     return _ui.shell("System", "/system", main, _ui.command_bar())
 
 
@@ -9969,8 +10038,8 @@ def twin_staleness(stale_hours: float = 24.0) -> dict:
 
 # =============================================================================
 # JOBS (BIG #11-15, Phase 6). Named bounded runs: observable,
-# retryable, cancellable, idempotent via run_key. No background
-# threads; runs trigger via API.
+# retryable, cancellable, idempotent via run_key. The in-process
+# scheduler only runs the fixed read-only allowlist.
 # =============================================================================
 
 @app.get("/api/v1/jobs")
@@ -9979,6 +10048,12 @@ def job_list() -> list[dict]:
     return [{"job_name": name,
              "trigger": "POST /api/v1/jobs/run"}
             for name in _names]
+
+
+@app.get("/api/v1/jobs/scheduler")
+def job_scheduler_status() -> dict:
+    from .scheduler import status as _status
+    return _status()
 
 
 @app.post("/api/v1/jobs/run", status_code=201)

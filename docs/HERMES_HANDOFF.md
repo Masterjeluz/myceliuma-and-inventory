@@ -4,6 +4,46 @@ Date: 2026-10-06. Audience: an AI agent (or human) picking up where the
 Solar Punk City game UI stopped. Everything below is verified against
 the code; docs that disagree with code/tests lose (code is truth).
 
+> **Superseding status check, 2026-10-15:** Local checks found coordinator, Hermes, Ollama, INVENTory, and the scheduler reachable. CouchDB `/_up` answered; the active Obsidian LiveSync vault is `Solarlab` on database `solarlab`. The prepared Mycelium vault is not yet open/configured, and Android has no NetBird HTTPS route. Docker container state could not be read from this shell. For current state, use `docs/CURRENT_STATE.md` and `Mycelium-Knowledge-Vault/What works today.md`.
+
+> **Overdracht 2026-10-15:** Eerst Mycelium-Knowledge-Vault als aparte vault laten syncen en daarna via NetBird Private BYOP + DNS-01 de Android-notitie-roundtrip afronden; NetBird-peer is verbonden via relay, maar CouchDB blijft localhost-only en heeft nog geen HTTPS-proxypad.
+
+## Operational update — 2026-10-14
+
+- `tools/start-local.ps1` now checks loopback HTTP before launching each
+  service and starts missing INVENTory (:8080), coordinator (:8000),
+  Ollama (:11434), and Hermes gateway (:8642). It opens Docker Desktop and
+  starts the loopback-only LiveSync CouchDB Compose service when the Docker
+  engine is ready. A failed service no longer prevents startup attempts for
+  the rest. This is a startup action, not a continuous watchdog.
+  `install-autostart.ps1` installs a per-user Windows Startup shortcut
+  (no administrator task registration). The shortcut is installed on this
+  machine at sign-in.
+- Coordinator `lifespan` now starts a fixed scheduler for four bounded,
+  read-only jobs (watcher, device health, queue reconciliation, research
+  source counts). It does not dispatch tasks or execute research. Status is
+  visible at `/system` and `GET /api/v1/jobs/scheduler`; set
+  `MYCELIUM_BACKGROUND_SCHEDULER=0` before restarting to disable it.
+- Local Ollama/Hermes HTTP clients now ignore system proxy variables
+  (`trust_env=False`) because their validated endpoints are loopback-only.
+  Vision requests also disable Qwen thinking and cap generation at 160
+  tokens. `qwen3.5:4b` is now the default vision model because it is
+  installed locally; the previous default `qwen3-vl:4b` was absent. Manual
+  synthetic-image check: Qwen returned a REAL screen summary through
+  `_hermes_screen_summary`. A follow-up live call exposed a parser issue:
+  Qwen combined a label and description on one line, which the old parser
+  dropped. The prompt/parser now preserve inline descriptions; an end-to-end
+  synthetic screen observation returned a label and readable summary.
+  Keep the output cap because longer unconstrained Qwen calls previously
+  timed out on this GTX 1050 Ti.
+- Current host check: Ryzen 5 5600X, 16 GiB RAM, GTX 1050 Ti 4 GiB VRAM.
+  Local health endpoints for all four services responded. Ollama has five
+  installed models; inference is idle unless a request is made.
+- Docker Desktop's engine is still blocked by firmware virtualization on
+  this PC. Its startup launch is configured; CouchDB will be created and
+  started automatically on a later sign-in once Docker reports a ready
+  engine. No remote HTTPS route is configured.
+
 ## 1. What this repo is
 
 Single root git repo, three runtime areas, no shared code or DB:
@@ -115,8 +155,8 @@ Env: `HERMES_API_KEY` (Hermes, required for NPC voices),
 `INSTA360_DSHOW_NAME`, `INVENTORY_BASE_URL`,
 `MYCELIUM_DATABASE_PATH`, `MYCELIUM_CHAT_DATABASE_PATH`
 (point at tmp files when experimenting — never touch real data).
-Windows Task Scheduler scripts: `tools/start-local.ps1`,
-`tools/install-autostart.ps1` (run as admin),
+Windows startup scripts: `tools/start-local.ps1`,
+`tools/install-autostart.ps1` (per-user Startup shortcut),
 `tools/update.ps1` (ff-only, never force).
 
 State of the tree at handoff: everything committed, nothing pushed.

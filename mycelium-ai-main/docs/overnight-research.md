@@ -1,8 +1,9 @@
 # Overnight Research (BIG #31)
 
-Explicit mode, bounded queue, honest mornings. No background
-threads (architecture forbids them); the queue is worked by an
-explicit trigger — Jelles, a scheduler, or n8n cron.
+Explicit mode, bounded queue, honest mornings. The coordinator's
+background scheduler runs only fixed read-only status jobs; the
+research queue is worked by an explicit trigger — Jelles or n8n
+cron. No scheduled job executes queued research.
 
 ## Mode
 

@@ -192,8 +192,10 @@ def _clean_label(value) -> str | None:
 def parse_vision_text(text: str) -> dict:
     """Parse model text into structure. Best-effort extraction with
     honest uncertainty: labels come from explicit `label:` /
-    `object:` lines, the rest stays description. Unparseable text
-    yields empty labels — never invented ones."""
+    `object:` lines, the rest stays description. Inline descriptions
+    and malformed confidence placeholders are preserved as text.
+    Unparseable text yields empty labels — never invented ones."""
+    import re
     labels: list[str] = []
     seen: list[str] = []
     detected: list[dict] = []
@@ -203,18 +205,43 @@ def parse_vision_text(text: str) -> dict:
         if not stripped:
             continue
         lowered = stripped.lower()
-        if lowered.startswith(("label:", "object:", "voorwerp:")):
-            chunk = stripped.split(":", 1)[1].strip()
-            # Optional trailing confidence: "moer (0.8)".
+        if lowered.startswith("description:"):
+            description = stripped.split(":", 1)[1].strip()
+            if description:
+                description_lines.append(description)
+            continue
+        label_line = re.match(
+            r"^(?:label|object|voorwerp)\s*:\s*(.*)$",
+            stripped, flags=re.IGNORECASE)
+        if label_line:
+            chunk = label_line.group(1).strip()
             confidence = 0.0
-            if chunk.endswith(")") and "(" in chunk:
-                head, _, tail = chunk.rpartition("(")
+            inline_description = ""
+            parenthetical = re.match(
+                r"^(.+?)\s+\(([^()]*)\)\s*(.*)$", chunk)
+            if parenthetical:
+                possible_label, token, rest = parenthetical.groups()
+                token = token.strip()
                 try:
-                    confidence = max(0.0, min(1.0, float(
-                        tail.rstrip(")").strip())))
-                    chunk = head.strip()
+                    numeric_confidence = float(token)
                 except ValueError:
-                    confidence = 0.0
+                    numeric_confidence = -1.0
+                if 0.0 <= numeric_confidence <= 1.0:
+                    chunk = possible_label.strip()
+                    confidence = numeric_confidence
+                    inline_description = rest.strip()
+                elif token.casefold() in {"0..1", "0-1"}:
+                    # Models sometimes echo the prompt's confidence
+                    # range as though it were a score. Never treat it
+                    # as a confidence value.
+                    chunk = possible_label.strip()
+                    inline_description = rest.strip()
+                elif rest.strip():
+                    # This line does not follow the structured label
+                    # format. Keep it intact as a description instead
+                    # of turning a whole sentence into an object label.
+                    description_lines.append(stripped)
+                    continue
             label = _clean_label(chunk)
             if label and label.lower() not in seen:
                 seen.append(label.lower())
@@ -223,6 +250,10 @@ def parse_vision_text(text: str) -> dict:
                                  "confidence": confidence})
                 if len(labels) >= MAX_LABELS:
                     break
+                if inline_description:
+                    description_lines.append(inline_description)
+            elif not label:
+                description_lines.append(stripped)
         else:
             description_lines.append(stripped)
     return {
@@ -284,19 +315,24 @@ class OllamaVisionProvider(VisionProvider):
         payload = {
             "model": self.model,
             "stream": False,
+            "think": False,
+            "options": {"num_predict": 160},
             "messages": [{
                 "role": "user",
                 "content": (
-                    f"{request.question} Antwoord met eerst regels "
-                    f"als 'label: <naam> (0..1)' voor elk herkend "
-                    f"voorwerp, daarna een korte beschrijving."),
+                    f"{request.question} Antwoord uitsluitend met "
+                    f"korte regels: voor elk herkenbaar voorwerp "
+                    f"'label: <korte naam>' op een eigen regel, en "
+                    f"daarna 'description: <korte beschrijving>'. "
+                    f"Geef geen confidence-scores. Noem alleen wat "
+                    f"zichtbaar is; bij onzekerheid, zeg dat."),
                 "images": [base64.b64encode(media).decode("ascii")],
             }],
         }
         try:
             async with httpx.AsyncClient(
                     base_url=self.base_url, timeout=self.timeout,
-                    follow_redirects=False,
+                    follow_redirects=False, trust_env=False,
                     transport=self._transport) as client:
                 response = await client.post(CHAT_PATH, json=payload)
         except httpx.TimeoutException as error:
